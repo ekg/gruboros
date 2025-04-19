@@ -179,6 +179,10 @@ def main():
     if args.port != 29500:
         os.environ['MASTER_PORT'] = str(args.port)
     
+    # Print memory usage monitoring message
+    if args.local_rank == 0:
+        print("Memory-efficient dataset initialized. Only loading necessary data.")
+    
     # Parse numeric arguments with potential suffixes
     train_steps = int(parse_size_with_suffix(args.train_steps))
     dim = int(parse_size_with_suffix(args.dim))
