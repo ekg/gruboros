@@ -11,6 +11,7 @@ import re
 import math
 import json
 import datetime
+from datetime import timedelta
 import sys
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
@@ -111,7 +112,7 @@ class ModuloSplitDataset(Dataset):
         return self.dataset[self.indices[idx]]
 
 class MemoryMappedDataset(Dataset):
-    """Memory-mapped dataset for efficient random access"""
+    """Memory-mapped dataset for efficient random access with thread-safety improvements"""
     def __init__(self, filepath, seq_len, samples_per_epoch=10000):
         super().__init__()
         self.filepath = filepath
@@ -127,14 +128,28 @@ class MemoryMappedDataset(Dataset):
         # This prevents excessive data loading
         self.samples_per_epoch = samples_per_epoch
         
-        # Create a shared memory map - single instance used across all workers
-        self.file = open(self.filepath, 'rb')  # Read-only mode is sufficient
-        self.mm = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
+        # Use thread-local storage approach - lazily initialize resources
+        # This prevents sharing file handles across processes
+        self.file = None
+        self.mm = None
+    
+    def _ensure_initialized(self):
+        """Lazily initialize file resources to avoid sharing across processes/threads"""
+        if self.mm is None:
+            try:
+                self.file = open(self.filepath, 'rb')  # Read-only mode is sufficient
+                self.mm = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
+            except Exception as e:
+                print(f"Error initializing mmap for {self.filepath}: {e}")
+                raise
     
     def __len__(self):
         return self.samples_per_epoch
     
     def __getitem__(self, idx):
+        # Ensure file resources are initialized
+        self._ensure_initialized()
+        
         # Use the index deterministically to ensure same data across workers
         # But limit to a reasonable number of positions
         g = torch.Generator().manual_seed(SEED + idx)
@@ -143,22 +158,27 @@ class MemoryMappedDataset(Dataset):
         # Get a slice from the memory map without reading the whole file
         # Thread-safe access
         with torch.no_grad():
-            # Use seek/read with proper locking
-            self.mm.seek(start_pos)
-            data = self.mm.read(self.seq_len + 1)  # +1 for the target
-            
-            # Create a copy of the data in a writable buffer before making a tensor
-            # This prevents the PyTorch warning about non-writable buffers
-            data_copy = bytearray(data)
-            
-            # Create tensor from the copy (using list conversion to ensure it's writable)
-            tensor = torch.tensor(list(data_copy), dtype=torch.long)
-            
-            # Handle edge case if we didn't get enough data
-            if tensor.size(0) < self.seq_len + 1:
-                # Pad with zeros if needed
-                padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
-                tensor = torch.cat([tensor, padding])
+            try:
+                # Use seek/read with proper locking and error handling
+                self.mm.seek(start_pos)
+                data = self.mm.read(self.seq_len + 1)  # +1 for the target
+                
+                # Create a copy of the data in a writable buffer before making a tensor
+                # This prevents the PyTorch warning about non-writable buffers
+                data_copy = bytearray(data)
+                
+                # Create tensor from the copy (using list conversion to ensure it's writable)
+                tensor = torch.tensor(list(data_copy), dtype=torch.long)
+                
+                # Handle edge case if we didn't get enough data
+                if tensor.size(0) < self.seq_len + 1:
+                    # Pad with zeros if needed
+                    padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
+                    tensor = torch.cat([tensor, padding])
+            except Exception as e:
+                print(f"Error reading data at position {start_pos}: {e}")
+                # Return a fallback tensor with proper size in case of error
+                tensor = torch.zeros(self.seq_len + 1, dtype=torch.long)
         
         return tensor
     
@@ -285,6 +305,16 @@ def get_args():
     
     return parser.parse_args()
 
+def synchronize_processes(timeout_secs=60):
+    """Synchronize all distributed processes with explicit timeout"""
+    if torch.distributed.is_initialized():
+        if torch.distributed.get_rank() == 0:
+            print("Waiting for all processes to synchronize...")
+        # Add timeout to prevent infinite hanging
+        torch.distributed.barrier(timeout=timedelta(seconds=timeout_secs))
+        if torch.distributed.get_rank() == 0:
+            print("All processes synchronized")
+
 def main():
     args = get_args()
     
@@ -340,6 +370,7 @@ def main():
     # Synchronize checkpoint directory across processes if distributed
     if torch.distributed.is_initialized():
         if args.local_rank == 0:
+            print(f"Broadcasting checkpoint directory: {checkpoint_dir}")
             dir_tensor = torch.tensor([ord(c) for c in checkpoint_dir], dtype=torch.long).cuda()
             # Pad to fixed length
             padded_dir = torch.zeros(256, dtype=torch.long).cuda()
@@ -347,8 +378,8 @@ def main():
         else:
             padded_dir = torch.zeros(256, dtype=torch.long).cuda()
             
-        # Broadcast from rank 0 to all processes
-        torch.distributed.broadcast(padded_dir, 0)
+        # Broadcast from rank 0 to all processes with timeout
+        torch.distributed.broadcast(padded_dir, 0, timeout=timedelta(seconds=30))
         
         # Convert back to string on other ranks
         if args.local_rank != 0:
@@ -546,6 +577,9 @@ def main():
         dist_init_required=True
     )
     
+    # Synchronize after DeepSpeed initialization to ensure all processes are ready
+    synchronize_processes()
+    
     # 3.1) Load optimizer state if resuming
     if resuming and 'optimizer_state_dict' in checkpoint:
         if args.local_rank == 0:
@@ -570,6 +604,9 @@ def main():
         if args.local_rank == 0:
             print("Loading model weights from checkpoint")
         model_engine.module.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Synchronize after loading checkpoint to ensure all processes have updated weights
+        synchronize_processes()
     
     # 4) Put ScheduleFree optimizer into train mode if used
     if args.schedulefree:
@@ -670,12 +707,16 @@ def main():
         filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}{val_info}.pt"
         checkpoint_path = os.path.join(checkpoint_dir, filename)
         
-        # Save checkpoint
-        torch.save(checkpoint, checkpoint_path)
+        # Save checkpoint atomically using temporary file
+        temp_path = checkpoint_path + ".tmp"
+        torch.save(checkpoint, temp_path)
+        os.replace(temp_path, checkpoint_path)
         
-        # Also save as latest
+        # Also save as latest (atomically)
         latest_path = os.path.join(checkpoint_dir, "latest.pt")
-        torch.save(checkpoint, latest_path)
+        temp_latest_path = latest_path + ".tmp"
+        torch.save(checkpoint, temp_latest_path)
+        os.replace(temp_latest_path, latest_path)
         
         # Save model config for easy access
         config_path = os.path.join(checkpoint_dir, "config.json")
@@ -731,13 +772,18 @@ def main():
             val_tokens_per_sec = val_token_count / validation_time if validation_time > 0 else 0
             print(f"Validation complete: {val_tokens_per_sec:.2f} tokens/sec")
         
+        # Calculate average
+        avg_loss = total_loss / max(1, batch_count)
+        
+        # Synchronize all processes after validation to prevent some processes 
+        # from continuing while others are still validating
+        synchronize_processes()
+        
         # Switch back to train mode
         model_engine.train()
         if args.schedulefree:
             model_engine.optimizer.train()
         
-        # Calculate average
-        avg_loss = total_loss / max(1, batch_count)
         return avg_loss
     
     # Helper function to log metrics
@@ -775,6 +821,9 @@ def main():
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
+    
+    # Synchronize all processes before starting training loop
+    synchronize_processes()
     
     # Create progress bar if primary process
     if model_engine.global_rank == 0:
