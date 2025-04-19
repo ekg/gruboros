@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torch.nn import Module, ModuleList, RMSNorm
 
 from mingru.minGRU import minGRU
-from mingru.minLSTM import minLSTM
 
 def exists(v):
     return v is not None
@@ -51,7 +50,7 @@ class minLM(Module):
         ff_mult = 4,
         expansion = 1.5,
         conv_kernel_size = 3,
-        use_lstm = False,
+        use_lstm = None,  # Kept for backward compatibility but ignored
         enable_conv = False,
         dropout = 0.
     ):
@@ -60,7 +59,7 @@ class minLM(Module):
 
         self.layers = ModuleList([])
 
-        min_rnn_klass = minGRU if not use_lstm else minLSTM
+        min_rnn_klass = minGRU
 
         for _ in range(depth):
             self.layers.append(ModuleList([
