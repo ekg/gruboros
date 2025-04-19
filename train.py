@@ -25,45 +25,35 @@ class MemoryMappedDataset(Dataset):
         self.filepath = filepath
         self.seq_len = seq_len
         
-        # Get file size
+        # Get file size once
         self.file_size = os.path.getsize(filepath)
         
         # Calculate valid end position for random sampling
-        # -seq_len-1 ensures we can always get seq_len+1 bytes
         self.valid_end = max(0, self.file_size - seq_len - 1)
         
         # Define length as number of possible starting positions
         self.length = max(1, self.valid_end)
         
-        # Open file and create memory map - initialized on first access
-        self.file = None
-        self.mm = None
-    
-    def _ensure_open(self):
-        """Ensure the memory map is open, opening it if necessary"""
-        if self.mm is None:
-            self.file = open(self.filepath, 'r+b')
-            self.mm = mmap.mmap(self.file.fileno(), 0)
+        # Create a shared memory map - single instance used across all workers
+        self.file = open(self.filepath, 'rb')  # Read-only mode is sufficient
+        self.mm = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
     
     def __len__(self):
         return self.length
     
     def __getitem__(self, idx):
-        # This index is ignored - we generate a random position each time
-        # This ensures randomness across different TP workers which need to see the same data
-        self._ensure_open()
-        
-        # Generate a deterministic random position using seed + idx
+        # Use the index deterministically to ensure same data across workers
+        # This is important for tensor parallelism
         g = torch.Generator().manual_seed(SEED + idx)
         start_pos = torch.randint(0, self.valid_end, (1,), generator=g).item()
-            
-        # Directly read bytes from memory map without creating intermediate arrays
+        
+        # Get a slice from the memory map without reading the whole file
+        # We need a thread-safe copy since the memory map is shared
         self.mm.seek(start_pos)
         data = self.mm.read(self.seq_len + 1)  # +1 for the target
         
-        # Convert to a writable buffer first, then to tensor
-        writable_data = bytearray(data)
-        tensor = torch.frombuffer(writable_data, dtype=torch.uint8).long()
+        # Directly create tensor from bytes
+        tensor = torch.frombuffer(data, dtype=torch.uint8).long()
         
         # Handle edge case if we didn't get enough data
         if tensor.size(0) < self.seq_len + 1:
@@ -75,10 +65,13 @@ class MemoryMappedDataset(Dataset):
     
     def __del__(self):
         # Clean up resources
-        if hasattr(self, 'mm') and self.mm is not None:
-            self.mm.close()
-        if hasattr(self, 'file') and self.file is not None:
-            self.file.close()
+        try:
+            if hasattr(self, 'mm') and self.mm is not None:
+                self.mm.close()
+            if hasattr(self, 'file') and self.file is not None:
+                self.file.close()
+        except:
+            pass  # Avoid errors during interpreter shutdown
 
 def get_model(model_config):
     """Create a minLM model with the given configuration"""
@@ -267,7 +260,7 @@ def main():
         dataset,
         batch_size=batch_size,
         sampler=sampler,
-        num_workers=2,
+        num_workers=1,  # Reduced to prevent multiple copies of memory map
         pin_memory=True,
         worker_init_fn=lambda wid: torch.manual_seed(SEED + wid),
         persistent_workers=False  # Avoid persistent workers to prevent hanging
