@@ -10,6 +10,10 @@ from torch import Tensor
 import time
 import mmap
 
+# Set higher precision for float32 matrix multiplication
+# This enables TensorFloat32 on supported GPUs
+torch.set_float32_matmul_precision('high')
+
 # Import the minLM model and configuration
 from mingru.minLM import minLM
 from config import MODEL_CONFIG
