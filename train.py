@@ -269,14 +269,12 @@ def main():
         sampler=sampler,
         num_workers=2,
         pin_memory=True,
-        worker_init_fn=lambda wid: torch.manual_seed(SEED + wid)
+        worker_init_fn=lambda wid: torch.manual_seed(SEED + wid),
+        persistent_workers=False  # Avoid persistent workers to prevent hanging
     )
     
     # 7) Training loop
     start_time = time.time()
-    
-    # Ensure all processes are synchronized before starting
-    torch.distributed.barrier()
     
     for step in range(train_steps):
         # Set epoch for deterministic shuffling
