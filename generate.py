@@ -11,7 +11,7 @@ import time
 import mmap
 
 # Import the minLM model and configuration
-from minGRU_pytorch.minLM import minLM
+from mingru.minLM import minLM
 from config import MODEL_CONFIG
 
 # Token decoding functions

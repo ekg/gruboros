@@ -4,8 +4,8 @@ from torch import nn
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList, RMSNorm
 
-from minGRU_pytorch.minGRU import minGRU
-from minGRU_pytorch.minLSTM import minLSTM
+from mingru.minGRU import minGRU
+from mingru.minLSTM import minLSTM
 
 def exists(v):
     return v is not None

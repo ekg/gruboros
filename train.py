@@ -11,7 +11,7 @@ import re
 from schedulefree import AdamWScheduleFree
 
 # Import the minLM model
-from minGRU_pytorch.minLM import minLM
+from mingru.minLM import minLM
 
 # 1) Deterministic seeding
 SEED = 42
