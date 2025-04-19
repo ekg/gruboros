@@ -305,13 +305,13 @@ def get_args():
     
     return parser.parse_args()
 
-def synchronize_processes(timeout_secs=60):
-    """Synchronize all distributed processes with explicit timeout"""
+def synchronize_processes():
+    """Synchronize all distributed processes"""
     if torch.distributed.is_initialized():
         if torch.distributed.get_rank() == 0:
             print("Waiting for all processes to synchronize...")
-        # Add timeout to prevent infinite hanging
-        torch.distributed.barrier(timeout=timedelta(seconds=timeout_secs))
+        # Simple barrier without timeout (compatible with older PyTorch versions)
+        torch.distributed.barrier()
         if torch.distributed.get_rank() == 0:
             print("All processes synchronized")
 
@@ -378,8 +378,8 @@ def main():
         else:
             padded_dir = torch.zeros(256, dtype=torch.long).cuda()
             
-        # Broadcast from rank 0 to all processes with timeout
-        torch.distributed.broadcast(padded_dir, 0, timeout=timedelta(seconds=30))
+        # Broadcast from rank 0 to all processes
+        torch.distributed.broadcast(padded_dir, 0)
         
         # Convert back to string on other ranks
         if args.local_rank != 0:
