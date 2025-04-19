@@ -7,6 +7,7 @@ import deepspeed
 import time
 import argparse
 import mmap
+import re
 from schedulefree import AdamWScheduleFree
 
 # Import the minLM model
@@ -100,6 +101,39 @@ def get_model(model_config):
     
     return model
 
+def parse_size_with_suffix(size_str):
+    """
+    Parse a string with optional k, m, g suffix into a number.
+    Examples:
+      "1k" -> 1024
+      "100k" -> 102400 (100*1024)
+      "2m" -> 2097152 (2*1024*1024)
+      "3g" -> 3221225472 (3*1024*1024*1024)
+      "42" -> 42 (no suffix, unchanged)
+    """
+    if not isinstance(size_str, str):
+        return size_str
+        
+    pattern = r'^(\d+(?:\.\d+)?)([kmg])?$'
+    match = re.match(pattern, size_str.lower())
+    if not match:
+        try:
+            return float(size_str)
+        except ValueError:
+            raise ValueError(f"Invalid size format: {size_str}")
+            
+    value, suffix = match.groups()
+    value = float(value)
+    
+    if suffix == 'k':
+        return value * 1024
+    elif suffix == 'm':
+        return value * 1024 * 1024
+    elif suffix == 'g':
+        return value * 1024 * 1024 * 1024
+    else:
+        return value
+
 def get_args():
     parser = argparse.ArgumentParser(
         description='DeepSpeed Tensor Parallel Training for minLM'
@@ -113,28 +147,28 @@ def get_args():
                         help='tensor parallel size')
     
     # Training arguments
-    parser.add_argument('--train_steps', type=int, default=100,
-                        help='number of training steps')
+    parser.add_argument('--train_steps', type=str, default="100",
+                        help='number of training steps (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
     parser.add_argument('--port', type=int, default=29500,
                         help='port for distributed communication')
     parser.add_argument('--data', type=str, required=True,
                         help='path to training data file')
     
     # Model configuration
-    parser.add_argument('--dim', type=int, default=512, 
-                        help='model hidden dimension')
+    parser.add_argument('--dim', type=str, default="512", 
+                        help='model hidden dimension (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
     parser.add_argument('--depth', type=int, default=6,
                         help='number of transformer layers')
-    parser.add_argument('--seq_len', type=int, default=128,
-                        help='sequence length for training')
+    parser.add_argument('--seq_len', type=str, default="128",
+                        help='sequence length for training (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
     
     # Optimizer configuration
     parser.add_argument('--lr', type=float, default=1e-3,
                         help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
                         help='weight decay')
-    parser.add_argument('--batch_size', type=int, default=4,
-                        help='batch size per GPU')
+    parser.add_argument('--batch_size', type=str, default="4",
+                        help='batch size per GPU (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
     parser.add_argument('--schedulefree', action='store_true',
                         help='use ScheduleFree optimizer')
     parser.add_argument('--sf_beta', type=float, default=0.9,
@@ -149,10 +183,16 @@ def main():
     if args.port != 29500:
         os.environ['MASTER_PORT'] = str(args.port)
     
+    # Parse numeric arguments with potential suffixes
+    train_steps = int(parse_size_with_suffix(args.train_steps))
+    dim = int(parse_size_with_suffix(args.dim))
+    seq_len = int(parse_size_with_suffix(args.seq_len))
+    batch_size = int(parse_size_with_suffix(args.batch_size))
+    
     # Model configuration
     model_config = {
         "num_tokens": 256,  # byte-level tokenization
-        "dim": args.dim,
+        "dim": dim,
         "depth": args.depth,
         "ff_mult": 4,
         "expansion": 1.5,
@@ -186,7 +226,7 @@ def main():
     
     # 2) DeepSpeed config for tensor parallelism
     ds_config = {
-        "train_micro_batch_size_per_gpu": args.batch_size,
+        "train_micro_batch_size_per_gpu": batch_size,
         "gradient_accumulation_steps": 1,
         "tensor_parallel": {
             "tp": {
@@ -211,7 +251,7 @@ def main():
     # 5) Prepare Dataset & Sampler
     dataset = MemoryMappedDataset(
         filepath=args.data,
-        seq_len=args.seq_len
+        seq_len=seq_len
     )
     
     sampler = DistributedSampler(
@@ -225,7 +265,7 @@ def main():
     # 6) DataLoader
     data_loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         sampler=sampler,
         num_workers=2,
         pin_memory=True,
@@ -238,7 +278,7 @@ def main():
     # Ensure all processes are synchronized before starting
     torch.distributed.barrier()
     
-    for step in range(args.train_steps):
+    for step in range(train_steps):
         # Set epoch for deterministic shuffling
         epoch = step // len(data_loader)
         sampler.set_epoch(epoch)
