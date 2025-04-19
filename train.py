@@ -16,6 +16,17 @@ import sys
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 
+# Set NCCL environment variables to help with distributed training issues
+os.environ["NCCL_DEBUG"] = "INFO"  # Enable NCCL debugging
+os.environ["NCCL_SOCKET_IFNAME"] = "^lo,docker"  # Avoid certain interfaces
+os.environ["NCCL_IB_DISABLE"] = "1"  # Disable InfiniBand (use TCP instead)
+os.environ["NCCL_P2P_DISABLE"] = "1"  # Disable GPU Direct P2P if causing issues
+
+# Make sure the environment variables are actually applied
+for var in ["NCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_IB_DISABLE", "NCCL_P2P_DISABLE"]:
+    if var in os.environ:
+        print(f"{var}={os.environ[var]}")
+
 # Set higher precision for float32 matrix multiplication 
 # This enables TensorFloat32 on supported GPUs
 torch.set_float32_matmul_precision('high')
@@ -256,6 +267,8 @@ def get_args():
                         help='local rank passed from distributed launcher')
     parser.add_argument('--tp_size', type=int, default=1,
                         help='tensor parallel size')
+    parser.add_argument('--exclude_gpus', type=str, default="",
+                        help='comma-separated list of GPU indices to exclude (e.g., "0,3")')
     
     # Training arguments
     parser.add_argument('--train_steps', type=str, default="100",
@@ -306,19 +319,69 @@ def get_args():
     return parser.parse_args()
 
 def synchronize_processes():
-    """Synchronize all distributed processes with explicit device specification"""
+    """Synchronize all distributed processes with better error handling and staggered approach"""
     if torch.distributed.is_initialized():
-        # Get current device
-        current_device = torch.cuda.current_device()
+        try:
+            # Get current device and rank info
+            current_device = torch.cuda.current_device()
+            rank = torch.distributed.get_rank()
+            world_size = torch.distributed.get_world_size()
+            
+            if rank == 0:
+                print(f"Waiting for all {world_size} processes to synchronize... (using device {current_device})")
+            
+            # Print device health status
+            cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > current_device
+            if not cuda_ok:
+                print(f"WARNING: Rank {rank} has CUDA device issues. Available: {torch.cuda.is_available()}, Count: {torch.cuda.device_count()}")
+            
+            # Staggered approach: small delay based on rank to avoid thundering herd
+            time.sleep(0.01 * rank)
+            
+            # Simple barrier with device_ids to prevent hanging
+            torch.distributed.barrier(device_ids=[current_device])
+            
+            # Sleep a bit after barrier to let things settle
+            time.sleep(0.01)
+            
+            if rank == 0:
+                print("All processes synchronized successfully")
+                
+        except Exception as e:
+            print(f"ERROR in synchronize_processes: {e}")
+            # Try to proceed anyway
+
+def verify_gpu_health():
+    """Verify that all GPUs are working properly"""
+    if torch.cuda.is_available():
+        device_count = torch.cuda.device_count()
+        print(f"Found {device_count} CUDA devices")
         
-        if torch.distributed.get_rank() == 0:
-            print(f"Waiting for all processes to synchronize... (using device {current_device})")
-        
-        # Simple barrier with device_ids to prevent hanging
-        torch.distributed.barrier(device_ids=[current_device])
-        
-        if torch.distributed.get_rank() == 0:
-            print("All processes synchronized")
+        # Check each device
+        for i in range(device_count):
+            try:
+                # Try to allocate and free a small tensor on each device
+                device = torch.device(f'cuda:{i}')
+                test_tensor = torch.zeros((10, 10), device=device)
+                del test_tensor
+                torch.cuda.empty_cache()
+                print(f"GPU {i} check: OK - {torch.cuda.get_device_name(i)}")
+            except Exception as e:
+                print(f"GPU {i} check: FAILED - {e}")
+                
+        # GPU 0 is particularly important for distributed training
+        if device_count > 0:
+            try:
+                # More intensive test for GPU 0
+                device = torch.device('cuda:0')
+                a = torch.rand((1000, 1000), device=device)
+                b = torch.rand((1000, 1000), device=device)
+                c = torch.matmul(a, b)
+                del a, b, c
+                torch.cuda.empty_cache()
+                print("GPU 0 matrix multiplication test: OK")
+            except Exception as e:
+                print(f"GPU 0 matrix multiplication test: FAILED - {e}")
 
 def main():
     args = get_args()
@@ -326,6 +389,21 @@ def main():
     # Set custom port for distributed communication
     if args.port != 29500:
         os.environ['MASTER_PORT'] = str(args.port)
+        
+    # Handle GPU exclusion if specified
+    if args.exclude_gpus:
+        exclude_list = [int(x.strip()) for x in args.exclude_gpus.split(',')]
+        if args.local_rank == 0:
+            print(f"Excluding GPUs: {exclude_list}")
+        
+        # If current GPU is in exclude list, disable CUDA for this process
+        if args.local_rank in exclude_list:
+            print(f"Rank {args.local_rank} was specified to be excluded, forcing CPU execution")
+            os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    
+    # Verify GPU health before proceeding
+    if args.local_rank == 0:
+        verify_gpu_health()
     
     # Print memory usage monitoring message
     if args.local_rank == 0:
@@ -574,14 +652,28 @@ def main():
         }
     }
     
-    # 3) Initialize DeepSpeed engine with explicit config (no CLI args)
-    model_engine, optimizer, _, _ = deepspeed.initialize(
-        model=model,
-        optimizer=optimizer,
-        config=ds_config,
-        model_parameters=model.parameters(),
-        dist_init_required=True
-    )
+    # 3) Initialize DeepSpeed engine with explicit config and better error handling
+    try:
+        # Wait for other processes before initialization (staggered approach)
+        torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+        
+        print(f"Rank {args.local_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
+        model_engine, optimizer, _, _ = deepspeed.initialize(
+            model=model,
+            optimizer=optimizer,
+            config=ds_config,
+            model_parameters=model.parameters(),
+            dist_init_required=True
+        )
+        print(f"Rank {args.local_rank}: DeepSpeed initialization successful")
+    except Exception as e:
+        print(f"ERROR in DeepSpeed initialization (rank {args.local_rank}): {e}")
+        # Try to recover
+        if torch.distributed.is_initialized():
+            print(f"Rank {args.local_rank}: Trying to synchronize after error...")
+            torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+            print(f"Rank {args.local_rank}: Synchronization after error complete")
+        raise
     
     # Synchronize after DeepSpeed initialization to ensure all processes are ready
     synchronize_processes()
