@@ -259,7 +259,8 @@ def parse_size_with_suffix(size_str):
 
 def get_args():
     parser = argparse.ArgumentParser(
-        description='DeepSpeed Tensor Parallel Training for minLM'
+        description='DeepSpeed Tensor Parallel Training for minLM',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter  # Show defaults in help
     )
     
     # Distributed arguments
@@ -272,51 +273,67 @@ def get_args():
     
     # Training arguments
     parser.add_argument('--train_steps', type=str, default="100",
-                        help='number of training steps (default: 100)')
+                        help='number of training steps')
     parser.add_argument('--port', type=int, default=29500,
-                        help='port for distributed communication (default: 29500)')
+                        help='port for distributed communication')
     parser.add_argument('--data', type=str, required=True,
                         help='path to training data file')
     parser.add_argument('--val_mod', type=int, default=10,
-                        help='modulo for validation set (default: 10, meaning 1/10th for validation)')
+                        help='modulo for validation set (1/10th for validation)')
     parser.add_argument('--output', type=str, default=None,
-                        help='directory to save checkpoints (default: auto-generated)')
+                        help='directory to save checkpoints (auto-generated if not specified)')
     parser.add_argument('--resume', type=str, default=None,
                         help='path to checkpoint to resume training from')
     parser.add_argument('--save_every', type=int, default=100,
-                        help='save checkpoint every N steps (default: 100)')
+                        help='save checkpoint every N steps')
     parser.add_argument('--validate_every', type=int, default=50,
-                        help='validate every N steps (default: 50)')
+                        help='validate every N steps')
     parser.add_argument('--force_lr', action='store_true',
                         help='force use command line learning rate when resuming')
     
-    # Model configuration
-    parser.add_argument('--dim', type=str, default="512", 
-                        help='model hidden dimension (default: 512, auto-calculated if --params is used)')
-    parser.add_argument('--depth', type=int, default=6,
-                        help='number of transformer layers (default: 6, auto-calculated if --params is used)')
-    parser.add_argument('--seq_len', type=str, default="128",
-                        help='sequence length for training (default: 128)')
-    parser.add_argument('--params', type=str, default=None,
+    # Model configuration - Create a group to track explicitly provided arguments
+    model_group = parser.add_argument_group('Model Configuration')
+    model_group.add_argument('--dim', type=str, default="512", 
+                        help='model hidden dimension (auto-calculated if --params is used)')
+    model_group.add_argument('--depth', type=int, default=6,
+                        help='number of transformer layers (auto-calculated if --params is used)')
+    model_group.add_argument('--seq_len', type=str, default="128",
+                        help='sequence length for training')
+    model_group.add_argument('--params', type=str, default=None,
                         help='target parameter count (e.g., 15m, 100m, 1g) - conflicts with setting both --dim and --depth')
-    parser.add_argument('--ff_mult', type=float, default=4.0,
-                        help='feedforward multiplier (default: 4.0)')
-    parser.add_argument('--expansion', type=float, default=1.5,
-                        help='expansion factor for minGRU (default: 1.5)')
+    model_group.add_argument('--ff_mult', type=float, default=4.0,
+                        help='feedforward multiplier')
+    model_group.add_argument('--expansion', type=float, default=1.5,
+                        help='expansion factor for minGRU')
     
     # Optimizer configuration
     parser.add_argument('--lr', type=float, default=1e-3,
-                        help='learning rate (default: 1e-3)')
+                        help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
-                        help='weight decay (default: 0.01)')
+                        help='weight decay')
     parser.add_argument('--batch_size', type=str, default="4",
-                        help='batch size per GPU (default: 4)')
+                        help='batch size per GPU')
     parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True,
                         help='disable ScheduleFree optimizer (default: enabled)')
     parser.add_argument('--sf_beta', type=float, default=0.9,
-                        help='ScheduleFree beta parameter (default: 0.9)')
+                        help='ScheduleFree beta parameter')
     
-    return parser.parse_args()
+    # Parse args first to get all defaults filled in
+    args = parser.parse_args()
+    
+    # Add a special attribute to track which arguments were explicitly provided
+    # This will help us distinguish between default values and user-provided values
+    args._explicitly_set = []
+    
+    # Get the command-line arguments actually passed
+    import sys
+    for i, arg in enumerate(sys.argv[1:]):
+        if arg.startswith('--'):
+            # Extract the arg name without the -- prefix
+            arg_name = arg[2:].split('=')[0]
+            args._explicitly_set.append(arg_name)
+    
+    return args
 
 def synchronize_processes():
     """Synchronize all distributed processes with better error handling and staggered approach"""
@@ -540,7 +557,14 @@ def main():
             else:
                 param_display = f"{target_params/1e6:.1f}M"
             
-            if dim_value is not None and args.depth is None:
+            # Check which args were explicitly set by the user (not just defaults)
+            dim_explicitly_set = 'dim' in getattr(args, '_explicitly_set', [])
+            depth_explicitly_set = 'depth' in getattr(args, '_explicitly_set', [])
+            
+            if args.local_rank == 0:
+                print(f"Explicit dimension set: {dim_explicitly_set}, Explicit depth set: {depth_explicitly_set}")
+            
+            if dim_explicitly_set and not depth_explicitly_set:
                 # Dimension specified but not depth, solve for depth
                 dim = round_to_multiple(dim_value)
                 depth = solve_for_depth(
@@ -553,7 +577,7 @@ def main():
                 if args.local_rank == 0:
                     print(f"Target params: {param_display}, Fixed dimension: {dim}, Calculated depth: {depth}")
                     
-            elif dim_value is None and args.depth is not None:
+            elif not dim_explicitly_set and depth_explicitly_set:
                 # Depth specified but not dimension, solve for dimension
                 depth = args.depth
                 dim = solve_for_dimension(
@@ -566,7 +590,7 @@ def main():
                 if args.local_rank == 0:
                     print(f"Target params: {param_display}, Fixed depth: {depth}, Calculated dimension: {dim}")
                     
-            elif dim_value is not None and args.depth is not None:
+            elif dim_explicitly_set and depth_explicitly_set:
                 # Error if both dimension and depth are specified along with params
                 dim = round_to_multiple(dim_value)
                 depth = args.depth
