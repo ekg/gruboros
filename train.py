@@ -496,9 +496,11 @@ def main():
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")
         print(f"Model configuration: {model_config}")
         
-        # Save model configuration to file
+        # Save model configuration to files (both names for compatibility)
         if checkpoint_dir:
             with open(os.path.join(checkpoint_dir, "model_config.json"), "w") as f:
+                json.dump(model_config, f, indent=2)
+            with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
                 json.dump(model_config, f, indent=2)
     
     # Instantiate model with the determined configuration
@@ -677,8 +679,14 @@ def main():
         latest_path = os.path.join(checkpoint_dir, "latest.pt")
         torch.save(checkpoint, latest_path)
         
-        # Save model config separately for easy access
-        config_path = os.path.join(checkpoint_dir, "model_config.json")
+        # Save model config separately for easy access (two names for compatibility)
+        model_config_path = os.path.join(checkpoint_dir, "model_config.json")
+        config_path = os.path.join(checkpoint_dir, "config.json")
+        
+        # Save with both filenames for maximum compatibility
+        with open(model_config_path, 'w') as f:
+            json.dump(model_config, f, indent=2)
+        
         with open(config_path, 'w') as f:
             json.dump(model_config, f, indent=2)
         

@@ -82,26 +82,30 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
             config = json.load(f)
         print(f"Using model configuration from {config_path}")
     else:
-        # Try to find model_config.json in the same directory as the checkpoint
-        auto_config_path = os.path.join(os.path.dirname(checkpoint_path), "model_config.json")
+        # Try to find config.json in the same directory as the checkpoint
+        auto_config_path = os.path.join(os.path.dirname(checkpoint_path), "config.json")
         if os.path.exists(auto_config_path):
             with open(auto_config_path, 'r') as f:
                 config = json.load(f)
             print(f"Using model configuration from {auto_config_path}")
         else:
-            # Use a default configuration as last resort
-            config = {
-                "num_tokens": 256,  # byte-level tokenization
-                "dim": 512,         # model dimension
-                "depth": 6,         # number of layers
-                "ff_mult": 4,       # feedforward multiplier
-                "expansion": 1.5,   # expansion factor for minGRU
-                "conv_kernel_size": 3,
-                "use_lstm": False,
-                "enable_conv": False,
-                "dropout": 0.0
-            }
-            print("Using default model configuration")
+            # Try legacy model_config.json
+            legacy_config_path = os.path.join(os.path.dirname(checkpoint_path), "model_config.json")
+            if os.path.exists(legacy_config_path):
+                with open(legacy_config_path, 'r') as f:
+                    config = json.load(f)
+                print(f"Using model configuration from {legacy_config_path} (legacy)")
+            else:
+                # Warn the user that no config was found
+                print(f"WARNING: No config.json found in {os.path.dirname(checkpoint_path)}")
+                print("Model configuration is required for correct generation.")
+                if not config_path:
+                    raise ValueError(
+                        "No model configuration found. Please provide a config file path with --config_path."
+                    )
+                else:
+                    # This shouldn't happen as we already checked config_path above, but just in case
+                    raise ValueError(f"Provided config path {config_path} does not exist.")
     
     print(f"Creating model with dimension={config['dim']}, depth={config['depth']}...")
     
@@ -377,7 +381,8 @@ def main():
     
     # Model and data parameters
     parser.add_argument("--model", type=str, required=True, help="Path to trained model checkpoint or directory")
-    parser.add_argument("--config_path", type=str, default=None, help="Path to model config (optional)")
+    parser.add_argument("--config_path", type=str, default=None, 
+                       help="Path to model config file (required if no config.json found with checkpoint)")
     parser.add_argument("--device", type=str, default="auto", help="Device to run on: 'cpu', 'cuda', 'cuda:0', etc. (default: 'auto')")
     parser.add_argument("--use-f32", dest="use_bf16", action="store_false", default=True,
                         help="Use FP32 precision instead of BF16 (default: BF16)")
