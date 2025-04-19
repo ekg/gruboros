@@ -147,31 +147,31 @@ def get_args():
     
     # Training arguments
     parser.add_argument('--train_steps', type=str, default="100",
-                        help='number of training steps (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
+                        help='number of training steps (default: 100)')
     parser.add_argument('--port', type=int, default=29500,
-                        help='port for distributed communication')
+                        help='port for distributed communication (default: 29500)')
     parser.add_argument('--data', type=str, required=True,
                         help='path to training data file')
     
     # Model configuration
     parser.add_argument('--dim', type=str, default="512", 
-                        help='model hidden dimension (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
+                        help='model hidden dimension (default: 512)')
     parser.add_argument('--depth', type=int, default=6,
-                        help='number of transformer layers')
+                        help='number of transformer layers (default: 6)')
     parser.add_argument('--seq_len', type=str, default="128",
-                        help='sequence length for training (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
+                        help='sequence length for training (default: 128)')
     
     # Optimizer configuration
     parser.add_argument('--lr', type=float, default=1e-3,
-                        help='learning rate')
+                        help='learning rate (default: 1e-3)')
     parser.add_argument('--weight_decay', type=float, default=0.01,
-                        help='weight decay')
+                        help='weight decay (default: 0.01)')
     parser.add_argument('--batch_size', type=str, default="4",
-                        help='batch size per GPU (suffix: k=*1024, m=*1024*1024, g=*1024*1024*1024)')
+                        help='batch size per GPU (default: 4)')
     parser.add_argument('--schedulefree', action='store_true',
-                        help='use ScheduleFree optimizer')
+                        help='use ScheduleFree optimizer (default: False)')
     parser.add_argument('--sf_beta', type=float, default=0.9,
-                        help='ScheduleFree beta parameter')
+                        help='ScheduleFree beta parameter (default: 0.9)')
     
     return parser.parse_args()
 
