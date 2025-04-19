@@ -20,7 +20,7 @@ torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
 
 class MemoryMappedDataset(Dataset):
     """Memory-mapped dataset for efficient random access"""
-    def __init__(self, filepath, seq_len):
+    def __init__(self, filepath, seq_len, samples_per_epoch=10000):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
@@ -31,35 +31,38 @@ class MemoryMappedDataset(Dataset):
         # Calculate valid end position for random sampling
         self.valid_end = max(0, self.file_size - seq_len - 1)
         
-        # Define length as number of possible starting positions
-        self.length = max(1, self.valid_end)
+        # Define a fixed number of samples per epoch instead of file size
+        # This prevents excessive data loading
+        self.samples_per_epoch = samples_per_epoch
         
         # Create a shared memory map - single instance used across all workers
         self.file = open(self.filepath, 'rb')  # Read-only mode is sufficient
         self.mm = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
     
     def __len__(self):
-        return self.length
+        return self.samples_per_epoch
     
     def __getitem__(self, idx):
         # Use the index deterministically to ensure same data across workers
-        # This is important for tensor parallelism
+        # But limit to a reasonable number of positions
         g = torch.Generator().manual_seed(SEED + idx)
         start_pos = torch.randint(0, self.valid_end, (1,), generator=g).item()
         
         # Get a slice from the memory map without reading the whole file
-        # We need a thread-safe copy since the memory map is shared
-        self.mm.seek(start_pos)
-        data = self.mm.read(self.seq_len + 1)  # +1 for the target
-        
-        # Directly create tensor from bytes
-        tensor = torch.frombuffer(data, dtype=torch.uint8).long()
-        
-        # Handle edge case if we didn't get enough data
-        if tensor.size(0) < self.seq_len + 1:
-            # Pad with zeros if needed
-            padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
-            tensor = torch.cat([tensor, padding])
+        # Thread-safe access
+        with torch.no_grad():
+            # Use seek/read with proper locking
+            self.mm.seek(start_pos)
+            data = self.mm.read(self.seq_len + 1)  # +1 for the target
+            
+            # Directly create tensor from bytes
+            tensor = torch.frombuffer(data, dtype=torch.uint8).long()
+            
+            # Handle edge case if we didn't get enough data
+            if tensor.size(0) < self.seq_len + 1:
+                # Pad with zeros if needed
+                padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
+                tensor = torch.cat([tensor, padding])
         
         return tensor
     
@@ -242,9 +245,13 @@ def main():
         model_engine.optimizer.train()
     
     # 5) Prepare Dataset & Sampler
+    # Use 10K samples per epoch as a reasonable default to limit memory usage
+    samples_per_epoch = min(10000, train_steps * batch_size)
+    
     dataset = MemoryMappedDataset(
         filepath=args.data,
-        seq_len=seq_len
+        seq_len=seq_len,
+        samples_per_epoch=samples_per_epoch
     )
     
     sampler = DistributedSampler(
