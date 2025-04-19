@@ -13,6 +13,8 @@ import json
 import datetime
 from datetime import timedelta
 import sys
+import asyncio
+import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 
@@ -863,7 +865,14 @@ def main():
     recent_checkpoints = []
     best_checkpoint_path = None
     
-    # Helper function to save checkpoint
+    # Async function for copying checkpoint files
+    async def async_copy_file(src_path, dst_path):
+        # Run copy in a separate thread to not block the main training loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: shutil.copy2(src_path, dst_path))
+        return dst_path
+
+    # Helper function to save checkpoint - now with symlinks and async copies
     def save_checkpoint(step, train_loss, val_loss=None, is_best=False):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
@@ -890,16 +899,28 @@ def main():
         filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}{val_info}.pt"
         checkpoint_path = os.path.join(checkpoint_dir, filename)
         
-        # Save checkpoint atomically using temporary file
+        # Save checkpoint atomically using temporary file (this is the only full save)
         temp_path = checkpoint_path + ".tmp"
         torch.save(checkpoint, temp_path)
         os.replace(temp_path, checkpoint_path)
+        print(f"Checkpoint saved to {checkpoint_path}")
         
-        # Also save as latest (atomically)
+        # Create symlink for latest.pt (remove existing one if it exists)
         latest_path = os.path.join(checkpoint_dir, "latest.pt")
-        temp_latest_path = latest_path + ".tmp"
-        torch.save(checkpoint, temp_latest_path)
-        os.replace(temp_latest_path, latest_path)
+        if os.path.exists(latest_path) or os.path.islink(latest_path):
+            try:
+                os.remove(latest_path)
+            except Exception as e:
+                print(f"Warning: Failed to remove existing latest.pt: {e}")
+        
+        # Create symlink from latest.pt to the current checkpoint
+        try:
+            os.symlink(os.path.basename(checkpoint_path), latest_path)
+            print(f"Created symlink: latest.pt -> {os.path.basename(checkpoint_path)}")
+        except Exception as e:
+            # Fall back to copy if symlink fails (e.g., on platforms without symlinks)
+            print(f"Warning: Failed to create symlink, falling back to copy: {e}")
+            shutil.copy2(checkpoint_path, latest_path)
         
         # Save model config for easy access
         config_path = os.path.join(checkpoint_dir, "config.json")
@@ -910,12 +931,9 @@ def main():
         nonlocal recent_checkpoints, best_checkpoint_path
         
         if is_best:
-            # Save as best model with reference to original checkpoint
+            # Copy as best model (async to not block training)
             best_filename = f"best-{filename}"
             best_path = os.path.join(checkpoint_dir, best_filename)
-            temp_best_path = best_path + ".tmp"
-            torch.save(checkpoint, temp_best_path)
-            os.replace(temp_best_path, best_path)
             
             # Remove previous best checkpoint if it exists
             if best_checkpoint_path and os.path.exists(best_checkpoint_path):
@@ -925,8 +943,20 @@ def main():
                 except Exception as e:
                     print(f"Warning: Failed to remove previous best checkpoint: {e}")
             
+            # Start async copy
+            print(f"Starting async copy for best checkpoint: {best_filename}")
+            # We can't easily use asyncio in the current setup, so use a non-blocking copy
+            # via a separate thread
+            from threading import Thread
+            copy_thread = Thread(
+                target=shutil.copy2,
+                args=(checkpoint_path, best_path),
+                daemon=True
+            )
+            copy_thread.start()
+            
             best_checkpoint_path = best_path
-            print(f"New best model saved as: {best_filename}")
+            print(f"New best model will be saved as: {best_filename}")
         else:
             # Keep track of regular checkpoints
             recent_checkpoints.append(checkpoint_path)
@@ -1139,9 +1169,13 @@ def main():
     # Final validation
     final_val_loss = validate()
     
-    # Save final checkpoint
+    # Save final checkpoint and make it the best if it's better than previous best
     if model_engine.global_rank == 0:
-        final_path = save_checkpoint(train_steps, loss.item(), final_val_loss)
+        # Save the final checkpoint and check if it's the best one
+        is_final_best = final_val_loss < best_val_loss
+        final_path = save_checkpoint(train_steps, loss.item(), final_val_loss, is_best=is_final_best)
+        if is_final_best:
+            best_val_loss = final_val_loss
         
         # After training, switch to eval mode if using ScheduleFree
         if args.schedulefree:
