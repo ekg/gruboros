@@ -577,7 +577,7 @@ def main():
                         scaling_factor = (target_params / base_params) ** (1/4)
                         depth = max(2, round(base_depth * scaling_factor))
                     
-                    # Solve for dimension with calculated depth
+                    # Calculate dimension based on target parameters
                     dim = solve_for_dimension(
                         target_params, 
                         depth, 
@@ -585,8 +585,15 @@ def main():
                         args.ff_mult,
                         args.expansion
                     )
+                    
+                    # Format the parameter count for display
+                    if target_params >= 1e9:
+                        param_display = f"{target_params/1e9:.1f}B"
+                    else:
+                        param_display = f"{target_params/1e6:.1f}M"
+                        
                     if args.local_rank == 0:
-                        print(f"Target params: {target_params/1e6:.1f}M, Balanced - Dim: {dim}, Depth: {depth}")
+                        print(f"Target params: {param_display}, Balanced - Dim: {dim}, Depth: {depth}")
         else:
             # Use explicit values from command line
             dim = round_to_multiple(dim_value) if dim_value is not None else 512
@@ -612,13 +619,34 @@ def main():
     # Calculate and display model size
     if args.local_rank == 0:
         param_count = calculate_model_size(model_config)
-        print(f"Model size: {get_parameter_count_str(model_config)} parameters")
+        
+        # Additional verification to ensure the calculated parameters match target
+        if params_value is not None and not resuming:
+            # Check if there's a significant discrepancy
+            if abs(param_count - params_value) / params_value > 0.1:  # More than 10% difference
+                print(f"WARNING: Calculated parameter count ({param_count:,}) differs significantly from target ({params_value:,})")
+                print("Adjusting model dimensions to better match target parameter count...")
+                
+                # Recalculate dimensions with more precise approach
+                depth = max(6, int(depth))  # Ensure reasonable depth
+                dim = solve_for_dimension(params_value, depth, 256, args.ff_mult, args.expansion)
+                
+                # Update model config
+                model_config["dim"] = dim
+                model_config["depth"] = depth
+                
+                # Recalculate and display
+                param_count = calculate_model_size(model_config)
+        
+        print(f"Model size: {get_parameter_count_str(model_config)} parameters ({param_count:,})")
         print(f"Model configuration: {model_config}")
         
-        # Save model configuration
+        # Save model configuration to both config.json files
         if checkpoint_dir:
-            with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
+            config_path = os.path.join(checkpoint_dir, "config.json")
+            with open(config_path, "w") as f:
                 json.dump(model_config, f, indent=2)
+            print(f"Saved model configuration to {config_path}")
     
     # Instantiate model with the determined configuration
     model = get_model(model_config)
@@ -960,6 +988,26 @@ def main():
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
+    
+    # Verify model configuration before training
+    if model_engine.global_rank == 0:
+        actual_params = sum(p.numel() for p in model_engine.module.parameters())
+        print(f"\nModel verification:")
+        print(f"- Configured parameters: {calculate_model_size(model_config):,}")
+        print(f"- Actual parameters: {actual_params:,}")
+        print(f"- Model dimension: {model_config['dim']}")
+        print(f"- Model depth: {model_config['depth']}")
+        print(f"- Tensor parallelism: {args.tp_size} GPUs")
+        
+        # Log the configuration summary
+        if checkpoint_dir:
+            with open(os.path.join(checkpoint_dir, "model_summary.txt"), "w") as f:
+                f.write(f"Training command: {' '.join(sys.argv)}\n")
+                f.write(f"Model parameters: {actual_params:,}\n")
+                f.write(f"Configuration: {json.dumps(model_config, indent=2)}\n")
+                f.write(f"Distributed setup: {args.tp_size} GPUs with tensor parallelism\n")
+                f.write(f"Sequence length: {seq_len}\n")
+                f.write(f"Batch size: {batch_size} per GPU\n")
     
     # Synchronize all processes before starting training loop
     synchronize_processes()
