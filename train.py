@@ -320,36 +320,40 @@ def get_args():
 
 def synchronize_processes():
     """Synchronize all distributed processes with better error handling and staggered approach"""
-    if torch.distributed.is_initialized():
-        try:
-            # Get current device and rank info
-            current_device = torch.cuda.current_device()
-            rank = torch.distributed.get_rank()
-            world_size = torch.distributed.get_world_size()
+    # First check if distributed is initialized to avoid errors
+    if not torch.distributed.is_initialized():
+        print("Warning: Skipping synchronization as distributed is not yet initialized")
+        return
+        
+    try:
+        # Get current device and rank info
+        current_device = torch.cuda.current_device()
+        rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
+        
+        if rank == 0:
+            print(f"Waiting for all {world_size} processes to synchronize... (using device {current_device})")
+        
+        # Print device health status
+        cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > current_device
+        if not cuda_ok:
+            print(f"WARNING: Rank {rank} has CUDA device issues. Available: {torch.cuda.is_available()}, Count: {torch.cuda.device_count()}")
+        
+        # Staggered approach: small delay based on rank to avoid thundering herd
+        time.sleep(0.01 * rank)
+        
+        # Simple barrier with device_ids to prevent hanging
+        torch.distributed.barrier(device_ids=[current_device])
+        
+        # Sleep a bit after barrier to let things settle
+        time.sleep(0.01)
+        
+        if rank == 0:
+            print("All processes synchronized successfully")
             
-            if rank == 0:
-                print(f"Waiting for all {world_size} processes to synchronize... (using device {current_device})")
-            
-            # Print device health status
-            cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > current_device
-            if not cuda_ok:
-                print(f"WARNING: Rank {rank} has CUDA device issues. Available: {torch.cuda.is_available()}, Count: {torch.cuda.device_count()}")
-            
-            # Staggered approach: small delay based on rank to avoid thundering herd
-            time.sleep(0.01 * rank)
-            
-            # Simple barrier with device_ids to prevent hanging
-            torch.distributed.barrier(device_ids=[current_device])
-            
-            # Sleep a bit after barrier to let things settle
-            time.sleep(0.01)
-            
-            if rank == 0:
-                print("All processes synchronized successfully")
-                
-        except Exception as e:
-            print(f"ERROR in synchronize_processes: {e}")
-            # Try to proceed anyway
+    except Exception as e:
+        print(f"ERROR in synchronize_processes: {e}")
+        # Try to proceed anyway
 
 def verify_gpu_health():
     """Verify that all GPUs are working properly"""
@@ -654,9 +658,7 @@ def main():
     
     # 3) Initialize DeepSpeed engine with explicit config and better error handling
     try:
-        # Wait for other processes before initialization (staggered approach)
-        torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
-        
+        # No barrier before DeepSpeed init - DeepSpeed handles this internally
         print(f"Rank {args.local_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
