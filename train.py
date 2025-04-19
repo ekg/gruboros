@@ -242,10 +242,14 @@ def get_args():
                         help='modulo for validation set (default: 10, meaning 1/10th for validation)')
     parser.add_argument('--output', type=str, default=None,
                         help='directory to save checkpoints (default: auto-generated)')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='path to checkpoint to resume training from')
     parser.add_argument('--save_every', type=int, default=100,
                         help='save checkpoint every N steps (default: 100)')
     parser.add_argument('--validate_every', type=int, default=50,
                         help='validate every N steps (default: 50)')
+    parser.add_argument('--force_lr', action='store_true',
+                        help='force use command line learning rate when resuming')
     
     # Model configuration
     parser.add_argument('--dim', type=str, default="512", 
@@ -291,13 +295,36 @@ def main():
     seq_len = int(parse_size_with_suffix(args.seq_len))
     batch_size = int(parse_size_with_suffix(args.batch_size))
     
-    # Create output directory with timestamp
+    # Check for resuming from checkpoint
+    resuming = args.resume is not None
+    resume_step = 0
+    loaded_config = None
+    
+    # Create output directory
     if args.local_rank == 0:
-        if args.output:
+        if resuming:
+            # Extract checkpoint directory from checkpoint path
+            if os.path.isdir(args.resume):
+                # If resume path is already a directory
+                checkpoint_dir = args.resume
+            else:
+                # If resume path is a file, use its parent directory
+                checkpoint_dir = os.path.dirname(args.resume)
+            
+            print(f"Resuming from checkpoint: {args.resume}")
+            print(f"Using checkpoint directory: {checkpoint_dir}")
+            
+            # Check if directory exists
+            if not os.path.exists(checkpoint_dir):
+                print(f"Error: Checkpoint directory {checkpoint_dir} does not exist.")
+                return
+                
+        elif args.output:
             checkpoint_dir = args.output
         else:
+            # Create default name based on date and time
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            checkpoint_dir = f"checkpoints_minlm_{timestamp}"
+            checkpoint_dir = f"grufinity_{timestamp}"
         
         os.makedirs(checkpoint_dir, exist_ok=True)
         print(f"Checkpoints will be saved to: {checkpoint_dir}")
@@ -326,84 +353,136 @@ def main():
             else:
                 checkpoint_dir = ""
     
-    # Determine model dimensions
-    params_value = parse_size_with_suffix(args.params) if args.params is not None else None
-    dim_value = int(parse_size_with_suffix(args.dim)) if args.dim is not None else None
-    
-    # Configure model based on parameters or explicit dimensions
-    if params_value is not None:
-        target_params = params_value
+    # Load model configuration from checkpoint or determine from arguments
+    if resuming:
+        # Load the checkpoint
+        checkpoint_path = args.resume
+        if os.path.isdir(checkpoint_path):
+            # If directory, use the latest.pt file
+            checkpoint_path = os.path.join(checkpoint_path, "latest.pt")
+            
+        # Check if file exists
+        if not os.path.exists(checkpoint_path):
+            if args.local_rank == 0:
+                print(f"Error: Checkpoint file {checkpoint_path} does not exist.")
+            return
+            
+        # Load checkpoint
+        if args.local_rank == 0:
+            print(f"Loading checkpoint from {checkpoint_path}")
+            
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
         
-        if dim_value is not None and args.depth is None:
-            # Dimension specified but not depth, solve for depth
-            dim = round_to_multiple(dim_value)
-            depth = solve_for_depth(
-                target_params, 
-                dim, 
-                256,  # vocab size
-                args.ff_mult,
-                args.expansion
-            )
+        # Extract model config from checkpoint
+        if 'model_config' in checkpoint:
+            model_config = checkpoint['model_config']
             if args.local_rank == 0:
-                print(f"Target params: {target_params/1e6:.1f}M, Dimension: {dim}, Calculated depth: {depth}")
-        elif dim_value is None and args.depth is not None:
-            # Depth specified but not dimension, solve for dimension
-            depth = args.depth
-            dim = solve_for_dimension(
-                target_params, 
-                depth, 
-                256,  # vocab size
-                args.ff_mult,
-                args.expansion
-            )
-            if args.local_rank == 0:
-                print(f"Target params: {target_params/1e6:.1f}M, Calculated dimension: {dim}, Depth: {depth}")
+                print("Using model configuration from checkpoint")
         else:
-            # Scale both if neither or both are specified
-            if dim_value is not None and args.depth is not None:
-                dim = round_to_multiple(dim_value)
-                depth = args.depth
+            # Try to load from model_config.json in the same directory
+            config_path = os.path.join(os.path.dirname(checkpoint_path), "model_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    model_config = json.load(f)
                 if args.local_rank == 0:
-                    print(f"Warning: Both dimension and depth specified with target params. Ignoring target params.")
+                    print(f"Using model configuration from {config_path}")
             else:
-                # Calculate balanced depth/dimension based on parameter count
-                base_params = 15 * 1024 * 1024  # 15M reference
-                base_depth = 6
-                
-                if target_params >= base_params:
-                    scaling_factor = (target_params / base_params) ** (1/3)
-                    depth = max(base_depth, round(base_depth * scaling_factor))
-                else:
-                    scaling_factor = (target_params / base_params) ** (1/4)
-                    depth = max(2, round(base_depth * scaling_factor))
-                
-                # Solve for dimension with calculated depth
-                dim = solve_for_dimension(
+                if args.local_rank == 0:
+                    print("No model configuration found in checkpoint, using command line arguments")
+                model_config = None
+        
+        # Get resume step
+        if 'step' in checkpoint:
+            resume_step = checkpoint['step']
+            if args.local_rank == 0:
+                print(f"Resuming from step {resume_step}")
+        
+        # Store loaded config for reference
+        loaded_config = model_config
+    
+    # Determine model dimensions if not resuming or if no config found
+    if not resuming or loaded_config is None:
+        params_value = parse_size_with_suffix(args.params) if args.params is not None else None
+        dim_value = int(parse_size_with_suffix(args.dim)) if args.dim is not None else None
+        
+        # Configure model based on parameters or explicit dimensions
+        if params_value is not None:
+            target_params = params_value
+            
+            if dim_value is not None and args.depth is None:
+                # Dimension specified but not depth, solve for depth
+                dim = round_to_multiple(dim_value)
+                depth = solve_for_depth(
                     target_params, 
-                    depth, 
-                    256,
+                    dim, 
+                    256,  # vocab size
                     args.ff_mult,
                     args.expansion
                 )
                 if args.local_rank == 0:
-                    print(f"Target params: {target_params/1e6:.1f}M, Balanced - Dim: {dim}, Depth: {depth}")
+                    print(f"Target params: {target_params/1e6:.1f}M, Dimension: {dim}, Calculated depth: {depth}")
+            elif dim_value is None and args.depth is not None:
+                # Depth specified but not dimension, solve for dimension
+                depth = args.depth
+                dim = solve_for_dimension(
+                    target_params, 
+                    depth, 
+                    256,  # vocab size
+                    args.ff_mult,
+                    args.expansion
+                )
+                if args.local_rank == 0:
+                    print(f"Target params: {target_params/1e6:.1f}M, Calculated dimension: {dim}, Depth: {depth}")
+            else:
+                # Scale both if neither or both are specified
+                if dim_value is not None and args.depth is not None:
+                    dim = round_to_multiple(dim_value)
+                    depth = args.depth
+                    if args.local_rank == 0:
+                        print(f"Warning: Both dimension and depth specified with target params. Ignoring target params.")
+                else:
+                    # Calculate balanced depth/dimension based on parameter count
+                    base_params = 15 * 1024 * 1024  # 15M reference
+                    base_depth = 6
+                    
+                    if target_params >= base_params:
+                        scaling_factor = (target_params / base_params) ** (1/3)
+                        depth = max(base_depth, round(base_depth * scaling_factor))
+                    else:
+                        scaling_factor = (target_params / base_params) ** (1/4)
+                        depth = max(2, round(base_depth * scaling_factor))
+                    
+                    # Solve for dimension with calculated depth
+                    dim = solve_for_dimension(
+                        target_params, 
+                        depth, 
+                        256,
+                        args.ff_mult,
+                        args.expansion
+                    )
+                    if args.local_rank == 0:
+                        print(f"Target params: {target_params/1e6:.1f}M, Balanced - Dim: {dim}, Depth: {depth}")
+        else:
+            # Use explicit values from command line
+            dim = round_to_multiple(dim_value) if dim_value is not None else 512
+            depth = args.depth
+        
+        # Model configuration
+        model_config = {
+            "num_tokens": 256,  # byte-level tokenization
+            "dim": dim,
+            "depth": depth,
+            "ff_mult": args.ff_mult,
+            "expansion": args.expansion,
+            "conv_kernel_size": 3,
+            "use_lstm": False,
+            "enable_conv": False,
+            "dropout": 0.0
+        }
     else:
-        # Use explicit values from command line
-        dim = round_to_multiple(dim_value) if dim_value is not None else 512
-        depth = args.depth
-    
-    # Model configuration
-    model_config = {
-        "num_tokens": 256,  # byte-level tokenization
-        "dim": dim,
-        "depth": depth,
-        "ff_mult": args.ff_mult,
-        "expansion": args.expansion,
-        "conv_kernel_size": 3,
-        "use_lstm": False,
-        "enable_conv": False,
-        "dropout": 0.0
-    }
+        # Use the loaded model config
+        dim = model_config["dim"]
+        depth = model_config["depth"]
     
     # Calculate and display model size
     if args.local_rank == 0:
@@ -416,7 +495,7 @@ def main():
             with open(os.path.join(checkpoint_dir, "model_config.json"), "w") as f:
                 json.dump(model_config, f, indent=2)
     
-    # Instantiate model
+    # Instantiate model with the determined configuration
     model = get_model(model_config)
     
     # 1) Setup optimizer - either AdamW or ScheduleFree
@@ -428,7 +507,8 @@ def main():
             betas=(args.sf_beta, 0.999),
             weight_decay=args.weight_decay
         )
-        print(f"Using ScheduleFree optimizer with lr={args.lr}, beta={args.sf_beta}")
+        if args.local_rank == 0:
+            print(f"Using ScheduleFree optimizer with lr={args.lr}, beta={args.sf_beta}")
     else:
         # Use standard AdamW
         optimizer = AdamW(
@@ -436,7 +516,8 @@ def main():
             lr=args.lr,
             weight_decay=args.weight_decay
         )
-        print(f"Using AdamW optimizer with lr={args.lr}")
+        if args.local_rank == 0:
+            print(f"Using AdamW optimizer with lr={args.lr}")
     
     # 2) DeepSpeed config for tensor parallelism
     ds_config = {
@@ -458,6 +539,31 @@ def main():
         model_parameters=model.parameters(),
         dist_init_required=True
     )
+    
+    # 3.1) Load optimizer state if resuming
+    if resuming and 'optimizer_state_dict' in checkpoint:
+        if args.local_rank == 0:
+            print("Loading optimizer state from checkpoint")
+        
+        # Force learning rate if requested
+        if args.force_lr:
+            old_lr = optimizer.param_groups[0]['lr']
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.lr
+            if args.local_rank == 0:
+                print(f"Forced learning rate from {old_lr} to {args.lr}")
+        else:
+            # Just load the state as-is
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if args.local_rank == 0:
+                print(f"Resumed with learning rate: {optimizer.param_groups[0]['lr']}")
+    
+    # 3.2) Load model weights if resuming
+    if resuming and 'model_state_dict' in checkpoint:
+        if args.local_rank == 0:
+            print("Loading model weights from checkpoint")
+        model_engine.module.load_state_dict(checkpoint['model_state_dict'])
     
     # 4) Put ScheduleFree optimizer into train mode if used
     if args.schedulefree:
@@ -541,8 +647,17 @@ def main():
             'model_state_dict': model_engine.module.state_dict(),
             'train_loss': train_loss,
             'val_loss': val_loss,
-            'timestamp': datetime.datetime.now().isoformat()
+            'timestamp': datetime.datetime.now().isoformat(),
+            'model_config': model_config,
+            'args': vars(args)
         }
+        
+        # Save optimizer state
+        if args.schedulefree:
+            checkpoint['optimizer_state_dict'] = model_engine.optimizer.state_dict()
+        else:
+            # Standard optimizer
+            checkpoint['optimizer_state_dict'] = optimizer.state_dict()
         
         # Create filename with step and loss info
         val_info = f"-val_{val_loss:.4f}" if val_loss is not None else ""
@@ -555,6 +670,11 @@ def main():
         # Also save as latest
         latest_path = os.path.join(checkpoint_dir, "latest.pt")
         torch.save(checkpoint, latest_path)
+        
+        # Save model config separately for easy access
+        config_path = os.path.join(checkpoint_dir, "model_config.json")
+        with open(config_path, 'w') as f:
+            json.dump(model_config, f, indent=2)
         
         return checkpoint_path
     
@@ -622,7 +742,10 @@ def main():
     start_time = time.time()
     best_val_loss = float('inf')
     
-    for step in range(train_steps):
+    # Adjust starting step if resuming
+    start_step = resume_step if resuming else 0
+    
+    for step in range(start_step, start_step + train_steps):
         # Set epoch for deterministic shuffling
         epoch = step // len(train_loader)
         train_sampler.set_epoch(epoch)

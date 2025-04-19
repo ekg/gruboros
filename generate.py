@@ -58,16 +58,37 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
+    # Support directory paths - use latest.pt if a directory is provided
+    if os.path.isdir(checkpoint_path):
+        latest_path = os.path.join(checkpoint_path, "latest.pt")
+        if os.path.exists(latest_path):
+            checkpoint_path = latest_path
+            print(f"Using latest checkpoint: {latest_path}")
+        else:
+            raise ValueError(f"No 'latest.pt' file found in directory: {checkpoint_path}")
+    
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)  # First load to CPU to avoid OOM
     
-    # Load config if provided, otherwise use defaults from MODEL_CONFIG
-    if config_path and os.path.exists(config_path):
+    # Try to get config from checkpoint first
+    if 'model_config' in checkpoint:
+        config = checkpoint['model_config']
+        print("Using model configuration from checkpoint")
+    elif config_path and os.path.exists(config_path):
         with open(config_path, 'r') as f:
             config = json.load(f)
+        print(f"Using model configuration from {config_path}")
     else:
-        # Use defaults from MODEL_CONFIG
-        config = MODEL_CONFIG
+        # Try to find model_config.json in the same directory as the checkpoint
+        auto_config_path = os.path.join(os.path.dirname(checkpoint_path), "model_config.json")
+        if os.path.exists(auto_config_path):
+            with open(auto_config_path, 'r') as f:
+                config = json.load(f)
+            print(f"Using model configuration from {auto_config_path}")
+        else:
+            # Use defaults from MODEL_CONFIG
+            config = MODEL_CONFIG
+            print("Using default model configuration")
     
     print(f"Creating model with dimension={config['dim']}, depth={config['depth']}...")
     
@@ -85,20 +106,8 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
     )
     
     # Load model weights - handling different checkpoint formats
-    if 'state_dict' in checkpoint:
-        # Standard Lightning checkpoint format
-        pl_state_dict = checkpoint['state_dict']
-            
-        # The model in LightningMinLM is stored under 'model.' prefix
-        model_state_dict = {}
-        for key, value in pl_state_dict.items():
-            # Remove the 'model.' prefix from keys
-            if key.startswith('model.'):
-                model_state_dict[key[6:]] = value
-            
-        model.load_state_dict(model_state_dict)
-    elif 'model_state_dict' in checkpoint:
-        # Our custom Lightning checkpoint format
+    if 'model_state_dict' in checkpoint:
+        # Our custom checkpoint format
         # First check if this is a compiled model (has '_orig_mod.' prefix)
         if any(key.startswith('_orig_mod.') for key in checkpoint['model_state_dict']):
             print("Detected compiled model checkpoint (_orig_mod. prefix)")
@@ -112,6 +121,18 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
             model.load_state_dict(fixed_state_dict)
         else:
             model.load_state_dict(checkpoint['model_state_dict'])
+    elif 'state_dict' in checkpoint:
+        # Standard Lightning checkpoint format
+        pl_state_dict = checkpoint['state_dict']
+            
+        # The model in LightningMinLM is stored under 'model.' prefix
+        model_state_dict = {}
+        for key, value in pl_state_dict.items():
+            # Remove the 'model.' prefix from keys
+            if key.startswith('model.'):
+                model_state_dict[key[6:]] = value
+            
+        model.load_state_dict(model_state_dict)
     elif 'model' in checkpoint and 'state_dict' in checkpoint['model']:
         # Another possible Lightning format
         model.load_state_dict(checkpoint['model']['state_dict'])
@@ -141,6 +162,14 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
                 # Try loading with adapted keys
                 model.load_state_dict(ds_state_dict)
                 print("Successfully loaded model with adapted keys")
+    
+    # Print additional info from checkpoint
+    if 'step' in checkpoint:
+        print(f"Model checkpoint from training step: {checkpoint['step']}")
+    if 'train_loss' in checkpoint:
+        print(f"Training loss at checkpoint: {checkpoint['train_loss']:.4f}")
+    if 'val_loss' in checkpoint:
+        print(f"Validation loss at checkpoint: {checkpoint['val_loss']:.4f}")
     
     # Set model to evaluation mode
     model = model.eval()
@@ -334,7 +363,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate text using a trained minLM model")
     
     # Model and data parameters
-    parser.add_argument("--model", type=str, required=True, help="Path to the trained model checkpoint")
+    parser.add_argument("--model", type=str, required=True, help="Path to trained model checkpoint or directory")
     parser.add_argument("--config_path", type=str, default=None, help="Path to model config (optional)")
     parser.add_argument("--device", type=str, default="auto", help="Device to run on: 'cpu', 'cuda', 'cuda:0', etc. (default: 'auto')")
     parser.add_argument("--use-f32", dest="use_bf16", action="store_false", default=True,
