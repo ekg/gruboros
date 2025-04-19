@@ -82,14 +82,14 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
             config = json.load(f)
         print(f"Using model configuration from {config_path}")
     else:
-        # Try to find config.json in the same directory as the checkpoint
+        # Look for config.json in the same directory as the checkpoint
         auto_config_path = os.path.join(os.path.dirname(checkpoint_path), "config.json")
         if os.path.exists(auto_config_path):
             with open(auto_config_path, 'r') as f:
                 config = json.load(f)
             print(f"Using model configuration from {auto_config_path}")
         else:
-            # Try legacy model_config.json
+            # For backward compatibility, try model_config.json
             legacy_config_path = os.path.join(os.path.dirname(checkpoint_path), "model_config.json")
             if os.path.exists(legacy_config_path):
                 with open(legacy_config_path, 'r') as f:
@@ -104,7 +104,6 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
                         "No model configuration found. Please provide a config file path with --config_path."
                     )
                 else:
-                    # This shouldn't happen as we already checked config_path above, but just in case
                     raise ValueError(f"Provided config path {config_path} does not exist.")
     
     print(f"Creating model with dimension={config['dim']}, depth={config['depth']}...")
