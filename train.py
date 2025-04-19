@@ -139,8 +139,7 @@ def get_args():
         description='DeepSpeed Tensor Parallel Training for minLM'
     )
     
-    # DeepSpeed and distributed arguments
-    parser = deepspeed.add_config_arguments(parser)
+    # Distributed arguments
     parser.add_argument('--local_rank', type=int, default=-1,
                         help='local rank passed from distributed launcher')
     parser.add_argument('--tp_size', type=int, default=1,
@@ -240,12 +239,13 @@ def main():
         }
     }
     
-    # 3) Initialize DeepSpeed engine
+    # 3) Initialize DeepSpeed engine with explicit config (no CLI args)
     model_engine, optimizer, _, _ = deepspeed.initialize(
-        args=args,
         model=model,
         optimizer=optimizer,
-        config_params=ds_config
+        config=ds_config,
+        model_parameters=model.parameters(),
+        dist_init_required=True
     )
     
     # 4) Put ScheduleFree optimizer into train mode if used
