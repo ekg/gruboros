@@ -14,9 +14,8 @@ import mmap
 # This enables TensorFloat32 on supported GPUs
 torch.set_float32_matmul_precision('high')
 
-# Import the minLM model and configuration
+# Import the minLM model
 from mingru.minLM import minLM
-from config import MODEL_CONFIG
 
 # Token decoding functions
 def decode_token(token):
@@ -90,8 +89,18 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
                 config = json.load(f)
             print(f"Using model configuration from {auto_config_path}")
         else:
-            # Use defaults from MODEL_CONFIG
-            config = MODEL_CONFIG
+            # Use a default configuration as last resort
+            config = {
+                "num_tokens": 256,  # byte-level tokenization
+                "dim": 512,         # model dimension
+                "depth": 6,         # number of layers
+                "ff_mult": 4,       # feedforward multiplier
+                "expansion": 1.5,   # expansion factor for minGRU
+                "conv_kernel_size": 3,
+                "use_lstm": False,
+                "enable_conv": False,
+                "dropout": 0.0
+            }
             print("Using default model configuration")
     
     print(f"Creating model with dimension={config['dim']}, depth={config['depth']}...")
