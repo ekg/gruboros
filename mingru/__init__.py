@@ -1,2 +1,2 @@
-from mingru.mingru import mingru
+from mingru.mingru import minGRU
 
