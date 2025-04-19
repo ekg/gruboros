@@ -306,12 +306,17 @@ def get_args():
     return parser.parse_args()
 
 def synchronize_processes():
-    """Synchronize all distributed processes"""
+    """Synchronize all distributed processes with explicit device specification"""
     if torch.distributed.is_initialized():
+        # Get current device
+        current_device = torch.cuda.current_device()
+        
         if torch.distributed.get_rank() == 0:
-            print("Waiting for all processes to synchronize...")
-        # Simple barrier without timeout (compatible with older PyTorch versions)
-        torch.distributed.barrier()
+            print(f"Waiting for all processes to synchronize... (using device {current_device})")
+        
+        # Simple barrier with device_ids to prevent hanging
+        torch.distributed.barrier(device_ids=[current_device])
+        
         if torch.distributed.get_rank() == 0:
             print("All processes synchronized")
 
@@ -378,8 +383,9 @@ def main():
         else:
             padded_dir = torch.zeros(256, dtype=torch.long).cuda()
             
-        # Broadcast from rank 0 to all processes
-        torch.distributed.broadcast(padded_dir, 0)
+        # Broadcast from rank 0 to all processes with explicit device
+        current_device = torch.cuda.current_device()
+        torch.distributed.broadcast(padded_dir, 0, device_ids=[current_device])
         
         # Convert back to string on other ranks
         if args.local_rank != 0:
