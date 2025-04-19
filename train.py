@@ -11,6 +11,8 @@ import re
 import math
 import json
 import datetime
+import sys
+from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 
 # Set higher precision for float32 matrix multiplication 
@@ -637,7 +639,7 @@ def main():
         with open(metrics_log_path, 'w') as f:
             header = [
                 "step", "time", "train_loss", "val_loss", 
-                "learning_rate", "batch_size"
+                "tokens_processed", "tokens_per_sec", "learning_rate", "batch_size"
             ]
             f.write('\t'.join(header) + '\n')
     
@@ -687,10 +689,17 @@ def main():
         model_engine.eval()
         total_loss = 0.0
         batch_count = 0
+        val_token_count = 0
+        validation_start = time.time()
         
         # Switch ScheduleFree to eval mode
         if args.schedulefree:
             model_engine.optimizer.eval()
+        
+        if model_engine.global_rank == 0:
+            print("\nRunning validation...")
+            val_pbar = tqdm(total=5, desc="Validation", 
+                          bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
         
         with torch.no_grad():
             # Set fixed epoch for validation to ensure deterministic behavior
@@ -706,10 +715,21 @@ def main():
                 # Accumulate loss
                 total_loss += loss.item()
                 batch_count += 1
+                val_token_count += inputs.numel()
+                
+                # Update progress bar
+                if model_engine.global_rank == 0:
+                    val_pbar.update(1)
                 
                 # Limit validation to a few batches for speed
                 if batch_count >= 5:
                     break
+        
+        if model_engine.global_rank == 0:
+            val_pbar.close()
+            validation_time = time.time() - validation_start
+            val_tokens_per_sec = val_token_count / validation_time if validation_time > 0 else 0
+            print(f"Validation complete: {val_tokens_per_sec:.2f} tokens/sec")
         
         # Switch back to train mode
         model_engine.train()
@@ -728,6 +748,10 @@ def main():
         metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
         elapsed = time.time() - start_time
         
+        # Calculate tokens processed and tokens per second
+        tokens_processed = step * batch_size * seq_len
+        tokens_per_sec = tokens_processed / elapsed if elapsed > 0 else 0
+        
         current_lr = model_engine.optimizer.param_groups[0]['lr']
         
         values = [
@@ -735,6 +759,8 @@ def main():
             f"{elapsed:.2f}",
             f"{train_loss:.6f}",
             str(val_loss if val_loss is not None else "NA"),
+            str(tokens_processed),
+            f"{tokens_per_sec:.2f}",
             f"{current_lr:.8f}",
             str(batch_size)
         ]
@@ -745,10 +771,17 @@ def main():
     # 7) Training loop
     start_time = time.time()
     best_val_loss = float('inf')
+    total_tokens_processed = 0
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
     
+    # Create progress bar if primary process
+    if model_engine.global_rank == 0:
+        pbar = tqdm(total=train_steps, desc="Training", 
+                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
+        pbar.update(start_step)  # Update for resumed progress
+        
     for step in range(start_step, start_step + train_steps):
         # Set epoch for deterministic shuffling
         epoch = step // len(train_loader)
@@ -773,8 +806,20 @@ def main():
             
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
+                # Update tokens processed
+                total_tokens_processed += batch_size * seq_len
+                
+                # Calculate tokens per second
                 elapsed = time.time() - start_time
-                print(f"[Step {step:03d}] Loss: {loss.item():.4f}, Time: {elapsed:.2f}s")
+                tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
+                
+                # Update progress bar with stats
+                pbar.set_postfix({
+                    'loss': f"{loss.item():.4f}",
+                    'lr': f"{model_engine.optimizer.param_groups[0]['lr']:.6f}",
+                    'tok/s': f"{tokens_per_sec:.2f}"
+                })
+                pbar.update(1)
                 
                 # Log metrics for training
                 log_metrics(step, loss.item())
@@ -815,10 +860,17 @@ def main():
         if args.schedulefree:
             model_engine.optimizer.eval()
         
-        # Print training summary
+        # Close progress bar
+        pbar.close()
+        
+        # Calculate final statistics
         total_time = time.time() - start_time
-        print(f"Training completed in {total_time:.2f}s")
+        tokens_per_sec = total_tokens_processed / total_time if total_time > 0 else 0
+        
+        # Print training summary
+        print(f"\nTraining completed in {total_time:.2f}s")
         print(f"Final validation loss: {final_val_loss:.4f}")
+        print(f"Processed {total_tokens_processed:,} tokens at {tokens_per_sec:.2f} tokens/sec")
         print(f"Final model saved to: {final_path}")
 
 if __name__ == "__main__":
