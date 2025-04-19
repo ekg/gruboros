@@ -184,8 +184,10 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
         print(f"Model checkpoint from training step: {checkpoint['step']}")
     if 'train_loss' in checkpoint:
         print(f"Training loss at checkpoint: {checkpoint['train_loss']:.4f}")
-    if 'val_loss' in checkpoint:
+    if 'val_loss' in checkpoint and checkpoint['val_loss'] is not None:
         print(f"Validation loss at checkpoint: {checkpoint['val_loss']:.4f}")
+    elif 'val_loss' in checkpoint:
+        print(f"Validation loss at checkpoint: None")
     
     # Set model to evaluation mode
     model = model.eval()
