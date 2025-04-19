@@ -292,13 +292,13 @@ def get_args():
     
     # Model configuration
     parser.add_argument('--dim', type=str, default="512", 
-                        help='model hidden dimension (default: 512)')
+                        help='model hidden dimension (default: 512, auto-calculated if --params is used)')
     parser.add_argument('--depth', type=int, default=6,
-                        help='number of transformer layers (default: 6)')
+                        help='number of transformer layers (default: 6, auto-calculated if --params is used)')
     parser.add_argument('--seq_len', type=str, default="128",
                         help='sequence length for training (default: 128)')
     parser.add_argument('--params', type=str, default=None,
-                        help='target parameter count (e.g., 15m for 15M params)')
+                        help='target parameter count (e.g., 15m, 100m, 1g) - conflicts with setting both --dim and --depth')
     parser.add_argument('--ff_mult', type=float, default=4.0,
                         help='feedforward multiplier (default: 4.0)')
     parser.add_argument('--expansion', type=float, default=1.5,
@@ -534,6 +534,12 @@ def main():
         if params_value is not None:
             target_params = params_value
             
+            # Format the parameter count for display
+            if target_params >= 1e9:
+                param_display = f"{target_params/1e9:.1f}B"
+            else:
+                param_display = f"{target_params/1e6:.1f}M"
+            
             if dim_value is not None and args.depth is None:
                 # Dimension specified but not depth, solve for depth
                 dim = round_to_multiple(dim_value)
@@ -545,7 +551,8 @@ def main():
                     args.expansion
                 )
                 if args.local_rank == 0:
-                    print(f"Target params: {target_params/1e6:.1f}M, Dimension: {dim}, Calculated depth: {depth}")
+                    print(f"Target params: {param_display}, Fixed dimension: {dim}, Calculated depth: {depth}")
+                    
             elif dim_value is None and args.depth is not None:
                 # Depth specified but not dimension, solve for dimension
                 depth = args.depth
@@ -557,43 +564,59 @@ def main():
                     args.expansion
                 )
                 if args.local_rank == 0:
-                    print(f"Target params: {target_params/1e6:.1f}M, Calculated dimension: {dim}, Depth: {depth}")
+                    print(f"Target params: {param_display}, Fixed depth: {depth}, Calculated dimension: {dim}")
+                    
+            elif dim_value is not None and args.depth is not None:
+                # Error if both dimension and depth are specified along with params
+                dim = round_to_multiple(dim_value)
+                depth = args.depth
+                if args.local_rank == 0:
+                    print(f"ERROR: Cannot specify dimension ({dim}), depth ({depth}), AND target parameters ({param_display}).")
+                    print(f"Please specify either dimension, depth, or neither - but not both when using --params.")
+                    sys.exit(1)
             else:
-                # Scale both if neither or both are specified
-                if dim_value is not None and args.depth is not None:
-                    dim = round_to_multiple(dim_value)
-                    depth = args.depth
-                    if args.local_rank == 0:
-                        print(f"Warning: Both dimension and depth specified with target params. Ignoring target params.")
-                else:
-                    # Calculate balanced depth/dimension based on parameter count
-                    base_params = 15 * 1024 * 1024  # 15M reference
+                # Neither dimension nor depth specified, calculate both based on target params
+                # Use a balanced scaling approach similar to ../gruf/learn.py
+                
+                # Different scaling approaches based on model size for better scaling
+                if target_params < 15 * 1024 * 1024:  # < 15M params (small models)
+                    # Small models should be shallower with reasonable width
+                    base_params = 15 * 1024 * 1024
                     base_depth = 6
+                    base_dim = 512
                     
-                    if target_params >= base_params:
-                        scaling_factor = (target_params / base_params) ** (1/3)
-                        depth = max(base_depth, round(base_depth * scaling_factor))
-                    else:
-                        scaling_factor = (target_params / base_params) ** (1/4)
-                        depth = max(2, round(base_depth * scaling_factor))
+                    # Calculate balanced depth & dim
+                    scaling = (target_params / base_params) ** 0.25  # Less aggressive scaling for small models
+                    depth = max(2, round(base_depth * scaling))  # Min depth of 2
+                    dim = solve_for_dimension(target_params, depth, 256, args.ff_mult, args.expansion)
                     
-                    # Calculate dimension based on target parameters
-                    dim = solve_for_dimension(
-                        target_params, 
-                        depth, 
-                        256,
-                        args.ff_mult,
-                        args.expansion
-                    )
+                elif target_params < 100 * 1024 * 1024:  # < 100M params (medium models)
+                    # Medium models get balanced scaling
+                    base_params = 15 * 1024 * 1024
+                    base_depth = 6
+                    base_dim = 512
                     
-                    # Format the parameter count for display
-                    if target_params >= 1e9:
-                        param_display = f"{target_params/1e9:.1f}B"
-                    else:
-                        param_display = f"{target_params/1e6:.1f}M"
-                        
-                    if args.local_rank == 0:
-                        print(f"Target params: {param_display}, Balanced - Dim: {dim}, Depth: {depth}")
+                    # Calculate balanced depth & dim with priority on depth
+                    scaling = (target_params / base_params) ** 0.33  # Cube root scaling
+                    depth = max(6, round(base_depth * scaling * 1.2))  # Favor depth (20% more)
+                    dim = solve_for_dimension(target_params, depth, 256, args.ff_mult, args.expansion)
+                    
+                else:  # Large models (≥ 100M params)
+                    # For large models, scale depth more aggressively
+                    base_params = 100 * 1024 * 1024
+                    base_depth = 12  # Start from a deeper base
+                    base_dim = 768
+                    
+                    # Calculate balanced depth & dim with higher priority on depth
+                    scaling = (target_params / base_params) ** 0.4  # Emphasis on depth for large models
+                    depth = max(12, round(base_depth * scaling * 1.3))  # Favor depth strongly (30% more)
+                    dim = solve_for_dimension(target_params, depth, 256, args.ff_mult, args.expansion)
+                
+                # Ensure dimension is a multiple of 64
+                dim = round_to_multiple(dim, 64)
+                
+                if args.local_rank == 0:
+                    print(f"Target params: {param_display}, Balanced scaling - Depth: {depth}, Dimension: {dim}")
         else:
             # Use explicit values from command line
             dim = round_to_multiple(dim_value) if dim_value is not None else 512
@@ -623,20 +646,24 @@ def main():
         # Additional verification to ensure the calculated parameters match target
         if params_value is not None and not resuming:
             # Check if there's a significant discrepancy
-            if abs(param_count - params_value) / params_value > 0.1:  # More than 10% difference
-                print(f"WARNING: Calculated parameter count ({param_count:,}) differs significantly from target ({params_value:,})")
+            if abs(param_count - params_value) / params_value > 0.05:  # More than 5% difference
+                print(f"WARNING: Calculated parameter count ({param_count:,}) differs from target ({params_value:,})")
+                print(f"Difference: {abs(param_count - params_value) / params_value * 100:.1f}%")
                 print("Adjusting model dimensions to better match target parameter count...")
                 
-                # Recalculate dimensions with more precise approach
-                depth = max(6, int(depth))  # Ensure reasonable depth
-                dim = solve_for_dimension(params_value, depth, 256, args.ff_mult, args.expansion)
+                # Adjust the dimension (keeping depth fixed) to match parameter count more precisely
+                orig_dim = model_config["dim"]
+                orig_depth = model_config["depth"]
+                
+                # Recalculate dimension with fixed depth to match target params precisely
+                dim = solve_for_dimension(params_value, orig_depth, 256, args.ff_mult, args.expansion)
                 
                 # Update model config
                 model_config["dim"] = dim
-                model_config["depth"] = depth
                 
                 # Recalculate and display
                 param_count = calculate_model_size(model_config)
+                print(f"Adjusted dimension from {orig_dim} to {dim} (depth stays at {orig_depth})")
         
         print(f"Model size: {get_parameter_count_str(model_config)} parameters ({param_count:,})")
         print(f"Model configuration: {model_config}")
