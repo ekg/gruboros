@@ -1,13 +1,16 @@
 import os, random, numpy as np
 import torch, torch.nn as nn
 from torch.optim import AdamW
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 import deepspeed
 import time
 import argparse
 import mmap
 import re
+import math
+import json
+import datetime
 from schedulefree import AdamWScheduleFree
 
 # Import the minLM model
@@ -17,6 +20,89 @@ from mingru.minLM import minLM
 SEED = 42
 random.seed(SEED); np.random.seed(SEED)
 torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
+
+def round_to_multiple(n, multiple=64):
+    """Round a number to the nearest multiple of a given value"""
+    return multiple * round(n / multiple)
+
+def solve_for_dimension(target_params, depth, vocab_size=256, ff_mult=4, expansion=1.5):
+    """Solve for the dimension that gives the target parameter count"""
+    factor = 4 * expansion + 2 * ff_mult
+    
+    # Quadratic equation: a*dim^2 + b*dim - target_params = 0
+    a = depth * factor
+    b = 2 * vocab_size
+    c = -target_params
+    
+    discriminant = b**2 - 4*a*c
+    if discriminant < 0:
+        raise ValueError("No solution exists for the given target parameter count")
+    
+    dim = (-b + math.sqrt(discriminant)) / (2*a)
+    return round_to_multiple(dim)
+
+def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5):
+    """Solve for the depth that gives the target parameter count"""
+    embed_params = 2 * dim * vocab_size
+    factor = 4 * expansion + 2 * ff_mult
+    layer_params = dim * dim * factor
+    
+    depth = (target_params - embed_params) / layer_params
+    return max(1, round(depth))
+
+def calculate_model_size(config):
+    """Calculate the number of parameters in the model"""
+    dim = config["dim"]
+    depth = config["depth"]
+    vocab_size = config["num_tokens"]
+    ff_mult = config["ff_mult"]
+    expansion = config["expansion"]
+    
+    # Embedding and output layers
+    embedding_params = dim * vocab_size
+    output_params = dim * vocab_size
+    
+    # Each layer has:
+    # - minGRU: 2*dim*dim*expansion + dim*dim (if expansion != 1)
+    # - FF: dim*dim*ff_mult + dim*dim*ff_mult
+    layer_params = dim * dim * (2 * expansion + 2 * ff_mult)
+    
+    # Total parameters
+    total_params = embedding_params + output_params + depth * layer_params
+    
+    return int(total_params)
+
+def get_parameter_count_str(config):
+    """Get a human-readable string of parameter count"""
+    params = calculate_model_size(config)
+    
+    if params >= 1_000_000_000:
+        return f"{params/1_000_000_000:.1f}B"
+    elif params >= 1_000_000:
+        return f"{params/1_000_000:.1f}M"
+    elif params >= 1_000:
+        return f"{params/1_000:.1f}K"
+    else:
+        return f"{params}"
+
+class ModuloSplitDataset(Dataset):
+    """Dataset wrapper that allows modulo-based splitting"""
+    def __init__(self, dataset, modulo, remainder, seed=42):
+        self.dataset = dataset
+        self.modulo = modulo
+        self.remainder = remainder
+        self.seed = seed
+        
+        # Generate indices that satisfy the modulo condition
+        # This is much more efficient than checking each index at runtime
+        self.indices = [i for i in range(len(dataset)) if i % modulo == remainder]
+    
+    def __len__(self):
+        return len(self.indices)
+    
+    def __getitem__(self, idx):
+        # Map the requested index to the corresponding filtered index
+        return self.dataset[self.indices[idx]]
 
 class MemoryMappedDataset(Dataset):
     """Memory-mapped dataset for efficient random access"""
@@ -152,6 +238,14 @@ def get_args():
                         help='port for distributed communication (default: 29500)')
     parser.add_argument('--data', type=str, required=True,
                         help='path to training data file')
+    parser.add_argument('--val_mod', type=int, default=10,
+                        help='modulo for validation set (default: 10, meaning 1/10th for validation)')
+    parser.add_argument('--output', type=str, default=None,
+                        help='directory to save checkpoints (default: auto-generated)')
+    parser.add_argument('--save_every', type=int, default=100,
+                        help='save checkpoint every N steps (default: 100)')
+    parser.add_argument('--validate_every', type=int, default=50,
+                        help='validate every N steps (default: 50)')
     
     # Model configuration
     parser.add_argument('--dim', type=str, default="512", 
@@ -160,6 +254,12 @@ def get_args():
                         help='number of transformer layers (default: 6)')
     parser.add_argument('--seq_len', type=str, default="128",
                         help='sequence length for training (default: 128)')
+    parser.add_argument('--params', type=str, default=None,
+                        help='target parameter count (e.g., 15m for 15M params)')
+    parser.add_argument('--ff_mult', type=float, default=4.0,
+                        help='feedforward multiplier (default: 4.0)')
+    parser.add_argument('--expansion', type=float, default=1.5,
+                        help='expansion factor for minGRU (default: 1.5)')
     
     # Optimizer configuration
     parser.add_argument('--lr', type=float, default=1e-3,
@@ -188,22 +288,133 @@ def main():
     
     # Parse numeric arguments with potential suffixes
     train_steps = int(parse_size_with_suffix(args.train_steps))
-    dim = int(parse_size_with_suffix(args.dim))
     seq_len = int(parse_size_with_suffix(args.seq_len))
     batch_size = int(parse_size_with_suffix(args.batch_size))
+    
+    # Create output directory with timestamp
+    if args.local_rank == 0:
+        if args.output:
+            checkpoint_dir = args.output
+        else:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            checkpoint_dir = f"checkpoints_minlm_{timestamp}"
+        
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        print(f"Checkpoints will be saved to: {checkpoint_dir}")
+    else:
+        checkpoint_dir = ""
+    
+    # Synchronize checkpoint directory across processes if distributed
+    if torch.distributed.is_initialized():
+        if args.local_rank == 0:
+            dir_tensor = torch.tensor([ord(c) for c in checkpoint_dir], dtype=torch.long).cuda()
+            # Pad to fixed length
+            padded_dir = torch.zeros(256, dtype=torch.long).cuda()
+            padded_dir[:len(dir_tensor)] = dir_tensor
+        else:
+            padded_dir = torch.zeros(256, dtype=torch.long).cuda()
+            
+        # Broadcast from rank 0 to all processes
+        torch.distributed.broadcast(padded_dir, 0)
+        
+        # Convert back to string on other ranks
+        if args.local_rank != 0:
+            nonzero_indices = padded_dir.nonzero().squeeze(-1)
+            if len(nonzero_indices) > 0:
+                str_len = nonzero_indices[-1].item() + 1
+                checkpoint_dir = ''.join([chr(i) for i in padded_dir[:str_len].tolist()])
+            else:
+                checkpoint_dir = ""
+    
+    # Determine model dimensions
+    params_value = parse_size_with_suffix(args.params) if args.params is not None else None
+    dim_value = int(parse_size_with_suffix(args.dim)) if args.dim is not None else None
+    
+    # Configure model based on parameters or explicit dimensions
+    if params_value is not None:
+        target_params = params_value
+        
+        if dim_value is not None and args.depth is None:
+            # Dimension specified but not depth, solve for depth
+            dim = round_to_multiple(dim_value)
+            depth = solve_for_depth(
+                target_params, 
+                dim, 
+                256,  # vocab size
+                args.ff_mult,
+                args.expansion
+            )
+            if args.local_rank == 0:
+                print(f"Target params: {target_params/1e6:.1f}M, Dimension: {dim}, Calculated depth: {depth}")
+        elif dim_value is None and args.depth is not None:
+            # Depth specified but not dimension, solve for dimension
+            depth = args.depth
+            dim = solve_for_dimension(
+                target_params, 
+                depth, 
+                256,  # vocab size
+                args.ff_mult,
+                args.expansion
+            )
+            if args.local_rank == 0:
+                print(f"Target params: {target_params/1e6:.1f}M, Calculated dimension: {dim}, Depth: {depth}")
+        else:
+            # Scale both if neither or both are specified
+            if dim_value is not None and args.depth is not None:
+                dim = round_to_multiple(dim_value)
+                depth = args.depth
+                if args.local_rank == 0:
+                    print(f"Warning: Both dimension and depth specified with target params. Ignoring target params.")
+            else:
+                # Calculate balanced depth/dimension based on parameter count
+                base_params = 15 * 1024 * 1024  # 15M reference
+                base_depth = 6
+                
+                if target_params >= base_params:
+                    scaling_factor = (target_params / base_params) ** (1/3)
+                    depth = max(base_depth, round(base_depth * scaling_factor))
+                else:
+                    scaling_factor = (target_params / base_params) ** (1/4)
+                    depth = max(2, round(base_depth * scaling_factor))
+                
+                # Solve for dimension with calculated depth
+                dim = solve_for_dimension(
+                    target_params, 
+                    depth, 
+                    256,
+                    args.ff_mult,
+                    args.expansion
+                )
+                if args.local_rank == 0:
+                    print(f"Target params: {target_params/1e6:.1f}M, Balanced - Dim: {dim}, Depth: {depth}")
+    else:
+        # Use explicit values from command line
+        dim = round_to_multiple(dim_value) if dim_value is not None else 512
+        depth = args.depth
     
     # Model configuration
     model_config = {
         "num_tokens": 256,  # byte-level tokenization
         "dim": dim,
-        "depth": args.depth,
-        "ff_mult": 4,
-        "expansion": 1.5,
+        "depth": depth,
+        "ff_mult": args.ff_mult,
+        "expansion": args.expansion,
         "conv_kernel_size": 3,
         "use_lstm": False,
         "enable_conv": False,
         "dropout": 0.0
     }
+    
+    # Calculate and display model size
+    if args.local_rank == 0:
+        param_count = calculate_model_size(model_config)
+        print(f"Model size: {get_parameter_count_str(model_config)} parameters")
+        print(f"Model configuration: {model_config}")
+        
+        # Save model configuration to file
+        if checkpoint_dir:
+            with open(os.path.join(checkpoint_dir, "model_config.json"), "w") as f:
+                json.dump(model_config, f, indent=2)
     
     # Instantiate model
     model = get_model(model_config)
@@ -252,45 +463,172 @@ def main():
     if args.schedulefree:
         model_engine.optimizer.train()
     
-    # 5) Prepare Dataset & Sampler
+    # 5) Prepare Datasets & Samplers
     # Use 10K samples per epoch as a reasonable default to limit memory usage
     samples_per_epoch = min(10000, train_steps * batch_size)
     
-    dataset = MemoryMappedDataset(
+    # Create the base dataset
+    base_dataset = MemoryMappedDataset(
         filepath=args.data,
         seq_len=seq_len,
         samples_per_epoch=samples_per_epoch
     )
     
-    sampler = DistributedSampler(
-        dataset,
+    # Create train and validation datasets using modulo-based splitting
+    # Validation set: indices where idx % val_mod == 0
+    # Training set: all other indices
+    train_dataset = ModuloSplitDataset(base_dataset, args.val_mod, remainder=1)
+    val_dataset = ModuloSplitDataset(base_dataset, args.val_mod, remainder=0)
+    
+    if args.local_rank == 0:
+        print(f"Dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
+    
+    # Create samplers for both datasets
+    train_sampler = DistributedSampler(
+        train_dataset,
         num_replicas=model_engine.world_size,
         rank=model_engine.global_rank,
         shuffle=True,
         seed=SEED
     )
     
-    # 6) DataLoader
-    data_loader = DataLoader(
-        dataset,
+    val_sampler = DistributedSampler(
+        val_dataset,
+        num_replicas=model_engine.world_size,
+        rank=model_engine.global_rank,
+        shuffle=False,
+        seed=SEED
+    )
+    
+    # 6) DataLoaders
+    train_loader = DataLoader(
+        train_dataset,
         batch_size=batch_size,
-        sampler=sampler,
+        sampler=train_sampler,
         num_workers=1,  # Reduced to prevent multiple copies of memory map
         pin_memory=True,
         worker_init_fn=lambda wid: torch.manual_seed(SEED + wid),
         persistent_workers=False  # Avoid persistent workers to prevent hanging
     )
     
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        sampler=val_sampler,
+        num_workers=1,
+        pin_memory=True,
+        worker_init_fn=lambda wid: torch.manual_seed(SEED + 100 + wid),
+        persistent_workers=False
+    )
+    
+    # Create metrics log file
+    if model_engine.global_rank == 0 and checkpoint_dir:
+        metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
+        with open(metrics_log_path, 'w') as f:
+            header = [
+                "step", "time", "train_loss", "val_loss", 
+                "learning_rate", "batch_size"
+            ]
+            f.write('\t'.join(header) + '\n')
+    
+    # Helper function to save checkpoint
+    def save_checkpoint(step, train_loss, val_loss=None):
+        if model_engine.global_rank != 0 or not checkpoint_dir:
+            return
+            
+        checkpoint = {
+            'step': step,
+            'model_state_dict': model_engine.module.state_dict(),
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        
+        # Create filename with step and loss info
+        val_info = f"-val_{val_loss:.4f}" if val_loss is not None else ""
+        filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}{val_info}.pt"
+        checkpoint_path = os.path.join(checkpoint_dir, filename)
+        
+        # Save checkpoint
+        torch.save(checkpoint, checkpoint_path)
+        
+        # Also save as latest
+        latest_path = os.path.join(checkpoint_dir, "latest.pt")
+        torch.save(checkpoint, latest_path)
+        
+        return checkpoint_path
+    
+    # Helper function for validation
+    def validate():
+        model_engine.eval()
+        total_loss = 0.0
+        batch_count = 0
+        
+        # Switch ScheduleFree to eval mode
+        if args.schedulefree:
+            model_engine.optimizer.eval()
+        
+        with torch.no_grad():
+            # Set fixed epoch for validation to ensure deterministic behavior
+            val_sampler.set_epoch(0)
+            
+            for x in val_loader:
+                inputs, targets = x[:, :-1], x[:, 1:]
+                inputs, targets = inputs.to(model_engine.device), targets.to(model_engine.device)
+                
+                # Forward pass
+                loss = model_engine(inputs, return_loss=True)
+                
+                # Accumulate loss
+                total_loss += loss.item()
+                batch_count += 1
+                
+                # Limit validation to a few batches for speed
+                if batch_count >= 5:
+                    break
+        
+        # Switch back to train mode
+        model_engine.train()
+        if args.schedulefree:
+            model_engine.optimizer.train()
+        
+        # Calculate average
+        avg_loss = total_loss / max(1, batch_count)
+        return avg_loss
+    
+    # Helper function to log metrics
+    def log_metrics(step, train_loss, val_loss=None):
+        if model_engine.global_rank != 0 or not checkpoint_dir:
+            return
+            
+        metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
+        elapsed = time.time() - start_time
+        
+        current_lr = model_engine.optimizer.param_groups[0]['lr']
+        
+        values = [
+            str(step),
+            f"{elapsed:.2f}",
+            f"{train_loss:.6f}",
+            str(val_loss if val_loss is not None else "NA"),
+            f"{current_lr:.8f}",
+            str(batch_size)
+        ]
+        
+        with open(metrics_log_path, 'a') as f:
+            f.write('\t'.join(values) + '\n')
+    
     # 7) Training loop
     start_time = time.time()
+    best_val_loss = float('inf')
     
     for step in range(train_steps):
         # Set epoch for deterministic shuffling
-        epoch = step // len(data_loader)
-        sampler.set_epoch(epoch)
+        epoch = step // len(train_loader)
+        train_sampler.set_epoch(epoch)
         
         # Iterate through data loader for this step
-        for batch_idx, x in enumerate(data_loader):
+        for batch_idx, x in enumerate(train_loader):
             # Split into input and target
             inputs, targets = x[:, :-1], x[:, 1:]
             
@@ -310,18 +648,51 @@ def main():
             if model_engine.global_rank == 0 and batch_idx == 0:
                 elapsed = time.time() - start_time
                 print(f"[Step {step:03d}] Loss: {loss.item():.4f}, Time: {elapsed:.2f}s")
+                
+                # Log metrics for training
+                log_metrics(step, loss.item())
             
             # Break after one batch per step
             break
+        
+        # Validate periodically
+        if args.validate_every > 0 and step > 0 and step % args.validate_every == 0:
+            val_loss = validate()
+            
+            if model_engine.global_rank == 0:
+                print(f"[Step {step:03d}] Validation Loss: {val_loss:.4f}")
+                
+                # Log metrics with validation
+                log_metrics(step, loss.item(), val_loss)
+                
+                # Check if this is best model
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    save_checkpoint(step, loss.item(), val_loss)
+                    print(f"New best model saved at step {step} with validation loss {val_loss:.4f}")
+        
+        # Save checkpoint periodically
+        if args.save_every > 0 and step > 0 and step % args.save_every == 0:
+            save_path = save_checkpoint(step, loss.item())
+            if model_engine.global_rank == 0:
+                print(f"Checkpoint saved to {save_path}")
     
-    # After training, switch to eval mode if using ScheduleFree
-    if args.schedulefree:
-        model_engine.optimizer.eval()
+    # Final validation
+    final_val_loss = validate()
     
-    # Print training summary
+    # Save final checkpoint
     if model_engine.global_rank == 0:
+        final_path = save_checkpoint(train_steps, loss.item(), final_val_loss)
+        
+        # After training, switch to eval mode if using ScheduleFree
+        if args.schedulefree:
+            model_engine.optimizer.eval()
+        
+        # Print training summary
         total_time = time.time() - start_time
         print(f"Training completed in {total_time:.2f}s")
+        print(f"Final validation loss: {final_val_loss:.4f}")
+        print(f"Final model saved to: {final_path}")
 
 if __name__ == "__main__":
     main()
