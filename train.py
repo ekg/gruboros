@@ -780,8 +780,12 @@ def main():
             ]
             f.write('\t'.join(header) + '\n')
     
+    # Keep track of recent checkpoint files
+    recent_checkpoints = []
+    best_checkpoint_path = None
+    
     # Helper function to save checkpoint
-    def save_checkpoint(step, train_loss, val_loss=None):
+    def save_checkpoint(step, train_loss, val_loss=None, is_best=False):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
             
@@ -822,6 +826,41 @@ def main():
         config_path = os.path.join(checkpoint_dir, "config.json")
         with open(config_path, 'w') as f:
             json.dump(model_config, f, indent=2)
+        
+        # Handle checkpoint rotation
+        nonlocal recent_checkpoints, best_checkpoint_path
+        
+        if is_best:
+            # Save as best model with reference to original checkpoint
+            best_filename = f"best-{filename}"
+            best_path = os.path.join(checkpoint_dir, best_filename)
+            temp_best_path = best_path + ".tmp"
+            torch.save(checkpoint, temp_best_path)
+            os.replace(temp_best_path, best_path)
+            
+            # Remove previous best checkpoint if it exists
+            if best_checkpoint_path and os.path.exists(best_checkpoint_path):
+                try:
+                    os.remove(best_checkpoint_path)
+                    print(f"Removed previous best checkpoint: {os.path.basename(best_checkpoint_path)}")
+                except Exception as e:
+                    print(f"Warning: Failed to remove previous best checkpoint: {e}")
+            
+            best_checkpoint_path = best_path
+            print(f"New best model saved as: {best_filename}")
+        else:
+            # Keep track of regular checkpoints
+            recent_checkpoints.append(checkpoint_path)
+            
+            # Keep only the 3 most recent checkpoints
+            while len(recent_checkpoints) > 3:
+                old_checkpoint = recent_checkpoints.pop(0)
+                if os.path.exists(old_checkpoint):
+                    try:
+                        os.remove(old_checkpoint)
+                        print(f"Removed old checkpoint: {os.path.basename(old_checkpoint)}")
+                    except Exception as e:
+                        print(f"Warning: Failed to remove old checkpoint: {e}")
         
         return checkpoint_path
     
@@ -989,7 +1028,7 @@ def main():
                 # Check if this is best model
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    save_checkpoint(step, loss.item(), val_loss)
+                    save_checkpoint(step, loss.item(), val_loss, is_best=True)
                     print(f"New best model saved at step {step} with validation loss {val_loss:.4f}")
         
         # Save checkpoint periodically
