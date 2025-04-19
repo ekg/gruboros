@@ -278,8 +278,8 @@ def get_args():
                         help='weight decay (default: 0.01)')
     parser.add_argument('--batch_size', type=str, default="4",
                         help='batch size per GPU (default: 4)')
-    parser.add_argument('--schedulefree', action='store_true',
-                        help='use ScheduleFree optimizer (default: False)')
+    parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True,
+                        help='disable ScheduleFree optimizer (default: enabled)')
     parser.add_argument('--sf_beta', type=float, default=0.9,
                         help='ScheduleFree beta parameter (default: 0.9)')
     
@@ -516,14 +516,14 @@ def main():
         if args.local_rank == 0:
             print(f"Using ScheduleFree optimizer with lr={args.lr}, beta={args.sf_beta}")
     else:
-        # Use standard AdamW
+        # Use standard AdamW (only when explicitly disabled)
         optimizer = AdamW(
             model.parameters(),
             lr=args.lr,
             weight_decay=args.weight_decay
         )
         if args.local_rank == 0:
-            print(f"Using AdamW optimizer with lr={args.lr}")
+            print(f"Using standard AdamW optimizer with lr={args.lr} (ScheduleFree disabled)")
     
     # 2) DeepSpeed config for tensor parallelism
     ds_config = {
