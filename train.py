@@ -55,8 +55,12 @@ class MemoryMappedDataset(Dataset):
             self.mm.seek(start_pos)
             data = self.mm.read(self.seq_len + 1)  # +1 for the target
             
-            # Directly create tensor from bytes
-            tensor = torch.frombuffer(data, dtype=torch.uint8).long()
+            # Create a copy of the data in a writable buffer before making a tensor
+            # This prevents the PyTorch warning about non-writable buffers
+            data_copy = bytearray(data)
+            
+            # Create tensor from the copy (using list conversion to ensure it's writable)
+            tensor = torch.tensor(list(data_copy), dtype=torch.long)
             
             # Handle edge case if we didn't get enough data
             if tensor.size(0) < self.seq_len + 1:
