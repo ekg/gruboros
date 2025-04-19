@@ -894,9 +894,12 @@ def main():
             # Standard optimizer
             checkpoint['optimizer_state_dict'] = optimizer.state_dict()
         
-        # Create filename with step and loss info
-        val_info = f"-val_{val_loss:.4f}" if val_loss is not None else ""
-        filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}{val_info}.pt"
+        # Create a standardized filename with step and loss info
+        # Always include validation loss in filename if available
+        if val_loss is not None:
+            filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}-val_{val_loss:.4f}.pt"
+        else:
+            filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}.pt"
         checkpoint_path = os.path.join(checkpoint_dir, filename)
         
         # Save checkpoint atomically using temporary file (this is the only full save)
@@ -1162,20 +1165,23 @@ def main():
         
         # Save checkpoint periodically
         if args.save_every > 0 and step > 0 and step % args.save_every == 0:
-            save_path = save_checkpoint(step, loss.item())
-            if model_engine.global_rank == 0:
-                print(f"Checkpoint saved to {save_path}")
+            # If we just did validation, don't save again - avoids duplicate files
+            if not (args.validate_every > 0 and step % args.validate_every == 0):
+                save_path = save_checkpoint(step, loss.item())
+                if model_engine.global_rank == 0:
+                    print(f"Checkpoint saved to {save_path}")
     
     # Final validation
     final_val_loss = validate()
     
     # Save final checkpoint and make it the best if it's better than previous best
     if model_engine.global_rank == 0:
-        # Save the final checkpoint and check if it's the best one
+        # Save the final checkpoint with validation loss and check if it's the best one
         is_final_best = final_val_loss < best_val_loss
-        final_path = save_checkpoint(train_steps, loss.item(), final_val_loss, is_best=is_final_best)
+        final_path = save_checkpoint(train_steps + start_step, loss.item(), final_val_loss, is_best=is_final_best)
         if is_final_best:
             best_val_loss = final_val_loss
+            print(f"Final model is best model with validation loss {final_val_loss:.4f}")
         
         # After training, switch to eval mode if using ScheduleFree
         if args.schedulefree:
