@@ -961,19 +961,28 @@ def main():
         
         # Keep only the N most recent checkpoints (plus don't delete best)
         while len(recent_checkpoints) > num_to_keep:
-            old_checkpoint = recent_checkpoints.pop(0)
-            old_checkpoint_filename = os.path.basename(old_checkpoint)
+            # Find the oldest checkpoint that's not the best
+            delete_candidate = None
+            for i, old_checkpoint in enumerate(recent_checkpoints):
+                old_checkpoint_filename = os.path.basename(old_checkpoint)
+                if old_checkpoint_filename != best_checkpoint_filename:
+                    delete_candidate = old_checkpoint
+                    delete_index = i
+                    break
             
-            # Don't delete if it's the best checkpoint
-            if old_checkpoint_filename == best_checkpoint_filename:
-                print(f"Keeping {old_checkpoint_filename} as it's currently the best model")
-                continue
+            # If we couldn't find a non-best checkpoint to delete, break out of the loop
+            if delete_candidate is None:
+                print("All remaining checkpoints are marked as best, keeping them all")
+                break
                 
-            # Otherwise, delete it
-            if os.path.exists(old_checkpoint):
+            # Remove the checkpoint from our tracking list
+            recent_checkpoints.pop(delete_index)
+            
+            # Delete the file if it exists
+            if os.path.exists(delete_candidate):
                 try:
-                    os.remove(old_checkpoint)
-                    print(f"Removed old checkpoint: {os.path.basename(old_checkpoint)}")
+                    os.remove(delete_candidate)
+                    print(f"Removed old checkpoint: {os.path.basename(delete_candidate)}")
                 except Exception as e:
                     print(f"Warning: Failed to remove old checkpoint: {e}")
         
