@@ -163,10 +163,9 @@ class MemoryMappedDataset(Dataset):
         # Ensure file resources are initialized
         self._ensure_initialized()
         
-        # Use the index deterministically to ensure same data across workers
-        # But limit to a reasonable number of positions
-        g = torch.Generator().manual_seed(SEED + idx)
-        start_pos = torch.randint(0, self.valid_end, (1,), generator=g).item()
+        # Use truly random position instead of deterministic one
+        # This ensures we get fresh data each epoch and prevents training on the same chunks
+        start_pos = torch.randint(0, self.valid_end, (1,)).item()
         
         # Get a slice from the memory map without reading the whole file
         # Thread-safe access
