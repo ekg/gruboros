@@ -118,8 +118,8 @@ class RandomSamplingDataset(Dataset):
         # Maximum valid starting position
         self.max_start = max(0, self.file_size - seq_len - 1)
         
-        # Number of samples per epoch (arbitrary but reasonable)
-        self.samples_per_epoch = min(1000000, self.max_start)
+        # Set samples per epoch to maximum possible valid samples from file
+        self.samples_per_epoch = self.max_start + 1
         
         # Set up random generator with seed for reproducibility
         self.seed = seed
