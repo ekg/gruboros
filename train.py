@@ -1153,8 +1153,10 @@ def main():
             break
         
         # Validate periodically
+        val_loss_for_checkpoint = None
         if args.validate_every > 0 and step > 0 and step % args.validate_every == 0:
             val_loss = validate()
+            val_loss_for_checkpoint = val_loss
             
             if model_engine.global_rank == 0:
                 print(f"[Step {step:03d}] Validation Loss: {val_loss:.4f}")
@@ -1165,15 +1167,19 @@ def main():
                 # Check if this is best model
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    save_checkpoint(step, loss.item(), val_loss, is_best=True)
-                    print(f"New best model saved at step {step} with validation loss {val_loss:.4f}")
+                    # Mark as best but don't save yet - we'll save in the checkpoint step below
+                    print(f"New best model found at step {step} with validation loss {val_loss:.4f}")
         
         # Save checkpoint periodically
         if args.save_every > 0 and step > 0 and step % args.save_every == 0:
-            # If we just did validation, don't save again - avoids duplicate files
-            if not (args.validate_every > 0 and step % args.validate_every == 0):
-                save_path = save_checkpoint(step, loss.item())
-                if model_engine.global_rank == 0:
+            # Always save on checkpoint steps, with validation loss if available
+            is_best = val_loss_for_checkpoint is not None and val_loss_for_checkpoint < best_val_loss
+            save_path = save_checkpoint(step, loss.item(), val_loss_for_checkpoint, is_best=is_best)
+            
+            if model_engine.global_rank == 0:
+                if is_best:
+                    print(f"Best model checkpoint saved to {save_path} (val loss: {val_loss_for_checkpoint:.4f})")
+                else:
                     print(f"Checkpoint saved to {save_path}")
     
     # Final validation
