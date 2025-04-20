@@ -105,85 +105,83 @@ def get_parameter_count_str(config):
     else:
         return f"{params}"
 
-class MemoryMappedDataset(Dataset):
-    """Memory-mapped dataset for efficient random access with thread-safety improvements"""
-    def __init__(self, filepath, seq_len):
+class RandomSamplingDataset(Dataset):
+    """Dataset that efficiently samples random chunks from a file without loading it entirely"""
+    def __init__(self, filepath, seq_len, seed=42):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
         
-        # Get file size once
+        # Get file size
         self.file_size = os.path.getsize(filepath)
         
-        # Calculate valid end position for random sampling
-        self.valid_end = max(0, self.file_size - seq_len - 1)
+        # Maximum valid starting position
+        self.max_start = max(0, self.file_size - seq_len - 1)
         
-        # Define a fixed number of samples per epoch instead of file size
-        # This prevents excessive data loading
-        self.samples_per_epoch = self.file_size - seq_len - 1
+        # Number of samples per epoch (arbitrary but reasonable)
+        self.samples_per_epoch = min(1000000, self.max_start)
         
-        # Use thread-local storage approach - lazily initialize resources
-        # This prevents sharing file handles across processes
+        # Set up random generator with seed for reproducibility
+        self.seed = seed
+        self.rng = random.Random(seed)
+        
+        # File handle (initialized lazily)
         self.file = None
-        self.mm = None
-    
-    def _ensure_initialized(self):
-        """Lazily initialize file resources to avoid sharing across processes/threads"""
-        if self.mm is None:
-            try:
-                self.file = open(self.filepath, 'rb')  # Read-only mode is sufficient
-                self.mm = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
-            except Exception as e:
-                print(f"Error initializing mmap for {self.filepath}: {e}")
-                raise
+        
+        print(f"RandomSamplingDataset: Using file {filepath} ({self.file_size:,} bytes)")
+        print(f"Samples are read on demand - no upfront data loading")
     
     def __len__(self):
         return self.samples_per_epoch
     
+    def set_epoch(self, epoch):
+        """Reset RNG for deterministic sampling per epoch"""
+        self.rng = random.Random(self.seed + epoch)
+    
+    def _get_file_handle(self):
+        """Get file handle, creating it if needed"""
+        if self.file is None or self.file.closed:
+            self.file = open(self.filepath, 'rb')
+        return self.file
+    
     def __getitem__(self, idx):
-        # Ensure file resources are initialized
-        self._ensure_initialized()
+        # Sample a random position regardless of the idx parameter
+        # This follows a predictable pseudorandom sequence based on the seed
+        start_pos = self.rng.randint(0, self.max_start)
         
-        # Use truly random position instead of deterministic one
-        # This ensures we get fresh data each epoch and prevents training on the same chunks
-        start_pos = torch.randint(0, self.valid_end, (1,)).item()
-        
-        # Get a slice from the memory map without reading the whole file
-        # Thread-safe access
-        with torch.no_grad():
+        try:
+            # Get file handle and read data
+            f = self._get_file_handle()
+            f.seek(start_pos)
+            data = f.read(self.seq_len + 1)  # +1 for target token
+            
+            # Convert to tensor
+            tensor = torch.tensor(list(data), dtype=torch.long)
+            
+            # Handle edge case
+            if tensor.size(0) < self.seq_len + 1:
+                padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
+                tensor = torch.cat([tensor, padding])
+                
+            return tensor
+        except Exception as e:
+            print(f"Error reading from file at position {start_pos}: {e}")
+            # Try to recover file handle
             try:
-                # Use seek/read with proper locking and error handling
-                self.mm.seek(start_pos)
-                data = self.mm.read(self.seq_len + 1)  # +1 for the target
-                
-                # Create a copy of the data in a writable buffer before making a tensor
-                # This prevents the PyTorch warning about non-writable buffers
-                data_copy = bytearray(data)
-                
-                # Create tensor from the copy (using list conversion to ensure it's writable)
-                tensor = torch.tensor(list(data_copy), dtype=torch.long)
-                
-                # Handle edge case if we didn't get enough data
-                if tensor.size(0) < self.seq_len + 1:
-                    # Pad with zeros if needed
-                    padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
-                    tensor = torch.cat([tensor, padding])
-            except Exception as e:
-                print(f"Error reading data at position {start_pos}: {e}")
-                # Return a fallback tensor with proper size in case of error
-                tensor = torch.zeros(self.seq_len + 1, dtype=torch.long)
-        
-        return tensor
+                if self.file:
+                    self.file.close()
+                self.file = None
+            except:
+                pass
+            return torch.zeros(self.seq_len + 1, dtype=torch.long)
     
     def __del__(self):
-        # Clean up resources
-        try:
-            if hasattr(self, 'mm') and self.mm is not None:
-                self.mm.close()
-            if hasattr(self, 'file') and self.file is not None:
+        """Clean up resources"""
+        if hasattr(self, 'file') and self.file:
+            try:
                 self.file.close()
-        except:
-            pass  # Avoid errors during interpreter shutdown
+            except:
+                pass
 
 def get_model(model_config):
     """Create a minLM model with the given configuration"""
@@ -777,15 +775,20 @@ def main():
     if args.schedulefree:
         model_engine.optimizer.train()
     
-    # Create the base dataset
-    base_dataset = MemoryMappedDataset(
+    # Create the datasets using our pseudorandom sampler
+    # The same file is used for both training and validation
+    train_dataset = RandomSamplingDataset(
         filepath=args.data,
-        seq_len=seq_len
+        seq_len=seq_len,
+        seed=SEED
     )
     
-    # For testing, we use the train and val datasets together
-    train_dataset = base_dataset
-    val_dataset = base_dataset
+    # Create a separate instance for validation with a different seed
+    val_dataset = RandomSamplingDataset(
+        filepath=args.data,
+        seq_len=seq_len,
+        seed=SEED + 100  # Different seed for validation
+    )
     
     if args.local_rank == 0:
         print(f"Dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
@@ -981,7 +984,7 @@ def main():
         
         with torch.no_grad():
             # Set fixed epoch for validation to ensure deterministic behavior
-            val_sampler.set_epoch(0)
+            val_dataset.set_epoch(0)
             
             for x in val_loader:
                 inputs, targets = x[:, :-1], x[:, 1:]
@@ -1090,9 +1093,9 @@ def main():
         pbar.update(start_step)  # Update for resumed progress
         
     for step in range(start_step, start_step + train_steps):
-        # Set epoch for deterministic shuffling
+        # Set epoch for deterministic sampling sequence
         epoch = step // len(train_loader)
-        train_sampler.set_epoch(epoch)
+        train_dataset.set_epoch(epoch)
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
