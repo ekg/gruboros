@@ -105,28 +105,9 @@ def get_parameter_count_str(config):
     else:
         return f"{params}"
 
-class ModuloSplitDataset(Dataset):
-    """Dataset wrapper that allows modulo-based splitting"""
-    def __init__(self, dataset, modulo, remainder, seed=42):
-        self.dataset = dataset
-        self.modulo = modulo
-        self.remainder = remainder
-        self.seed = seed
-        
-        # Generate indices that satisfy the modulo condition
-        # This is much more efficient than checking each index at runtime
-        self.indices = [i for i in range(len(dataset)) if i % modulo == remainder]
-    
-    def __len__(self):
-        return len(self.indices)
-    
-    def __getitem__(self, idx):
-        # Map the requested index to the corresponding filtered index
-        return self.dataset[self.indices[idx]]
-
 class MemoryMappedDataset(Dataset):
     """Memory-mapped dataset for efficient random access with thread-safety improvements"""
-    def __init__(self, filepath, seq_len, samples_per_epoch=10000):
+    def __init__(self, filepath, seq_len):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
@@ -139,7 +120,7 @@ class MemoryMappedDataset(Dataset):
         
         # Define a fixed number of samples per epoch instead of file size
         # This prevents excessive data loading
-        self.samples_per_epoch = samples_per_epoch
+        self.samples_per_epoch = self.file_size - seq_len - 1
         
         # Use thread-local storage approach - lazily initialize resources
         # This prevents sharing file handles across processes
@@ -796,22 +777,15 @@ def main():
     if args.schedulefree:
         model_engine.optimizer.train()
     
-    # 5) Prepare Datasets & Samplers
-    # Use 10K samples per epoch as a reasonable default to limit memory usage
-    samples_per_epoch = min(10000, train_steps * batch_size)
-    
     # Create the base dataset
     base_dataset = MemoryMappedDataset(
         filepath=args.data,
-        seq_len=seq_len,
-        samples_per_epoch=samples_per_epoch
+        seq_len=seq_len
     )
     
-    # Create train and validation datasets using modulo-based splitting
-    # Validation set: indices where idx % val_mod == 0
-    # Training set: all other indices
-    train_dataset = ModuloSplitDataset(base_dataset, args.val_mod, remainder=1)
-    val_dataset = ModuloSplitDataset(base_dataset, args.val_mod, remainder=0)
+    # For testing, we use the train and val datasets together
+    train_dataset = base_dataset
+    val_dataset = base_dataset
     
     if args.local_rank == 0:
         print(f"Dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
