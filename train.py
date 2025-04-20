@@ -320,6 +320,10 @@ def get_args():
     parser.add_argument('--sf_beta', type=float, default=0.9,
                         help='ScheduleFree beta parameter')
     
+    # Add checkpoint keeping parameter
+    parser.add_argument('--keep_checkpoints', type=int, default=3,
+                        help='number of recent checkpoints to keep (default: 3)')
+    
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
     
@@ -861,18 +865,11 @@ def main():
             ]
             f.write('\t'.join(header) + '\n')
     
-    # Keep track of recent checkpoint files
+    # Keep track of recent checkpoint files and what best points to
     recent_checkpoints = []
-    best_checkpoint_path = None
-    
-    # Async function for copying checkpoint files
-    async def async_copy_file(src_path, dst_path):
-        # Run copy in a separate thread to not block the main training loop
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: shutil.copy2(src_path, dst_path))
-        return dst_path
+    best_checkpoint_filename = None
 
-    # Helper function to save checkpoint - now with symlinks and async copies
+    # Helper function to save checkpoint - now with symlinks for both best and latest
     def save_checkpoint(step, train_loss, val_loss=None, is_best=False):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
@@ -931,48 +928,55 @@ def main():
             json.dump(model_config, f, indent=2)
         
         # Handle checkpoint rotation
-        nonlocal recent_checkpoints, best_checkpoint_path
+        nonlocal recent_checkpoints, best_checkpoint_filename
+        
+        # Add current checkpoint to tracking list
+        recent_checkpoints.append(checkpoint_path)
         
         if is_best:
-            # Copy as best model (async to not block training)
-            best_filename = f"best-{filename}"
-            best_path = os.path.join(checkpoint_dir, best_filename)
+            # Create symlink for best checkpoint
+            best_path = os.path.join(checkpoint_dir, f"best.pt")
             
-            # Remove previous best checkpoint if it exists
-            if best_checkpoint_path and os.path.exists(best_checkpoint_path):
+            # Remove existing best symlink if it exists
+            if os.path.exists(best_path) or os.path.islink(best_path):
                 try:
-                    os.remove(best_checkpoint_path)
-                    print(f"Removed previous best checkpoint: {os.path.basename(best_checkpoint_path)}")
+                    os.remove(best_path)
+                    print(f"Removed previous best symlink")
                 except Exception as e:
-                    print(f"Warning: Failed to remove previous best checkpoint: {e}")
+                    print(f"Warning: Failed to remove previous best symlink: {e}")
             
-            # Start async copy
-            print(f"Starting async copy for best checkpoint: {best_filename}")
-            # We can't easily use asyncio in the current setup, so use a non-blocking copy
-            # via a separate thread
-            from threading import Thread
-            copy_thread = Thread(
-                target=shutil.copy2,
-                args=(checkpoint_path, best_path),
-                daemon=True
-            )
-            copy_thread.start()
+            # Create symlink from best.pt to the current checkpoint
+            try:
+                os.symlink(os.path.basename(checkpoint_path), best_path)
+                print(f"Created symlink: best.pt -> {os.path.basename(checkpoint_path)}")
+            except Exception as e:
+                print(f"Warning: Failed to create best symlink, falling back to copy: {e}")
+                shutil.copy2(checkpoint_path, best_path)
             
-            best_checkpoint_path = best_path
-            print(f"New best model will be saved as: {best_filename}")
-        else:
-            # Keep track of regular checkpoints
-            recent_checkpoints.append(checkpoint_path)
+            # Track which checkpoint is currently the best
+            best_checkpoint_filename = os.path.basename(checkpoint_path)
+        
+        # Clean up old checkpoints, making sure not to delete the best one
+        # Get the number of checkpoints to keep from args
+        num_to_keep = args.keep_checkpoints
+        
+        # Keep only the N most recent checkpoints (plus don't delete best)
+        while len(recent_checkpoints) > num_to_keep:
+            old_checkpoint = recent_checkpoints.pop(0)
+            old_checkpoint_filename = os.path.basename(old_checkpoint)
             
-            # Keep only the 3 most recent checkpoints
-            while len(recent_checkpoints) > 3:
-                old_checkpoint = recent_checkpoints.pop(0)
-                if os.path.exists(old_checkpoint):
-                    try:
-                        os.remove(old_checkpoint)
-                        print(f"Removed old checkpoint: {os.path.basename(old_checkpoint)}")
-                    except Exception as e:
-                        print(f"Warning: Failed to remove old checkpoint: {e}")
+            # Don't delete if it's the best checkpoint
+            if old_checkpoint_filename == best_checkpoint_filename:
+                print(f"Keeping {old_checkpoint_filename} as it's currently the best model")
+                continue
+                
+            # Otherwise, delete it
+            if os.path.exists(old_checkpoint):
+                try:
+                    os.remove(old_checkpoint)
+                    print(f"Removed old checkpoint: {os.path.basename(old_checkpoint)}")
+                except Exception as e:
+                    print(f"Warning: Failed to remove old checkpoint: {e}")
         
         return checkpoint_path
     
@@ -1082,6 +1086,7 @@ def main():
         print(f"- Model dimension: {model_config['dim']}")
         print(f"- Model depth: {model_config['depth']}")
         print(f"- Tensor parallelism: {args.tp_size} GPUs")
+        print(f"- Keeping {args.keep_checkpoints} most recent checkpoints")
         
         # Log the configuration summary
         if checkpoint_dir:
