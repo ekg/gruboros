@@ -3,12 +3,13 @@
 library(ggplot2)
 library(minpack.lm)  # For better nonlinear fitting
 
-# Parse command line argument for table name (without extension)
+# Parse command line arguments for table name and optional target loss
 args <- commandArgs(trailingOnly = TRUE)
 if(length(args) < 1) {
-  stop("Usage: script.R <table_name>")
+  stop("Usage: script.R <table_name> [target_loss]")
 }
 table_name <- args[1]
+target_loss <- if(length(args) >= 2) as.numeric(args[2]) else NULL
 
 # Read the data
 data <- read.delim(table_name)
@@ -95,6 +96,38 @@ if(length(models) > 0) {
     }
   }
   
+  # Calculate steps to reach target loss if provided
+  steps_to_target <- NA
+  if(!is.null(target_loss)) {
+    # Check if target is achievable (greater than asymptotic minimum)
+    if(target_loss > min_loss) {
+      below_target <- prediction_steps[predictions$train_loss <= target_loss]
+      
+      if(length(below_target) > 0) {
+        steps_to_target <- min(below_target)
+      } else {
+        # If no values below target in our prediction range, estimate when it might happen
+        if(best_model_name == "exp") {
+          # For exponential decay, solve a*exp(-b*x) + c = target_loss
+          # x = -ln((target_loss-c)/a)/b
+          steps_to_target <- -log((target_loss - params["c"]) / params["a"]) / params["b"]
+        } else {
+          # For power law, solve a*(x+d)^(-b) + c = target_loss
+          # x = ((target_loss-c)/a)^(-1/b) - d
+          steps_to_target <- ((target_loss - params["c"]) / params["a"])^(-1/params["b"]) - params["d"]
+        }
+        
+        # Check if the solution is valid
+        if(is.nan(steps_to_target) || is.infinite(steps_to_target) || steps_to_target < 0) {
+          steps_to_target <- NA
+        }
+      }
+    } else {
+      cat(paste("Warning: Target loss", target_loss, "is below the estimated asymptotic minimum", 
+                min_loss, "and may never be reached.\n"))
+    }
+  }
+  
   # Calculate model statistics
   model_summary <- summary(best_model)
   r_squared <- 1 - sum(residuals(best_model)^2) / sum((train_data$train_loss - mean(train_data$train_loss))^2)
@@ -105,7 +138,16 @@ if(length(models) > 0) {
   cat(paste("Model parameters:", paste(names(params), "=", round(params, 5), collapse=", "), "\n"))
   cat(paste("R-squared:", round(r_squared, 4), "\n"))
   cat(paste("Estimated asymptotic minimum loss:", round(min_loss, 5), "\n"))
-  cat(paste("Steps to reach within 1% of minimum:", round(steps_to_threshold, 0), "\n\n"))
+  cat(paste("Steps to reach within 1% of minimum:", round(steps_to_threshold, 0), "\n"))
+  if(!is.null(target_loss)) {
+    if(!is.na(steps_to_target)) {
+      cat(paste("Steps to reach target loss", target_loss, ":", round(steps_to_target, 0), "\n\n"))
+    } else {
+      cat(paste("Unable to estimate steps to reach target loss", target_loss, "\n\n"))
+    }
+  } else {
+    cat("\n")
+  }
   
   # Format parameters for display
   param_text <- paste(names(params), "=", format(round(params, 4), nsmall=4), collapse="\n")
@@ -128,7 +170,11 @@ if(length(models) > 0) {
                             "\nSteps to min ≈ ", 
                             ifelse(is.na(steps_to_threshold), 
                                    "not reached", 
-                                   format(round(steps_to_threshold, 0), big.mark=",")), 
+                                   format(round(steps_to_threshold, 0), big.mark=",")),
+                            if(!is.null(target_loss) && !is.na(steps_to_target)) 
+                              paste0("\nSteps to ", target_loss, " ≈ ", 
+                                     format(round(steps_to_target, 0), big.mark=","))
+                            else "",
                             "\n\nParameters:\n", param_text),
              hjust = 0, size = 3.5)
 } else {
