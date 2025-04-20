@@ -935,10 +935,20 @@ def main():
             # Create symlink from best.pt to the current checkpoint
             try:
                 os.symlink(os.path.basename(checkpoint_path), best_path)
-                print(f"Created symlink: best.pt -> {os.path.basename(checkpoint_path)}")
+                print(f"Created best symlink: best.pt -> {os.path.basename(checkpoint_path)}")
+                
+                # Double-check that best.pt exists
+                if os.path.exists(best_path) or os.path.islink(best_path):
+                    print(f"Confirmed best.pt exists and points to {os.path.basename(checkpoint_path)}")
+                else:
+                    print(f"WARNING: best.pt could not be verified after creation!")
+                    # Fallback to direct copy if symlink doesn't seem to exist
+                    shutil.copy2(checkpoint_path, best_path)
+                    print(f"Fallback: Copied checkpoint directly to best.pt")
             except Exception as e:
                 print(f"Warning: Failed to create best symlink, falling back to copy: {e}")
                 shutil.copy2(checkpoint_path, best_path)
+                print(f"Directly copied checkpoint to best.pt instead of symlinking")
             
             # Track which checkpoint is currently the best
             best_checkpoint_filename = os.path.basename(checkpoint_path)
@@ -1167,7 +1177,17 @@ def main():
         # Save checkpoint periodically
         if args.save_every > 0 and step > 0 and step % args.save_every == 0:
             # Always save on checkpoint steps, with validation loss if available
-            is_best = val_loss_for_checkpoint is not None and val_loss_for_checkpoint < best_val_loss
+            is_best = False
+            
+            # Only consider this checkpoint as best if we just did validation
+            if val_loss_for_checkpoint is not None:
+                is_best = val_loss_for_checkpoint < best_val_loss
+                if is_best:
+                    # Update the best val loss for tracking
+                    best_val_loss = val_loss_for_checkpoint
+                    if model_engine.global_rank == 0:
+                        print(f"New best model found with validation loss {val_loss_for_checkpoint:.4f}")
+            
             save_path = save_checkpoint(step, loss.item(), val_loss_for_checkpoint, is_best=is_best)
             
             if model_engine.global_rank == 0:
@@ -1183,10 +1203,16 @@ def main():
     if model_engine.global_rank == 0:
         # Save the final checkpoint with validation loss and check if it's the best one
         is_final_best = final_val_loss < best_val_loss
-        final_path = save_checkpoint(train_steps + start_step, loss.item(), final_val_loss, is_best=is_final_best)
+        
+        # Update best val loss if this is the best
         if is_final_best:
             best_val_loss = final_val_loss
             print(f"Final model is best model with validation loss {final_val_loss:.4f}")
+            
+        final_path = save_checkpoint(train_steps + start_step, loss.item(), final_val_loss, is_best=is_final_best)
+        
+        if is_final_best:
+            print(f"Best model saved to best.pt -> {os.path.basename(final_path)}")
         
         # After training, switch to eval mode if using ScheduleFree
         if args.schedulefree:
