@@ -105,9 +105,9 @@ def get_parameter_count_str(config):
     else:
         return f"{params}"
 
-class RandomSamplingDataset(Dataset):
-    """Dataset that efficiently samples random chunks from a file without loading it entirely"""
-    def __init__(self, filepath, seq_len, seed=42):
+class InfiniteRandomSamplingDataset(Dataset):
+    """Dataset that infinitely samples random chunks from a file without loading it entirely"""
+    def __init__(self, filepath, seq_len, seed=42, virtual_size=1000000):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
@@ -118,41 +118,42 @@ class RandomSamplingDataset(Dataset):
         # Maximum valid starting position
         self.max_start = max(0, self.file_size - seq_len - 1)
         
-        # Define a FIXED number of samples for training - doesn't need to match file size
-        # We're just doing random access anyway, so this controls epoch size
-        self.samples_per_epoch = 10000  # Arbitrary size that defines how many batches per epoch
+        # Virtual size - doesn't affect actual sampling, just affects how DataLoader
+        # perceives the dataset size for batching purposes
+        self.virtual_size = virtual_size
         
-        # Set up random generator with seed for reproducibility
-        self.seed = seed
-        self.rng = random.Random(seed)
+        # Global RNG for consistent behavior
+        self.global_rng = random.Random(seed)
         
-        # File handle (initialized lazily)
-        self.file = None
+        # Thread-local storage for file handles
+        import threading
+        self.local = threading.local()
         
-        print(f"RandomSamplingDataset: Using file {filepath} ({self.file_size:,} bytes)")
-        print(f"Samples per epoch: {self.samples_per_epoch} (fixed size for efficiency)")
-        print(f"Data is read on demand - no file content loaded into memory")
+        print(f"InfiniteRandomSamplingDataset: Using file {filepath} ({self.file_size:,} bytes)")
+        print(f"Virtual size: {self.virtual_size:,} (purely for iteration control)")
+        print(f"Data sampled randomly on demand - no epoch boundaries - no memory loading")
     
     def __len__(self):
-        return self.samples_per_epoch
-    
-    def set_epoch(self, epoch):
-        """Reset RNG for deterministic sampling per epoch"""
-        self.rng = random.Random(self.seed + epoch)
+        # Return virtual size - this doesn't affect the actual sampling
+        # It just controls how DataLoader perceives the dataset size
+        return self.virtual_size
     
     def _get_file_handle(self):
-        """Get file handle, creating it if needed"""
-        if self.file is None or self.file.closed:
-            self.file = open(self.filepath, 'rb')
-        return self.file
+        """Get file handle, creating it if needed (thread-local)"""
+        if not hasattr(self.local, 'file') or self.local.file is None or self.local.file.closed:
+            self.local.file = open(self.filepath, 'rb')
+        return self.local.file
     
     def __getitem__(self, idx):
-        # Use the idx to seed the RNG to get deterministic sequence
-        # This ensures reproducible sampling while still using different locations
-        sample_rng = random.Random(self.seed + idx)
+        # Completely ignore idx - just sample randomly
+        # Create thread-local RNG for better parallelism
+        if not hasattr(self.local, 'rng'):
+            # Each thread gets its own RNG, seeded from the global one
+            thread_seed = self.global_rng.randint(0, 2**32-1)
+            self.local.rng = random.Random(thread_seed)
         
-        # Sample a position based on the idx
-        start_pos = sample_rng.randint(0, self.max_start)
+        # Sample a completely random position
+        start_pos = self.local.rng.randint(0, self.max_start)
         
         try:
             # Get file handle and read data
@@ -160,9 +161,8 @@ class RandomSamplingDataset(Dataset):
             f.seek(start_pos)
             data = f.read(self.seq_len + 1)  # +1 for target token
             
-            # Convert to tensor without loading entire file
-            # List comprehension is more memory efficient than directly creating a tensor
-            tensor = torch.tensor([b for b in data], dtype=torch.long)
+            # Convert to tensor - use bytearray for efficiency
+            tensor = torch.tensor(bytearray(data), dtype=torch.long)
             
             # Handle edge case
             if tensor.size(0) < self.seq_len + 1:
@@ -174,20 +174,21 @@ class RandomSamplingDataset(Dataset):
             print(f"Error reading from file at position {start_pos}: {e}")
             # Try to recover file handle
             try:
-                if self.file:
-                    self.file.close()
-                self.file = None
+                if hasattr(self.local, 'file') and self.local.file:
+                    self.local.file.close()
+                    self.local.file = None
             except:
                 pass
             return torch.zeros(self.seq_len + 1, dtype=torch.long)
     
     def __del__(self):
-        """Clean up resources"""
-        if hasattr(self, 'file') and self.file:
-            try:
-                self.file.close()
-            except:
-                pass
+        """Clean up resources - need a different approach for thread-local storage"""
+        try:
+            # Check if local attribute exists and has a file
+            if hasattr(self, 'local') and hasattr(self.local, 'file') and self.local.file:
+                self.local.file.close()
+        except:
+            pass
 
 def get_model(model_config):
     """Create a minLM model with the given configuration"""
@@ -781,19 +782,23 @@ def main():
     if args.schedulefree:
         model_engine.optimizer.train()
     
-    # Create the datasets using our pseudorandom sampler
+    # Create the datasets using our infinite random sampler
     # The same file is used for both training and validation
-    train_dataset = RandomSamplingDataset(
+    train_dataset = InfiniteRandomSamplingDataset(
         filepath=args.data,
         seq_len=seq_len,
-        seed=SEED
+        seed=SEED,
+        # Virtual size determines when DataLoader thinks it's done with an "epoch"
+        # This is just for iteration control, not actual sampling boundaries
+        virtual_size=10000  # ~10k batches per "epoch" for DataLoader
     )
     
     # Create a separate instance for validation with a different seed
-    val_dataset = RandomSamplingDataset(
+    val_dataset = InfiniteRandomSamplingDataset(
         filepath=args.data,
         seq_len=seq_len,
-        seed=SEED + 100  # Different seed for validation
+        seed=SEED + 100,  # Different seed for validation
+        virtual_size=500  # Smaller for validation
     )
     
     if args.local_rank == 0:
@@ -989,8 +994,7 @@ def main():
                           bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
         
         with torch.no_grad():
-            # Set fixed epoch for validation to ensure deterministic behavior
-            val_dataset.set_epoch(0)
+            # No need to set epoch - validation dataset has its own fixed seed
             
             for x in val_loader:
                 inputs, targets = x[:, :-1], x[:, 1:]
@@ -1099,9 +1103,8 @@ def main():
         pbar.update(start_step)  # Update for resumed progress
         
     for step in range(start_step, start_step + train_steps):
-        # Set epoch for deterministic sampling sequence
-        epoch = step // len(train_loader)
-        train_dataset.set_epoch(epoch)
+        # We don't need to set epochs anymore - the dataset is truly random
+        # Just let it run indefinitely
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
