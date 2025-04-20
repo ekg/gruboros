@@ -118,8 +118,9 @@ class RandomSamplingDataset(Dataset):
         # Maximum valid starting position
         self.max_start = max(0, self.file_size - seq_len - 1)
         
-        # Set samples per epoch to maximum possible valid samples from file
-        self.samples_per_epoch = self.max_start + 1
+        # Define a FIXED number of samples for training - doesn't need to match file size
+        # We're just doing random access anyway, so this controls epoch size
+        self.samples_per_epoch = 10000  # Arbitrary size that defines how many batches per epoch
         
         # Set up random generator with seed for reproducibility
         self.seed = seed
@@ -129,7 +130,8 @@ class RandomSamplingDataset(Dataset):
         self.file = None
         
         print(f"RandomSamplingDataset: Using file {filepath} ({self.file_size:,} bytes)")
-        print(f"Samples are read on demand - no upfront data loading")
+        print(f"Samples per epoch: {self.samples_per_epoch} (fixed size for efficiency)")
+        print(f"Data is read on demand - no file content loaded into memory")
     
     def __len__(self):
         return self.samples_per_epoch
@@ -145,9 +147,12 @@ class RandomSamplingDataset(Dataset):
         return self.file
     
     def __getitem__(self, idx):
-        # Sample a random position regardless of the idx parameter
-        # This follows a predictable pseudorandom sequence based on the seed
-        start_pos = self.rng.randint(0, self.max_start)
+        # Use the idx to seed the RNG to get deterministic sequence
+        # This ensures reproducible sampling while still using different locations
+        sample_rng = random.Random(self.seed + idx)
+        
+        # Sample a position based on the idx
+        start_pos = sample_rng.randint(0, self.max_start)
         
         try:
             # Get file handle and read data
@@ -155,8 +160,9 @@ class RandomSamplingDataset(Dataset):
             f.seek(start_pos)
             data = f.read(self.seq_len + 1)  # +1 for target token
             
-            # Convert to tensor
-            tensor = torch.tensor(list(data), dtype=torch.long)
+            # Convert to tensor without loading entire file
+            # List comprehension is more memory efficient than directly creating a tensor
+            tensor = torch.tensor([b for b in data], dtype=torch.long)
             
             # Handle edge case
             if tensor.size(0) < self.seq_len + 1:
