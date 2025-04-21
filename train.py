@@ -1069,9 +1069,7 @@ def main():
         if args.schedulefree:
             model_engine.optimizer.eval()
         
-        if model_engine.global_rank == 0:
-            val_pbar = tqdm(total=5, desc="Validating", 
-                          bar_format='{desc}: {percentage:3.0f}%|{bar}')
+        # Don't display validation progress meter
         
         with torch.no_grad():
             # Reset validation dataset to a fixed epoch (0) for consistent validation
@@ -1092,14 +1090,13 @@ def main():
                 
                 # Update progress bar
                 if model_engine.global_rank == 0:
-                    val_pbar.update(1)
+                    # Skip validation progress updates
                 
                 # Limit validation to a few batches for speed
                 if batch_count >= 5:
                     break
         
-        if model_engine.global_rank == 0:
-            val_pbar.close()
+        # No validation bar to close
         
         # Calculate average
         avg_loss = total_loss / max(1, batch_count)
@@ -1233,23 +1230,26 @@ def main():
                 elapsed = time.time() - start_time
                 tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
                 
-                # Update progress bar with stats
-                postfix_dict = {
-                    'loss': f"{loss.item():.4f}",
-                    'lr': f"{model_engine.optimizer.param_groups[0]['lr']:.6f}",
-                    'tok/s': f"{tokens_per_sec:.2f}"
-                }
+                # Update progress bar with stats in the format key=value
+                formatted_stats = [
+                    f"loss={loss.item():.4f}",
+                    f"lr={model_engine.optimizer.param_groups[0]['lr']:.6f}",
+                    f"tok/s={tokens_per_sec:.2f}"
+                ]
                 
                 # Add validation info and epoch if available
                 # Always show validation loss once we have calculated it at least once
                 if current_val_loss is not None:
-                    postfix_dict['val'] = f"{current_val_loss:.4f}"
-                    postfix_dict['best'] = f"{best_val_loss:.4f}"
+                    formatted_stats.append(f"val={current_val_loss:.4f}")
+                    formatted_stats.append(f"best={best_val_loss:.4f}")
                 
                 # Add current epoch
-                postfix_dict['epoch'] = f"{current_epoch}"
+                formatted_stats.append(f"epoch={current_epoch}")
                 
-                pbar.set_postfix(postfix_dict)
+                # Join all stats with commas for cleaner display
+                postfix = " ".join(formatted_stats)
+                
+                pbar.set_postfix_str(postfix)
                 pbar.update(1)
                 
                 # Log metrics for training
