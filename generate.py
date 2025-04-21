@@ -3,6 +3,7 @@ import argparse
 import gzip
 import random
 import torch
+import torch.nn.functional as F
 import numpy as np
 import json
 import re
@@ -36,12 +37,67 @@ def gumbel_sample(t, temperature=1., dim=-1, keepdim=True):
     return ((t / max(temperature, 1e-10)) + gumbel_noise(t)).argmax(dim=dim, keepdim=keepdim)
 
 def top_k(logits, thres=0.9):
-    import math
-    k = math.ceil((1 - thres) * logits.shape[-1])
-    val, ind = torch.topk(logits, k)
-    probs = torch.full_like(logits, float('-inf'))
-    probs.scatter_(-1, ind, val)
-    return probs
+    """Top-k sampling to limit generated tokens to top k candidates
+    
+    Args:
+        logits: Raw logits from model output
+        thres: Value between 0 and 1 determining percentage of tokens to keep
+               (0.9 means keep top 90% tokens by probability)
+    
+    Returns:
+        Filtered logits with low-probability tokens set to -inf
+    """
+    # Convert logits to probabilities with softmax
+    probs = F.softmax(logits, dim=-1)
+    
+    # Determine how many tokens to keep (k is the count)
+    k = max(1, int(thres * logits.shape[-1]))
+    
+    # Get the top k tokens
+    top_probs, top_indices = torch.topk(probs, k, dim=-1)
+    
+    # Create a mask with -inf for tokens not in top k
+    filtered_logits = torch.full_like(logits, float('-inf'))
+    filtered_logits.scatter_(-1, top_indices, torch.log(top_probs + 1e-10))
+    
+    return filtered_logits
+
+def top_p(logits, thres=0.9):
+    """Nucleus (top-p) sampling
+    
+    Args:
+        logits: Raw logits from model output
+        thres: Value between 0 and 1 representing cumulative probability threshold
+    
+    Returns:
+        Filtered logits with low-probability tokens set to -inf
+    """
+    # Convert logits to probabilities
+    probs = F.softmax(logits, dim=-1)
+    
+    # Sort probabilities in descending order
+    sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+    
+    # Calculate cumulative probabilities
+    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+    
+    # Remove tokens with cumulative probability above the threshold
+    sorted_indices_to_remove = cumulative_probs > thres
+    
+    # Shift the indices to the right to keep the first token above threshold
+    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+    sorted_indices_to_remove[..., 0] = 0
+    
+    # Create a mask for tokens to keep
+    indices_to_remove = torch.zeros_like(probs, dtype=torch.bool).scatter_(
+        -1, sorted_indices, sorted_indices_to_remove
+    )
+    
+    # Set -inf where mask is True
+    filtered_logits = logits.clone()
+    filtered_logits[indices_to_remove] = float('-inf')
+    
+    return filtered_logits
 
 def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False, device=None):
     """
@@ -214,6 +270,7 @@ def chunked_generation(
     chunk_length: int,
     temperature: float = 1.0,
     filter_thres: float = 0.9,
+    sampling_method: str = 'top_k',  # 'top_k' or 'top_p'
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     callback=None
 ):
@@ -278,8 +335,13 @@ def chunked_generation(
                 # Update hidden state for next iteration
                 prev_hiddens = next_prev_hiddens
                 
-                # Apply top-k filtering and sample
-                filtered_logits = top_k(logits, thres=filter_thres)
+                # Apply filtering method (top-k or top-p)
+                if sampling_method == 'top_p':
+                    filtered_logits = top_p(logits, thres=filter_thres)
+                else:  # default to top-k
+                    filtered_logits = top_k(logits, thres=filter_thres)
+                
+                # Sample from the filtered distribution
                 sample = gumbel_sample(filtered_logits, temperature=temperature, dim=-1)
                 
                 # Ensure sample is Long before concatenation
@@ -393,6 +455,7 @@ def main():
     # Generation parameters
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling (default: 1.0)")
     parser.add_argument("--top_k", type=float, default=0.9, help="Threshold for top-k filtering (default: 0.9)")
+    parser.add_argument("--use_top_p", action="store_true", help="Use nucleus (top-p) sampling instead of top-k")
     parser.add_argument("--chunk_length", type=str, default="64", help="Process sequence in chunks of this length (default: 64). Can use k/m/g suffix.")
     parser.add_argument("--generation_length", type=str, default="512", help="Total number of tokens to generate (default: 512). Can use k/m/g suffix.")
     
@@ -502,7 +565,8 @@ def main():
         print(f"Progress: {percent_done:.1f}% | Speed: {tokens_per_sec:.2f} tokens/sec", end="\r")
     
     print(f"\nGenerating {generation_length} tokens in chunks of {chunk_length}...")
-    print(f"Temperature: {args.temperature}, Top-k threshold: {args.top_k}")
+    sampling_method = "Nucleus (top-p)" if args.use_top_p else "Top-k"
+    print(f"Temperature: {args.temperature}, {sampling_method} threshold: {args.top_k}")
     
     # Memory optimization
     if args.memory_efficient:
@@ -521,6 +585,7 @@ def main():
             chunk_length,
             args.temperature,
             args.top_k,
+            'top_p' if args.use_top_p else 'top_k',
             device,
             progress_callback
         )
