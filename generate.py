@@ -385,7 +385,7 @@ def chunked_generation(
                     # First filter with top-p
                     filtered_logits = top_p(logits, thres=filter_thres)
                     # Then apply sampling
-                    sample = improved_top_k_sampling(filtered_logits, temperature, top_k=40)
+                    sample = improved_top_k_sampling(filtered_logits, temperature, top_k=args.top_p_tokens)
                 else:
                     # Direct top-k sampling
                     top_k_value = max(1, int(filter_thres * logits.shape[-1]))
