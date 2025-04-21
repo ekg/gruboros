@@ -1071,9 +1071,9 @@ def main():
         # Don't display validation progress meter
         
         with torch.no_grad():
-            # Reset validation dataset to a fixed epoch (0) for consistent validation
-            val_dataset.set_epoch(0)
-            val_sampler.set_epoch(0)
+            # Use current training epoch for validation to evolve validation samples
+            val_dataset.set_epoch(current_epoch)
+            val_sampler.set_epoch(current_epoch)
             
             for x in val_loader:
                 inputs, targets = x[:, :-1], x[:, 1:]
