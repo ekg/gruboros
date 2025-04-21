@@ -156,7 +156,6 @@ class EpochBasedRandomDataset(Dataset):
             self.current_epoch = epoch
             # Create a new RNG for this epoch with a seed derived from base seed and epoch
             self.epoch_rng = random.Random(self.seed + epoch)
-            print(f"Dataset advancing to epoch {epoch}")
             
             # Generate a new set of indices for this epoch
             self._generate_epoch_indices()
@@ -1224,12 +1223,6 @@ def main():
                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
         pbar.update(start_step)  # Update for resumed progress
         
-    # Log batches per epoch information
-    if model_engine.global_rank == 0:
-        print(f"\nTraining with {args.batches_per_epoch} batches per epoch")
-        print(f"Each epoch will use {args.batches_per_epoch * batch_size} examples")
-        print(f"Epoch advancement happens every {args.batches_per_epoch} steps")
-        
     current_epoch = 0
     for step in range(start_step, start_step + train_steps):
         # Calculate current epoch based on batches_per_epoch parameter
@@ -1240,8 +1233,6 @@ def main():
         # If we're starting a new epoch, update the dataset and samplers
         if epoch > current_epoch:
             current_epoch = epoch
-            if model_engine.global_rank == 0:
-                print(f"\n--- Starting epoch {current_epoch} ({batches_per_epoch} batches) ---")
             
             # Update dataset epoch for new random sequence
             train_dataset.set_epoch(current_epoch)
@@ -1255,9 +1246,6 @@ def main():
             
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                
-            if model_engine.global_rank == 0:
-                print("Memory cleaned up between epochs")
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
@@ -1292,10 +1280,13 @@ def main():
                     'tok/s': f"{tokens_per_sec:.2f}"
                 }
                 
-                # Add validation info if available
+                # Add validation info and epoch if available
                 if val_loss_for_checkpoint is not None:
                     postfix_dict['val'] = f"{val_loss_for_checkpoint:.4f}"
                     postfix_dict['best'] = f"{best_val_loss:.4f}"
+                
+                # Add current epoch
+                postfix_dict['epoch'] = f"{current_epoch}"
                 
                 pbar.set_postfix(postfix_dict)
                 pbar.update(1)
