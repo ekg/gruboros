@@ -164,7 +164,7 @@ class ContinuousIIDDataset(Dataset):
         if self.log_sample_hashes and self.sample_hash_file:
             # Create/clear the sample hash log file with a header
             with open(self.sample_hash_file, 'w') as f:
-                f.write("step_idx\thash\n")
+                f.write("step_idx\tfile_pos\thash\n")
         
         print(f"ContinuousIIDDataset: Using file {filepath} ({self.file_size:,} bytes)")
         print(f"File contains approximately {self.unique_positions:,} possible unique samples")
@@ -240,9 +240,9 @@ class ContinuousIIDDataset(Dataset):
                 sample_bytes = tensor.cpu().numpy().tobytes()
                 sample_hash = hashlib.sha256(sample_bytes).hexdigest()
                 
-                # Write to hash log file
+                # Write to hash log file with file position included
                 with open(self.sample_hash_file, 'a') as f:
-                    f.write(f"{self.sample_counter-1}\t{sample_hash}\n")
+                    f.write(f"{self.sample_counter-1}\t{file_pos}\t{sample_hash}\n")
             
             return tensor
         except Exception as e:
