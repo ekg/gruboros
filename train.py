@@ -1146,6 +1146,7 @@ def main():
     # 7) Training loop
     start_time = time.time()
     best_val_loss = float('inf')
+    current_val_loss = None  # Track most recent validation loss
     total_tokens_processed = 0
     val_loss_for_checkpoint = None  # Initialize to None at start
     
@@ -1240,8 +1241,9 @@ def main():
                 }
                 
                 # Add validation info and epoch if available
-                if val_loss_for_checkpoint is not None:
-                    postfix_dict['val'] = f"{val_loss_for_checkpoint:.4f}"
+                # Always show validation loss once we have calculated it at least once
+                if current_val_loss is not None:
+                    postfix_dict['val'] = f"{current_val_loss:.4f}"
                     postfix_dict['best'] = f"{best_val_loss:.4f}"
                 
                 # Add current epoch
@@ -1257,10 +1259,10 @@ def main():
             break
         
         # Validate periodically
-        val_loss_for_checkpoint = None
         if args.validate_every > 0 and step > 0 and step % args.validate_every == 0:
             val_loss = validate()
             val_loss_for_checkpoint = val_loss
+            current_val_loss = val_loss  # Store for display in progress bar
             
             if model_engine.global_rank == 0:
                 # Log metrics with validation
