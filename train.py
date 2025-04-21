@@ -362,6 +362,10 @@ def get_args():
     parser.add_argument('--keep_checkpoints', type=int, default=3,
                         help='number of recent checkpoints to keep (default: 3)')
     
+    # Add gradient accumulation parameter
+    parser.add_argument('--grad_accum', type=int, default=1,
+                        help='number of gradient accumulation steps (effectively multiplies batch size)')
+    
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
     
@@ -729,6 +733,12 @@ def main():
         print(f"Model size: {get_parameter_count_str(model_config)} parameters ({param_count:,})")
         print(f"Model configuration: {model_config}")
         
+        # Log gradient accumulation settings
+        if args.grad_accum > 1:
+            effective_batch = batch_size * args.grad_accum
+            print(f"Using gradient accumulation: {args.grad_accum} steps")
+            print(f"Effective batch size: {effective_batch} (micro-batch: {batch_size})")
+        
         # Save model configuration to both config.json files
         if checkpoint_dir:
             config_path = os.path.join(checkpoint_dir, "config.json")
@@ -760,10 +770,10 @@ def main():
         if args.local_rank == 0:
             print(f"Using standard AdamW optimizer with lr={args.lr} (ScheduleFree disabled)")
     
-    # 2) DeepSpeed config for tensor parallelism
+    # 2) DeepSpeed config for tensor parallelism and gradient accumulation
     ds_config = {
         "train_micro_batch_size_per_gpu": batch_size,
-        "gradient_accumulation_steps": 1,
+        "gradient_accumulation_steps": args.grad_accum,
         "tensor_parallel": {
             "tp": {
                 "tp_size": args.tp_size,
@@ -1160,6 +1170,8 @@ def main():
         print(f"- Model depth: {model_config['depth']}")
         print(f"- Tensor parallelism: {args.tp_size} GPUs")
         print(f"- Keeping {args.keep_checkpoints} most recent checkpoints")
+        print(f"- Gradient accumulation steps: {args.grad_accum}")
+        print(f"- Effective batch size: {batch_size * args.grad_accum} (micro-batch: {batch_size})")
         
         # Log the configuration summary
         if checkpoint_dir:
@@ -1169,7 +1181,9 @@ def main():
                 f.write(f"Configuration: {json.dumps(model_config, indent=2)}\n")
                 f.write(f"Distributed setup: {args.tp_size} GPUs with tensor parallelism\n")
                 f.write(f"Sequence length: {seq_len}\n")
-                f.write(f"Batch size: {batch_size} per GPU\n")
+                f.write(f"Batch size: {batch_size} per GPU (micro-batch)\n")
+                f.write(f"Gradient accumulation steps: {args.grad_accum}\n")
+                f.write(f"Effective batch size: {batch_size * args.grad_accum} per GPU\n")
     
     # Synchronize all processes before starting training loop
     synchronize_processes()
