@@ -81,13 +81,12 @@ def improved_top_k_sampling(logits, temperature=1.0, top_k=40):
     # Convert to tensor and reshape appropriately
     return torch.tensor(selected_tokens, device=device).unsqueeze(-1)
 
-def top_k(logits, thres=0.9):
+def top_k(logits, k=40):
     """Top-k sampling to limit generated tokens to top k candidates
     
     Args:
         logits: Raw logits from model output
-        thres: Value between 0 and 1 determining percentage of tokens to keep
-               (0.9 means keep top 90% tokens by probability)
+        k: Number of top tokens to keep (default: 40)
     
     Returns:
         Filtered logits with low-probability tokens set to -inf
@@ -95,8 +94,8 @@ def top_k(logits, thres=0.9):
     # Convert logits to probabilities with softmax
     probs = F.softmax(logits, dim=-1)
     
-    # Determine how many tokens to keep (k is the count)
-    k = max(1, int(thres * logits.shape[-1]))
+    # Ensure k is at least 1 and not larger than vocab size
+    k = max(1, min(k, logits.shape[-1]))
     
     # Get the top k tokens
     top_probs, top_indices = torch.topk(probs, k, dim=-1)
@@ -314,7 +313,7 @@ def chunked_generation(
     generation_length: int,
     chunk_length: int,
     temperature: float = 1.0,
-    filter_thres: float = 0.9,
+    filter_thres: int = 40,
     sampling_method: str = 'top_k',  # 'top_k' or 'top_p'
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     callback=None,
@@ -389,8 +388,7 @@ def chunked_generation(
                     sample = improved_top_k_sampling(filtered_logits, temperature, top_k=top_p_tokens)
                 else:
                     # Direct top-k sampling
-                    top_k_value = max(1, int(filter_thres * logits.shape[-1]))
-                    sample = improved_top_k_sampling(logits, temperature, top_k=top_k_value)
+                    sample = improved_top_k_sampling(logits, temperature, top_k=filter_thres)
                 
                 # Append the new token to the output
                 out = torch.cat((out, sample), dim=-1)
@@ -500,7 +498,7 @@ def main():
     
     # Generation parameters
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling (default: 1.0)")
-    parser.add_argument("--top_k", type=float, default=0.9, help="Threshold for top-k filtering (0.9 = use top 90% of vocab)")
+    parser.add_argument("--top_k", type=int, default=40, help="Number of tokens to consider with top-k sampling (default: 40)")
     parser.add_argument("--use_top_p", action="store_true", help="Use nucleus (top-p) sampling instead of top-k")
     parser.add_argument("--top_p_tokens", type=int, default=40, help="Number of tokens to consider with top-p sampling (default: 40)")
     parser.add_argument("--chunk_length", type=str, default="64", help="Process sequence in chunks of this length (default: 64). Can use k/m/g suffix.")
@@ -612,8 +610,10 @@ def main():
         print(f"Progress: {percent_done:.1f}% | Speed: {tokens_per_sec:.2f} tokens/sec", end="\r")
     
     print(f"\nGenerating {generation_length} tokens in chunks of {chunk_length}...")
-    sampling_method = "Nucleus (top-p)" if args.use_top_p else "Top-k"
-    print(f"Temperature: {args.temperature}, {sampling_method} threshold: {args.top_k}")
+    if args.use_top_p:
+        print(f"Temperature: {args.temperature}, Nucleus (top-p) sampling with threshold: 0.9, considering top {args.top_p_tokens} tokens")
+    else:
+        print(f"Temperature: {args.temperature}, Top-k sampling with k={args.top_k} tokens")
     
     # Memory optimization
     if args.memory_efficient:
