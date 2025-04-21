@@ -1224,10 +1224,18 @@ def main():
                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
         pbar.update(start_step)  # Update for resumed progress
         
+    # Log batches per epoch information
+    if model_engine.global_rank == 0:
+        print(f"\nTraining with {args.batches_per_epoch} batches per epoch")
+        print(f"Each epoch will use {args.batches_per_epoch * batch_size} examples")
+        print(f"Epoch advancement happens every {args.batches_per_epoch} steps")
+        
     current_epoch = 0
     for step in range(start_step, start_step + train_steps):
-        # Calculate current epoch based on steps and dataset size
-        epoch = step // len(train_loader)
+        # Calculate current epoch based on batches_per_epoch parameter
+        # With distributed training, we need to multiply by world_size since each GPU processes fewer batches
+        effective_batches_per_epoch = args.batches_per_epoch
+        epoch = step // effective_batches_per_epoch 
         
         # If we're starting a new epoch, update the dataset and samplers
         if epoch > current_epoch:
