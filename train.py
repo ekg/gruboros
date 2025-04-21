@@ -1015,48 +1015,21 @@ def main():
                 abs_best_path = os.path.abspath(best_path)
                 
                 # Print paths to help debug
-                print(f"Creating best symlink:")
-                print(f"  Source: {abs_checkpoint_path}")
-                print(f"  Target: {abs_best_path}")
-                
-                # First try relative symlink (safer and more portable)
+                # Create the symlink (prefer relative paths for portability)
                 os.symlink(os.path.basename(checkpoint_path), best_path)
-                print(f"Created best.pt symlink -> {os.path.basename(checkpoint_path)}")
-
+                
                 # Verify the symlink exists and resolve its target
-                if os.path.islink(best_path):
-                    target = os.readlink(best_path)
-                    print(f"Verified symlink was created. best.pt -> {target}")
-                    
-                    # Check if the symlink target file exists
-                    target_path = os.path.join(os.path.dirname(best_path), target)
-                    if os.path.exists(target_path):
-                        print(f"Verified best.pt target file exists: {target_path}")
-                    else:
-                        print(f"WARNING: best.pt symlink points to non-existent file: {target_path}")
-                        # If symlink target doesn't exist, try to use absolute paths instead
-                        os.remove(best_path)
-                        shutil.copy2(checkpoint_path, best_path)
-                        print(f"Fallback: Copied checkpoint directly to best.pt")
-                else:
-                    print(f"WARNING: best.pt was not created as a symlink!")
-                    # Fallback to direct copy if symlink doesn't exist
+                if not os.path.islink(best_path) or not os.path.exists(os.path.join(os.path.dirname(best_path), os.readlink(best_path))):
+                    # Fallback to direct copy if symlink fails
+                    os.remove(best_path) if os.path.exists(best_path) else None
                     shutil.copy2(checkpoint_path, best_path)
-                    print(f"Fallback: Copied checkpoint directly to best.pt")
             except Exception as e:
-                print(f"Warning: Failed to create best symlink: {e}")
+                print(f"Warning: Failed to create best symlink, using copy instead")
                 try:
                     # Ensure we have a best.pt file even if symlink fails
                     shutil.copy2(checkpoint_path, best_path)
-                    print(f"Fallback: Copied checkpoint directly to best.pt")
-                    
-                    # Verify the copy exists
-                    if os.path.exists(best_path):
-                        print(f"Verified best.pt copy exists: {os.path.getsize(best_path)} bytes")
-                    else:
-                        print(f"ERROR: Failed to create best.pt even with direct copy!")
                 except Exception as copy_error:
-                    print(f"CRITICAL ERROR: Failed to create best.pt with direct copy: {copy_error}")
+                    print(f"Error: Could not create best.pt file: {copy_error}")
             
             # Track which checkpoint is currently the best
             best_checkpoint_filename = os.path.basename(checkpoint_path)
@@ -1088,7 +1061,6 @@ def main():
             if os.path.exists(delete_candidate):
                 try:
                     os.remove(delete_candidate)
-                    print(f"Removed old checkpoint: {os.path.basename(delete_candidate)}")
                 except Exception as e:
                     print(f"Warning: Failed to remove old checkpoint: {e}")
         
@@ -1107,9 +1079,8 @@ def main():
             model_engine.optimizer.eval()
         
         if model_engine.global_rank == 0:
-            print("\nRunning validation...")
             val_pbar = tqdm(total=5, desc="Validation", 
-                          bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+                          bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}')
         
         with torch.no_grad():
             # Reset validation dataset to a fixed epoch (0) for consistent validation
@@ -1138,9 +1109,6 @@ def main():
         
         if model_engine.global_rank == 0:
             val_pbar.close()
-            validation_time = time.time() - validation_start
-            val_tokens_per_sec = val_token_count / validation_time if validation_time > 0 else 0
-            print(f"Validation complete: {val_tokens_per_sec:.2f} tokens/sec")
         
         # Calculate average
         avg_loss = total_loss / max(1, batch_count)
@@ -1304,8 +1272,6 @@ def main():
             val_loss_for_checkpoint = val_loss
             
             if model_engine.global_rank == 0:
-                print(f"[Step {step:03d}] Validation Loss: {val_loss:.4f} (Best: {best_val_loss:.4f})")
-                
                 # Log metrics with validation
                 log_metrics(step, loss.item(), val_loss)
             
@@ -1319,20 +1285,6 @@ def main():
             # Always save checkpoint after validation
             save_path = save_checkpoint(step, loss.item(), val_loss, is_best=is_best)
             
-            if model_engine.global_rank == 0:
-                if is_best:
-                    # Verify the best.pt symlink was created
-                    best_path = os.path.join(checkpoint_dir, "best.pt")
-                    if os.path.exists(best_path) or os.path.islink(best_path):
-                        print(f"Best model checkpoint saved to {save_path} (val loss: {val_loss:.4f})")
-                        print(f"Best symlink created: best.pt -> {os.path.basename(save_path)}")
-                    else:
-                        print(f"WARNING: best.pt symlink was not created properly!")
-                        # Create a copy as emergency fallback
-                        shutil.copy2(save_path, best_path)
-                        print(f"Created a direct copy of best model to best.pt as fallback")
-                else:
-                    print(f"Checkpoint saved to {save_path}")
         
         # Save additional checkpoints periodically (if not already saved by validation)
         if args.save_every > 0 and step > 0 and step % args.save_every == 0:
@@ -1341,8 +1293,6 @@ def main():
                 # Save checkpoint without affecting best model status
                 save_path = save_checkpoint(step, loss.item(), None, is_best=False)
                 
-                if model_engine.global_rank == 0:
-                    print(f"Additional checkpoint saved to {save_path}")
     
     # Final validation
     final_val_loss = validate()
@@ -1351,35 +1301,15 @@ def main():
     if model_engine.global_rank == 0:
         # Save the final checkpoint with validation loss and check if it's the best one
         is_final_best = final_val_loss < best_val_loss
-        
         if is_final_best:
-            print(f"Final model with loss {final_val_loss:.4f} is better than previous best {best_val_loss:.4f}")
             best_val_loss = final_val_loss
-        else:
-            print(f"Final model with loss {final_val_loss:.4f} is not better than best {best_val_loss:.4f}")
-            
+        
         final_path = save_checkpoint(train_steps + start_step, loss.item(), final_val_loss, is_best=is_final_best)
         
-        # Verify the best.pt file exists after saving
+        # Ensure best.pt exists as final fallback
         best_path = os.path.join(checkpoint_dir, "best.pt")
-        if os.path.exists(best_path) or os.path.islink(best_path):
-            if is_final_best:
-                print(f"Final model saved as best model (best.pt)")
-                
-                # Double-check target is correct
-                if os.path.islink(best_path):
-                    target = os.readlink(best_path)
-                    print(f"Verified best.pt -> {target}")
-                else:
-                    print(f"best.pt exists as regular file (not symlink): {os.path.getsize(best_path)} bytes")
-            else:
-                print(f"Final model saved but not marked as best")
-        else:
-            print(f"WARNING: best.pt does not exist after training!")
-            # Create a hard copy of the final checkpoint as best.pt if no best.pt exists
-            if not os.path.exists(best_path):
-                print(f"Creating best.pt as copy of final checkpoint as fallback")
-                shutil.copy2(final_path, best_path)
+        if not os.path.exists(best_path) and not os.path.islink(best_path):
+            shutil.copy2(final_path, best_path)
         
         # After training, switch to eval mode if using ScheduleFree
         if args.schedulefree:
