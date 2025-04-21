@@ -491,6 +491,7 @@ def main():
     parser.add_argument("--config_path", type=str, default=None, 
                        help="Path to model config file (required if no config.json found with checkpoint)")
     parser.add_argument("--device", type=str, default="auto", help="Device to run on: 'cpu', 'cuda', 'cuda:0', etc. (default: 'auto')")
+    parser.add_argument("--cpu", action="store_true", help="Force CPU execution regardless of CUDA availability")
     parser.add_argument("--use-f32", dest="use_bf16", action="store_false", default=True,
                         help="Use FP32 precision instead of BF16 (default: BF16)")
     parser.add_argument("--use-fp16", action="store_true", default=False,
@@ -517,7 +518,10 @@ def main():
     args = parser.parse_args()
     
     # Set device
-    if args.device == "auto":
+    if args.cpu:
+        device = 'cpu'
+        print("Forcing CPU execution as requested")
+    elif args.device == "auto":
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     else:
         device = args.device
