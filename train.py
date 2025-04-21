@@ -1,4 +1,4 @@
-import os, random, numpy as np
+import os, random, numpy as np, hashlib
 import torch, torch.nn as nn
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, Subset
@@ -114,7 +114,8 @@ class ContinuousIIDDataset(Dataset):
     Memory-efficient: No pre-materialization of indices, works with datasets of any size.
     """
     def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, batch_size=1, 
-                 log_samples=False, sample_log_file=None):
+                 log_samples=False, sample_log_file=None,
+                 log_sample_hashes=False, sample_hash_file=None):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
@@ -151,12 +152,19 @@ class ContinuousIIDDataset(Dataset):
         # Setup sample logging if requested
         self.log_samples = log_samples
         self.sample_log_file = sample_log_file
+        self.log_sample_hashes = log_sample_hashes
+        self.sample_hash_file = sample_hash_file
         self.sample_counter = 0
         
         if self.log_samples and self.sample_log_file:
             # Create/clear the sample log file with a header
             with open(self.sample_log_file, 'w') as f:
                 f.write("sample_idx\tfile_offset\trelative_position\n")
+                
+        if self.log_sample_hashes and self.sample_hash_file:
+            # Create/clear the sample hash log file with a header
+            with open(self.sample_hash_file, 'w') as f:
+                f.write("step_idx\thash\n")
         
         print(f"ContinuousIIDDataset: Using file {filepath} ({self.file_size:,} bytes)")
         print(f"File contains approximately {self.unique_positions:,} possible unique samples")
@@ -209,7 +217,7 @@ class ContinuousIIDDataset(Dataset):
             with open(self.sample_log_file, 'a') as f:
                 f.write(f"{self.sample_counter}\t{file_pos}\t{relative_pos:.6f}\n")
             
-            # Increment counter
+            # Increment counter for various logging purposes
             self.sample_counter += 1
         
         try:
@@ -226,6 +234,16 @@ class ContinuousIIDDataset(Dataset):
                 padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
                 tensor = torch.cat([tensor, padding])
                 
+            # Calculate and log SHA256 hash of the sample if requested
+            if self.log_sample_hashes and self.sample_hash_file:
+                # Convert tensor to bytes and hash it
+                sample_bytes = tensor.cpu().numpy().tobytes()
+                sample_hash = hashlib.sha256(sample_bytes).hexdigest()
+                
+                # Write to hash log file
+                with open(self.sample_hash_file, 'a') as f:
+                    f.write(f"{self.sample_counter-1}\t{sample_hash}\n")
+            
             return tensor
         except Exception as e:
             print(f"Error reading from file at position {file_pos}: {e}")
@@ -375,6 +393,10 @@ def get_args():
                         help='log sample offsets to file for validating uniform sampling')
     parser.add_argument('--sample_log_file', type=str, default=None,
                         help='file path for logging sample offsets (saved in checkpoint dir by default)')
+    parser.add_argument('--log_sample_hashes', action='store_true',
+                        help='log SHA256 hashes of samples for uniqueness validation')
+    parser.add_argument('--sample_hash_file', type=str, default=None,
+                        help='file path for logging sample hashes (saved in checkpoint dir by default)')
     
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
@@ -855,6 +877,8 @@ def main():
     # Create the training dataset with continuous IID sampling
     # If logging samples, ensure the log file is in the checkpoint directory
     sample_log_file = None
+    sample_hash_file = None
+    
     if args.log_samples:
         if args.sample_log_file:
             # Check if the provided path is absolute
@@ -867,6 +891,18 @@ def main():
             # Default filename in checkpoint directory
             sample_log_file = os.path.join(checkpoint_dir, "sample_offsets.log")
             
+    if args.log_sample_hashes:
+        if args.sample_hash_file:
+            # Check if the provided path is absolute
+            if os.path.isabs(args.sample_hash_file):
+                sample_hash_file = args.sample_hash_file
+            else:
+                # Place in checkpoint directory if it's a relative path
+                sample_hash_file = os.path.join(checkpoint_dir, args.sample_hash_file)
+        else:
+            # Default filename in checkpoint directory
+            sample_hash_file = os.path.join(checkpoint_dir, "sample_hashes.log")
+            
     train_dataset = ContinuousIIDDataset(
         filepath=args.data,
         seq_len=seq_len,
@@ -874,7 +910,9 @@ def main():
         samples_per_epoch=samples_per_epoch,
         batch_size=batch_size,
         log_samples=args.log_samples,
-        sample_log_file=sample_log_file
+        sample_log_file=sample_log_file,
+        log_sample_hashes=args.log_sample_hashes,
+        sample_hash_file=sample_hash_file
     )
     
     # Create a separate validation dataset - use 10% of training batches
