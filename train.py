@@ -1217,6 +1217,13 @@ def main():
             
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                
+            # Explicitly reset ScheduleFree optimizer to train mode after epoch transition
+            # This is critical as ScheduleFree uses two different points for gradient and test/val loss
+            if args.schedulefree and hasattr(model_engine, 'optimizer'):
+                model_engine.optimizer.train()
+                if model_engine.global_rank == 0 and current_epoch > 0:
+                    print(f"Epoch boundary {current_epoch-1}->{current_epoch}: Reset ScheduleFree optimizer to train mode")
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
