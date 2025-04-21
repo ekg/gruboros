@@ -105,18 +105,19 @@ def get_parameter_count_str(config):
     else:
         return f"{params}"
 
-class EpochBasedRandomDataset(Dataset):
+class ContinuousIIDDataset(Dataset):
     """
-    Dataset that samples across the entire file with proper epoch handling.
-    Uses true IID (Independent and Identically Distributed) sampling with replacement
-    to ensure consistent distribution across epoch boundaries and prevent loss spikes.
+    Dataset that samples across the entire file using true IID (Independent and Identically Distributed) 
+    sampling with replacement. Uses a single, continuous random number generator that never resets, 
+    ensuring there are no artificial distribution shifts at arbitrary epoch boundaries.
+    
+    Memory-efficient: No pre-materialization of indices, works with datasets of any size.
     """
     def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, batch_size=1):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
         self.seed = seed
-        self.current_epoch = 0
         self.batch_size = batch_size
         
         # Get file size
@@ -125,7 +126,7 @@ class EpochBasedRandomDataset(Dataset):
         # Maximum valid starting position
         self.max_start = max(0, self.file_size - seq_len - 1)
         
-        # Set samples per epoch directly (used to determine epoch boundaries)
+        # Set samples per epoch directly (used only for calculating total length)
         if samples_per_epoch is None:
             # Default to 100 batches per epoch
             self.samples_per_epoch = 100 * self.batch_size
@@ -136,43 +137,34 @@ class EpochBasedRandomDataset(Dataset):
         import threading
         self.local = threading.local()
         
-        # Create initial epoch RNG
-        self.epoch_rng = random.Random(self.seed)
+        # Create a SINGLE continuous RNG that will never be reset
+        # This ensures true IID sampling across all steps with no distribution shifts
+        self.rng = random.Random(self.seed)
         
         # Calculate how many unique positions we can sample from
         self.unique_positions = self.max_start + 1
         
-        # Calculate batches per epoch
+        # Calculate batches per epoch (used only for reporting)
         self.batches_per_epoch = self.samples_per_epoch // self.batch_size
         
-        print(f"EpochBasedRandomDataset: Using file {filepath} ({self.file_size:,} bytes)")
+        print(f"ContinuousIIDDataset: Using file {filepath} ({self.file_size:,} bytes)")
         print(f"File contains approximately {self.unique_positions:,} possible unique samples")
         print(f"Training with {self.batches_per_epoch} batches per epoch ({self.samples_per_epoch} samples)")
-        print(f"Using IID sampling with replacement for consistent epoch transitions")
-        print(f"Memory efficient: Only loading individual samples on-demand, not the entire dataset")
+        print(f"Using true continuous IID sampling with NO resets at epoch boundaries")
+        print(f"Memory efficient: Only loading individual samples on-demand, no pre-materialization")
     
     def __len__(self):
         return self.samples_per_epoch
     
     def set_epoch(self, epoch):
-        """Update the epoch number to change the random sampling pattern"""
-        if self.current_epoch != epoch:
-            self.current_epoch = epoch
-            # Create a new RNG for this epoch with a seed derived from base seed and epoch
-            self.epoch_rng = random.Random(self.seed + epoch)
-            
-            # Generate a new set of indices for this epoch
-            self._generate_epoch_indices()
+        """
+        No-op method kept for API compatibility.
+        With continuous IID sampling, we never reset the RNG state.
+        """
+        # Deliberately do nothing - we maintain a single continuous RNG
+        pass
     
-    def _generate_epoch_indices(self):
-        """
-        With true IID sampling, we don't need pre-generated indices.
-        This method is kept for compatibility but now only initializes the epoch RNG.
-        Each __getitem__ call will generate a random position directly.
-        """
-        # We keep epoch_indices attribute for backward compatibility
-        # but it's no longer used for actual sampling
-        self.epoch_indices = []
+    # Method removed - no longer needed with continuous IID sampling
     
     def _get_file_handle(self):
         """Get file handle, creating it if needed (thread-local)"""
@@ -193,13 +185,9 @@ class EpochBasedRandomDataset(Dataset):
                 print(f"Error closing file handle: {e}")
     
     def __getitem__(self, idx):
-        # Make sure epoch RNG is initialized
-        if not hasattr(self, 'epoch_indices'):
-            self._generate_epoch_indices()
-            
-        # For true IID sampling, generate a random position directly
-        # This ensures proper independent sampling with replacement
-        file_pos = self.epoch_rng.randint(0, self.max_start)
+        # Generate a completely random position using our continuous RNG
+        # This ensures pure IID sampling with replacement across the entire training run
+        file_pos = self.rng.randint(0, self.max_start)
         
         try:
             # Get file handle and read data from the determined position
@@ -835,8 +823,8 @@ def main():
     # Calculate samples per epoch based on requested batches per epoch
     samples_per_epoch = batches_per_epoch * batch_size
     
-    # Create the training dataset with proper epoch handling
-    train_dataset = EpochBasedRandomDataset(
+    # Create the training dataset with continuous IID sampling
+    train_dataset = ContinuousIIDDataset(
         filepath=args.data,
         seq_len=seq_len,
         seed=SEED,
@@ -846,7 +834,7 @@ def main():
     
     # Create a separate validation dataset - use 10% of training batches
     val_batches = max(5, batches_per_epoch // 10)
-    val_dataset = EpochBasedRandomDataset(
+    val_dataset = ContinuousIIDDataset(
         filepath=args.data,
         seq_len=seq_len,
         seed=SEED + 100,  # Different seed for validation
@@ -1074,8 +1062,8 @@ def main():
         # Don't display validation progress meter
         
         with torch.no_grad():
-            # Use current training epoch for validation to evolve validation samples
-            val_dataset.set_epoch(current_epoch)
+            # With continuous IID sampling, we no longer need to update epochs
+            # val_sampler still needs epoch updates for proper distributed sampling
             val_sampler.set_epoch(current_epoch)
             
             for x in val_loader:
@@ -1194,15 +1182,9 @@ def main():
         effective_batches_per_epoch = batches_per_epoch
         epoch = step // effective_batches_per_epoch 
         
-        # If we're starting a new epoch, update the dataset and samplers
+        # If we're starting a new epoch
         if epoch > current_epoch:
             current_epoch = epoch
-            
-            # Update dataset epoch for new random sequence
-            train_dataset.set_epoch(current_epoch)
-            
-            # Set epoch for sampler as well
-            train_sampler.set_epoch(current_epoch)
             
             # Force garbage collection to clean up memory between epochs
             import gc
