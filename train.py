@@ -105,12 +105,14 @@ def get_parameter_count_str(config):
     else:
         return f"{params}"
 
-class InfiniteRandomSamplingDataset(Dataset):
-    """Dataset that infinitely samples random chunks from a file without loading it entirely"""
-    def __init__(self, filepath, seq_len, seed=42, virtual_size=1000000):
+class EpochBasedRandomDataset(Dataset):
+    """Dataset that samples across the entire file with proper epoch handling"""
+    def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, epoch_size_factor=100):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
+        self.seed = seed
+        self.current_epoch = 0
         
         # Get file size
         self.file_size = os.path.getsize(filepath)
@@ -118,25 +120,62 @@ class InfiniteRandomSamplingDataset(Dataset):
         # Maximum valid starting position
         self.max_start = max(0, self.file_size - seq_len - 1)
         
-        # Virtual size - doesn't affect actual sampling, just affects how DataLoader
-        # perceives the dataset size for batching purposes
-        self.virtual_size = virtual_size
-        
-        # Global RNG for consistent behavior
-        self.global_rng = random.Random(seed)
-        
+        # Calculate reasonable number of samples per epoch based on file size
+        # This ensures we go through a meaningful portion of the data each epoch
+        if samples_per_epoch is None:
+            # Default to file_size / seq_len / epoch_size_factor
+            # This creates epochs that cover approximately 1/epoch_size_factor of the file
+            self.samples_per_epoch = max(100, self.max_start // (seq_len * epoch_size_factor))
+        else:
+            self.samples_per_epoch = samples_per_epoch
+            
         # Thread-local storage for file handles
         import threading
         self.local = threading.local()
         
-        print(f"InfiniteRandomSamplingDataset: Using file {filepath} ({self.file_size:,} bytes)")
-        print(f"Virtual size: {self.virtual_size:,} (purely for iteration control)")
-        print(f"Data sampled randomly on demand - no epoch boundaries - no memory loading")
+        # Create initial epoch RNG
+        self.epoch_rng = random.Random(self.seed)
+        
+        # Calculate how many unique positions we can sample from
+        # (this will help us ensure we're covering the whole file)
+        self.unique_positions = self.max_start + 1
+        self.positions_per_epoch = min(self.samples_per_epoch, self.unique_positions)
+        
+        print(f"EpochBasedRandomDataset: Using file {filepath} ({self.file_size:,} bytes)")
+        print(f"File contains approximately {self.unique_positions:,} possible training samples")
+        print(f"Training with {self.samples_per_epoch:,} samples per epoch")
+        print(f"Each epoch covers ~{100 * self.samples_per_epoch / max(1, self.unique_positions):.1f}% of the dataset")
     
     def __len__(self):
-        # Return virtual size - this doesn't affect the actual sampling
-        # It just controls how DataLoader perceives the dataset size
-        return self.virtual_size
+        return self.samples_per_epoch
+    
+    def set_epoch(self, epoch):
+        """Update the epoch number to change the random sampling pattern"""
+        if self.current_epoch != epoch:
+            self.current_epoch = epoch
+            # Create a new RNG for this epoch with a seed derived from base seed and epoch
+            self.epoch_rng = random.Random(self.seed + epoch)
+            print(f"Dataset advancing to epoch {epoch}")
+            
+            # Generate a new set of indices for this epoch
+            self._generate_epoch_indices()
+    
+    def _generate_epoch_indices(self):
+        """Generate deterministic but randomized indices for the current epoch"""
+        if self.unique_positions <= self.samples_per_epoch:
+            # If we have fewer unique positions than samples per epoch,
+            # we'll use all positions and repeat some
+            self.epoch_indices = list(range(self.unique_positions))
+            # Shuffle once using the epoch-specific RNG
+            self.epoch_rng.shuffle(self.epoch_indices)
+            # Extend if needed
+            while len(self.epoch_indices) < self.samples_per_epoch:
+                extra = self.epoch_indices[:self.samples_per_epoch - len(self.epoch_indices)]
+                self.epoch_indices.extend(extra)
+        else:
+            # If we have more unique positions than samples per epoch,
+            # randomly select a subset for this epoch
+            self.epoch_indices = self.epoch_rng.sample(range(self.unique_positions), self.samples_per_epoch)
     
     def _get_file_handle(self):
         """Get file handle, creating it if needed (thread-local)"""
@@ -145,23 +184,25 @@ class InfiniteRandomSamplingDataset(Dataset):
         return self.local.file
     
     def __getitem__(self, idx):
-        # Completely ignore idx - just sample randomly
-        # Create thread-local RNG for better parallelism
-        if not hasattr(self.local, 'rng'):
-            # Each thread gets its own RNG, seeded from the global one
-            thread_seed = self.global_rng.randint(0, 2**32-1)
-            self.local.rng = random.Random(thread_seed)
+        # Make sure we have indices for this epoch
+        if not hasattr(self, 'epoch_indices'):
+            self._generate_epoch_indices()
         
-        # Sample a completely random position
-        start_pos = self.local.rng.randint(0, self.max_start)
+        # Map the requested idx to a position in the file
+        # This ensures deterministic sampling within an epoch
+        if idx < len(self.epoch_indices):
+            file_pos = self.epoch_indices[idx]
+        else:
+            # Fallback for edge cases
+            file_pos = self.epoch_rng.randint(0, self.max_start)
         
         try:
-            # Get file handle and read data
+            # Get file handle and read data from the determined position
             f = self._get_file_handle()
-            f.seek(start_pos)
+            f.seek(file_pos)
             data = f.read(self.seq_len + 1)  # +1 for target token
             
-            # Convert to tensor - use bytearray for efficiency
+            # Convert to tensor
             tensor = torch.tensor(bytearray(data), dtype=torch.long)
             
             # Handle edge case
@@ -171,7 +212,7 @@ class InfiniteRandomSamplingDataset(Dataset):
                 
             return tensor
         except Exception as e:
-            print(f"Error reading from file at position {start_pos}: {e}")
+            print(f"Error reading from file at position {file_pos}: {e}")
             # Try to recover file handle
             try:
                 if hasattr(self.local, 'file') and self.local.file:
@@ -182,7 +223,7 @@ class InfiniteRandomSamplingDataset(Dataset):
             return torch.zeros(self.seq_len + 1, dtype=torch.long)
     
     def __del__(self):
-        """Clean up resources - need a different approach for thread-local storage"""
+        """Clean up resources - thread-local storage approach"""
         try:
             # Check if local attribute exists and has a file
             if hasattr(self, 'local') and hasattr(self.local, 'file') and self.local.file:
@@ -275,6 +316,10 @@ def get_args():
                         help='validate and save checkpoint every N steps')
     parser.add_argument('--save_every', type=int, default=100,
                         help='additional checkpoints every N steps (optional, validation runs will always save)')
+    parser.add_argument('--epoch_size_factor', type=int, default=10,
+                        help='factor to control epoch size (higher = smaller epochs)')
+    parser.add_argument('--max_samples_per_epoch', type=int, default=10000,
+                        help='maximum number of samples per epoch')
     parser.add_argument('--force_lr', action='store_true',
                         help='force use command line learning rate when resuming')
     
@@ -782,23 +827,25 @@ def main():
     if args.schedulefree:
         model_engine.optimizer.train()
     
-    # Create the datasets using our infinite random sampler
-    # The same file is used for both training and validation
-    train_dataset = InfiniteRandomSamplingDataset(
+    # Calculate a reasonable epoch size based on batch size
+    # Using 100x batch_size as default samples per epoch
+    samples_per_epoch = min(batch_size * 100, args.max_samples_per_epoch if hasattr(args, 'max_samples_per_epoch') else 10000)
+    
+    # Create the training dataset with proper epoch handling
+    train_dataset = EpochBasedRandomDataset(
         filepath=args.data,
         seq_len=seq_len,
         seed=SEED,
-        # Virtual size determines when DataLoader thinks it's done with an "epoch"
-        # This is just for iteration control, not actual sampling boundaries
-        virtual_size=10000  # ~10k batches per "epoch" for DataLoader
+        samples_per_epoch=samples_per_epoch,
+        epoch_size_factor=args.epoch_size_factor if hasattr(args, 'epoch_size_factor') else 10
     )
     
-    # Create a separate instance for validation with a different seed
-    val_dataset = InfiniteRandomSamplingDataset(
+    # Create a separate validation dataset
+    val_dataset = EpochBasedRandomDataset(
         filepath=args.data,
         seq_len=seq_len,
         seed=SEED + 100,  # Different seed for validation
-        virtual_size=500  # Smaller for validation
+        samples_per_epoch=min(500, samples_per_epoch // 2)  # Smaller validation set
     )
     
     if args.local_rank == 0:
@@ -820,6 +867,10 @@ def main():
         shuffle=False,
         seed=SEED
     )
+    
+    # Initialize datasets with epoch 0
+    train_dataset.set_epoch(0)
+    val_dataset.set_epoch(0)
     
     # 6) DataLoaders
     train_loader = DataLoader(
@@ -1051,7 +1102,9 @@ def main():
                           bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
         
         with torch.no_grad():
-            # No need to set epoch - validation dataset has its own fixed seed
+            # Reset validation dataset to a fixed epoch (0) for consistent validation
+            val_dataset.set_epoch(0)
+            val_sampler.set_epoch(0)
             
             for x in val_loader:
                 inputs, targets = x[:, :-1], x[:, 1:]
@@ -1159,9 +1212,22 @@ def main():
                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
         pbar.update(start_step)  # Update for resumed progress
         
+    current_epoch = 0
     for step in range(start_step, start_step + train_steps):
-        # We don't need to set epochs anymore - the dataset is truly random
-        # Just let it run indefinitely
+        # Calculate current epoch based on steps and dataset size
+        epoch = step // len(train_loader)
+        
+        # If we're starting a new epoch, update the dataset and samplers
+        if epoch > current_epoch:
+            current_epoch = epoch
+            if model_engine.global_rank == 0:
+                print(f"\n--- Starting epoch {current_epoch} ---")
+            
+            # Update dataset epoch for new random sequence
+            train_dataset.set_epoch(current_epoch)
+            
+            # Set epoch for sampler as well
+            train_sampler.set_epoch(current_epoch)
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
