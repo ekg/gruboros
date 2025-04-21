@@ -114,8 +114,7 @@ class ContinuousIIDDataset(Dataset):
     Memory-efficient: No pre-materialization of indices, works with datasets of any size.
     """
     def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, batch_size=1, 
-                 log_samples=False, sample_log_file=None,
-                 log_sample_hashes=False, sample_hash_file=None):
+                 log_sample_hashes=False, checkpoint_dir=None):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
@@ -150,18 +149,12 @@ class ContinuousIIDDataset(Dataset):
         self.batches_per_epoch = self.samples_per_epoch // self.batch_size
         
         # Setup sample logging if requested
-        self.log_samples = log_samples
-        self.sample_log_file = sample_log_file
         self.log_sample_hashes = log_sample_hashes
-        self.sample_hash_file = sample_hash_file
+        self.checkpoint_dir = checkpoint_dir
         self.sample_counter = 0
         
-        if self.log_samples and self.sample_log_file:
-            # Create/clear the sample log file with a header
-            with open(self.sample_log_file, 'w') as f:
-                f.write("sample_idx\tfile_offset\trelative_position\n")
-                
-        if self.log_sample_hashes and self.sample_hash_file:
+        if self.log_sample_hashes and self.checkpoint_dir:
+            self.sample_hash_file = os.path.join(self.checkpoint_dir, "sample_distribution.tsv")
             # Create/clear the sample hash log file with a header
             with open(self.sample_hash_file, 'w') as f:
                 f.write("step_idx\tfile_pos\thash\n")
@@ -208,17 +201,8 @@ class ContinuousIIDDataset(Dataset):
         # This ensures pure IID sampling with replacement across the entire training run
         file_pos = self.rng.randint(0, self.max_start)
         
-        # Log the sample offset if enabled
-        if self.log_samples and self.sample_log_file:
-            # Calculate relative position as percentage of file
-            relative_pos = file_pos / self.max_start if self.max_start > 0 else 0
-            
-            # Append to log file (use with statement to ensure proper closing)
-            with open(self.sample_log_file, 'a') as f:
-                f.write(f"{self.sample_counter}\t{file_pos}\t{relative_pos:.6f}\n")
-            
-            # Increment counter for various logging purposes
-            self.sample_counter += 1
+        # Increment counter for hash logging
+        self.sample_counter += 1
         
         try:
             # Get file handle and read data from the determined position
@@ -235,7 +219,7 @@ class ContinuousIIDDataset(Dataset):
                 tensor = torch.cat([tensor, padding])
                 
             # Calculate and log SHA256 hash of the sample if requested
-            if self.log_sample_hashes and self.sample_hash_file:
+            if self.log_sample_hashes and hasattr(self, 'sample_hash_file'):
                 # Convert tensor to bytes and hash it
                 sample_bytes = tensor.cpu().numpy().tobytes()
                 sample_hash = hashlib.sha256(sample_bytes).hexdigest()
@@ -389,14 +373,8 @@ def get_args():
                         help='number of gradient accumulation steps (effectively multiplies batch size)')
                         
     # Add sampling log parameters
-    parser.add_argument('--log_samples', action='store_true',
-                        help='log sample offsets to file for validating uniform sampling')
-    parser.add_argument('--sample_log_file', type=str, default=None,
-                        help='file path for logging sample offsets (saved in checkpoint dir by default)')
     parser.add_argument('--log_sample_hashes', action='store_true',
                         help='log SHA256 hashes of samples for uniqueness validation')
-    parser.add_argument('--sample_hash_file', type=str, default=None,
-                        help='file path for logging sample hashes (saved in checkpoint dir by default)')
     
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
@@ -875,33 +853,6 @@ def main():
     samples_per_epoch = batches_per_epoch * batch_size
     
     # Create the training dataset with continuous IID sampling
-    # If logging samples, ensure the log file is in the checkpoint directory
-    sample_log_file = None
-    sample_hash_file = None
-    
-    if args.log_samples:
-        if args.sample_log_file:
-            # Check if the provided path is absolute
-            if os.path.isabs(args.sample_log_file):
-                sample_log_file = args.sample_log_file
-            else:
-                # Place in checkpoint directory if it's a relative path
-                sample_log_file = os.path.join(checkpoint_dir, args.sample_log_file)
-        else:
-            # Default filename in checkpoint directory
-            sample_log_file = os.path.join(checkpoint_dir, "sample_offsets.log")
-            
-    if args.log_sample_hashes:
-        if args.sample_hash_file:
-            # Check if the provided path is absolute
-            if os.path.isabs(args.sample_hash_file):
-                sample_hash_file = args.sample_hash_file
-            else:
-                # Place in checkpoint directory if it's a relative path
-                sample_hash_file = os.path.join(checkpoint_dir, args.sample_hash_file)
-        else:
-            # Default filename in checkpoint directory
-            sample_hash_file = os.path.join(checkpoint_dir, "sample_hashes.log")
             
     train_dataset = ContinuousIIDDataset(
         filepath=args.data,
@@ -909,10 +860,8 @@ def main():
         seed=SEED,
         samples_per_epoch=samples_per_epoch,
         batch_size=batch_size,
-        log_samples=args.log_samples,
-        sample_log_file=sample_log_file,
         log_sample_hashes=args.log_sample_hashes,
-        sample_hash_file=sample_hash_file
+        checkpoint_dir=checkpoint_dir if args.log_sample_hashes else None
     )
     
     # Create a separate validation dataset - use 10% of training batches
@@ -923,7 +872,7 @@ def main():
         seed=SEED + 100,  # Different seed for validation
         samples_per_epoch=val_batches * batch_size,
         batch_size=batch_size,
-        log_samples=False  # Don't log validation samples
+        log_sample_hashes=False  # Don't log validation samples
     )
     
     if args.local_rank == 0:
