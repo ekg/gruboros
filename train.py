@@ -145,6 +145,7 @@ class EpochBasedRandomDataset(Dataset):
         print(f"File contains approximately {self.unique_positions:,} possible training samples")
         print(f"Training with {self.samples_per_epoch:,} samples per epoch")
         print(f"Each epoch covers ~{100 * self.samples_per_epoch / max(1, self.unique_positions):.1f}% of the dataset")
+        print(f"Memory efficient: Only loading individual samples on-demand, not the entire dataset")
     
     def __len__(self):
         return self.samples_per_epoch
@@ -180,8 +181,20 @@ class EpochBasedRandomDataset(Dataset):
     def _get_file_handle(self):
         """Get file handle, creating it if needed (thread-local)"""
         if not hasattr(self.local, 'file') or self.local.file is None or self.local.file.closed:
+            # Close any existing file handle first to prevent resource leaks
+            self._close_file_handle()
+            # Open a new file handle
             self.local.file = open(self.filepath, 'rb')
         return self.local.file
+        
+    def _close_file_handle(self):
+        """Explicitly close file handle to free resources"""
+        if hasattr(self.local, 'file') and self.local.file is not None and not self.local.file.closed:
+            try:
+                self.local.file.close()
+                self.local.file = None
+            except Exception as e:
+                print(f"Error closing file handle: {e}")
     
     def __getitem__(self, idx):
         # Make sure we have indices for this epoch
@@ -225,9 +238,7 @@ class EpochBasedRandomDataset(Dataset):
     def __del__(self):
         """Clean up resources - thread-local storage approach"""
         try:
-            # Check if local attribute exists and has a file
-            if hasattr(self, 'local') and hasattr(self.local, 'file') and self.local.file:
-                self.local.file.close()
+            self._close_file_handle()
         except:
             pass
 
@@ -318,7 +329,7 @@ def get_args():
                         help='additional checkpoints every N steps (optional, validation runs will always save)')
     parser.add_argument('--epoch_size_factor', type=int, default=10,
                         help='factor to control epoch size (higher = smaller epochs)')
-    parser.add_argument('--max_samples_per_epoch', type=int, default=10000,
+    parser.add_argument('--max_samples_per_epoch', type=int, default=5000,
                         help='maximum number of samples per epoch')
     parser.add_argument('--force_lr', action='store_true',
                         help='force use command line learning rate when resuming')
@@ -827,9 +838,9 @@ def main():
     if args.schedulefree:
         model_engine.optimizer.train()
     
-    # Calculate a reasonable epoch size based on batch size
-    # Using 100x batch_size as default samples per epoch
-    samples_per_epoch = min(batch_size * 100, args.max_samples_per_epoch if hasattr(args, 'max_samples_per_epoch') else 10000)
+    # Calculate a modest epoch size to control memory usage
+    # Using 10x batch_size as default samples per epoch - smaller to control memory usage
+    samples_per_epoch = min(batch_size * 10, args.max_samples_per_epoch if hasattr(args, 'max_samples_per_epoch') else 5000)
     
     # Create the training dataset with proper epoch handling
     train_dataset = EpochBasedRandomDataset(
@@ -1228,6 +1239,16 @@ def main():
             
             # Set epoch for sampler as well
             train_sampler.set_epoch(current_epoch)
+            
+            # Force garbage collection to clean up memory between epochs
+            import gc
+            gc.collect()
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            if model_engine.global_rank == 0:
+                print("Memory cleaned up between epochs")
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
