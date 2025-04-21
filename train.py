@@ -106,7 +106,11 @@ def get_parameter_count_str(config):
         return f"{params}"
 
 class EpochBasedRandomDataset(Dataset):
-    """Dataset that samples across the entire file with proper epoch handling"""
+    """
+    Dataset that samples across the entire file with proper epoch handling.
+    Uses true IID (Independent and Identically Distributed) sampling with replacement
+    to ensure consistent distribution across epoch boundaries and prevent loss spikes.
+    """
     def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, batch_size=1):
         super().__init__()
         self.filepath = filepath
@@ -144,7 +148,7 @@ class EpochBasedRandomDataset(Dataset):
         print(f"EpochBasedRandomDataset: Using file {filepath} ({self.file_size:,} bytes)")
         print(f"File contains approximately {self.unique_positions:,} possible unique samples")
         print(f"Training with {self.batches_per_epoch} batches per epoch ({self.samples_per_epoch} samples)")
-        print(f"Each epoch covers ~{100 * self.samples_per_epoch / max(1, self.unique_positions):.1f}% of the dataset")
+        print(f"Using IID sampling with replacement for consistent epoch transitions")
         print(f"Memory efficient: Only loading individual samples on-demand, not the entire dataset")
     
     def __len__(self):
@@ -161,21 +165,14 @@ class EpochBasedRandomDataset(Dataset):
             self._generate_epoch_indices()
     
     def _generate_epoch_indices(self):
-        """Generate deterministic but randomized indices for the current epoch"""
-        if self.unique_positions <= self.samples_per_epoch:
-            # If we have fewer unique positions than samples per epoch,
-            # we'll use all positions and repeat some
-            self.epoch_indices = list(range(self.unique_positions))
-            # Shuffle once using the epoch-specific RNG
-            self.epoch_rng.shuffle(self.epoch_indices)
-            # Extend if needed
-            while len(self.epoch_indices) < self.samples_per_epoch:
-                extra = self.epoch_indices[:self.samples_per_epoch - len(self.epoch_indices)]
-                self.epoch_indices.extend(extra)
-        else:
-            # If we have more unique positions than samples per epoch,
-            # randomly select a subset for this epoch
-            self.epoch_indices = self.epoch_rng.sample(range(self.unique_positions), self.samples_per_epoch)
+        """
+        With true IID sampling, we don't need pre-generated indices.
+        This method is kept for compatibility but now only initializes the epoch RNG.
+        Each __getitem__ call will generate a random position directly.
+        """
+        # We keep epoch_indices attribute for backward compatibility
+        # but it's no longer used for actual sampling
+        self.epoch_indices = []
     
     def _get_file_handle(self):
         """Get file handle, creating it if needed (thread-local)"""
@@ -196,17 +193,13 @@ class EpochBasedRandomDataset(Dataset):
                 print(f"Error closing file handle: {e}")
     
     def __getitem__(self, idx):
-        # Make sure we have indices for this epoch
+        # Make sure epoch RNG is initialized
         if not hasattr(self, 'epoch_indices'):
             self._generate_epoch_indices()
-        
-        # Map the requested idx to a position in the file
-        # This ensures deterministic sampling within an epoch
-        if idx < len(self.epoch_indices):
-            file_pos = self.epoch_indices[idx]
-        else:
-            # Fallback for edge cases
-            file_pos = self.epoch_rng.randint(0, self.max_start)
+            
+        # For true IID sampling, generate a random position directly
+        # This ensures proper independent sampling with replacement
+        file_pos = self.epoch_rng.randint(0, self.max_start)
         
         try:
             # Get file handle and read data from the determined position
