@@ -271,10 +271,10 @@ def get_args():
                         help='directory to save checkpoints (auto-generated if not specified)')
     parser.add_argument('--resume', type=str, default=None,
                         help='path to checkpoint to resume training from')
-    parser.add_argument('--save_every', type=int, default=100,
-                        help='save checkpoint every N steps')
     parser.add_argument('--validate_every', type=int, default=50,
-                        help='validate every N steps')
+                        help='validate and save checkpoint every N steps')
+    parser.add_argument('--save_every', type=int, default=100,
+                        help='additional checkpoints every N steps (optional, validation runs will always save)')
     parser.add_argument('--force_lr', action='store_true',
                         help='force use command line learning rate when resuming')
     
@@ -1214,35 +1214,23 @@ def main():
                 
                 # Log metrics with validation
                 log_metrics(step, loss.item(), val_loss)
-                
-                # Check if this is best model
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    # Mark as best but don't save yet - we'll save in the checkpoint step below
+            
+            # Determine if this is the best model based on validation loss
+            is_best = val_loss < best_val_loss
+            if is_best:
+                best_val_loss = val_loss
+                if model_engine.global_rank == 0:
                     print(f"New best model found at step {step} with validation loss {val_loss:.4f}")
-        
-        # Save checkpoint periodically
-        if args.save_every > 0 and step > 0 and step % args.save_every == 0:
-            # Always save on checkpoint steps, with validation loss if available
-            is_best = False
             
-            # Only consider this checkpoint as best if we just did validation
-            if val_loss_for_checkpoint is not None:
-                is_best = val_loss_for_checkpoint < best_val_loss
-                if is_best:
-                    # Update the best val loss for tracking
-                    best_val_loss = val_loss_for_checkpoint
-                    if model_engine.global_rank == 0:
-                        print(f"New best model found with validation loss {val_loss_for_checkpoint:.4f}")
-            
-            save_path = save_checkpoint(step, loss.item(), val_loss_for_checkpoint, is_best=is_best)
+            # Always save checkpoint after validation
+            save_path = save_checkpoint(step, loss.item(), val_loss, is_best=is_best)
             
             if model_engine.global_rank == 0:
                 if is_best:
                     # Verify the best.pt symlink was created
                     best_path = os.path.join(checkpoint_dir, "best.pt")
                     if os.path.exists(best_path) or os.path.islink(best_path):
-                        print(f"Best model checkpoint saved to {save_path} (val loss: {val_loss_for_checkpoint:.4f})")
+                        print(f"Best model checkpoint saved to {save_path} (val loss: {val_loss:.4f})")
                         print(f"Best symlink created: best.pt -> {os.path.basename(save_path)}")
                     else:
                         print(f"WARNING: best.pt symlink was not created properly!")
@@ -1251,6 +1239,16 @@ def main():
                         print(f"Created a direct copy of best model to best.pt as fallback")
                 else:
                     print(f"Checkpoint saved to {save_path}")
+        
+        # Save additional checkpoints periodically (if not already saved by validation)
+        if args.save_every > 0 and step > 0 and step % args.save_every == 0:
+            # Skip if we just saved during validation
+            if not (args.validate_every > 0 and step % args.validate_every == 0):
+                # Save checkpoint without affecting best model status
+                save_path = save_checkpoint(step, loss.item(), None, is_best=False)
+                
+                if model_engine.global_rank == 0:
+                    print(f"Additional checkpoint saved to {save_path}")
     
     # Final validation
     final_val_loss = validate()
