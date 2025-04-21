@@ -145,6 +145,12 @@ class ContinuousIIDDataset(Dataset):
         # Calculate how many unique positions we can sample from
         self.unique_positions = self.max_start + 1
         
+        # Print debug info about file size and sampling range
+        if model_engine.global_rank == 0 if 'model_engine' in globals() else True:
+            print(f"DEBUG: File size: {self.file_size:,} bytes")
+            print(f"DEBUG: Max start position: {self.max_start:,}")
+            print(f"DEBUG: Random sampling range type: {type(self.max_start)}")
+        
         # Calculate batches per epoch (used only for reporting)
         self.batches_per_epoch = self.samples_per_epoch // self.batch_size
         
@@ -197,9 +203,15 @@ class ContinuousIIDDataset(Dataset):
                 print(f"Error closing file handle: {e}")
     
     def __getitem__(self, idx):
-        # Generate a completely random position using our continuous RNG
-        # This ensures pure IID sampling with replacement across the entire training run
-        file_pos = self.rng.randint(0, self.max_start)
+        # For extremely large files, random.randint() can fail to provide proper distribution
+        # Use direct multiplication approach which works better with large integer ranges
+        file_pos = int(self.rng.random() * self.max_start)
+        
+        # Debug sampling
+        if hasattr(self, 'sample_counter') and self.sample_counter % 1000 == 0 and hasattr(self, 'checkpoint_dir') and self.checkpoint_dir:
+            sample_debug_path = os.path.join(self.checkpoint_dir, "random_debug.txt")
+            with open(sample_debug_path, 'a' if os.path.exists(sample_debug_path) else 'w') as f:
+                f.write(f"Sample {self.sample_counter}: position {file_pos:,} / {self.max_start:,}\n")
         
         # Increment counter for hash logging
         self.sample_counter += 1
