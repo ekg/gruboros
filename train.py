@@ -390,12 +390,8 @@ def synchronize_processes():
         # Get current device and rank info
         current_device = torch.cuda.current_device()
         rank = torch.distributed.get_rank()
-        world_size = torch.distributed.get_world_size()
         
-        if rank == 0:
-            print(f"Waiting for all {world_size} processes to synchronize... (using device {current_device})")
-        
-        # Print device health status
+        # Print device health status only if there's an issue
         cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > current_device
         if not cuda_ok:
             print(f"WARNING: Rank {rank} has CUDA device issues. Available: {torch.cuda.is_available()}, Count: {torch.cuda.device_count()}")
@@ -408,9 +404,6 @@ def synchronize_processes():
         
         # Sleep a bit after barrier to let things settle
         time.sleep(0.01)
-        
-        if rank == 0:
-            print("All processes synchronized successfully")
             
     except Exception as e:
         print(f"ERROR in synchronize_processes: {e}")
@@ -1079,8 +1072,8 @@ def main():
             model_engine.optimizer.eval()
         
         if model_engine.global_rank == 0:
-            val_pbar = tqdm(total=5, desc="Validation", 
-                          bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}')
+            val_pbar = tqdm(total=5, desc="Validating", 
+                          bar_format='{desc}: {percentage:3.0f}%|{bar}')
         
         with torch.no_grad():
             # Reset validation dataset to a fixed epoch (0) for consistent validation
@@ -1279,10 +1272,8 @@ def main():
             is_best = val_loss < best_val_loss
             if is_best:
                 best_val_loss = val_loss
-                if model_engine.global_rank == 0:
-                    print(f"New best model found at step {step} with validation loss {val_loss:.4f}")
             
-            # Always save checkpoint after validation
+            # Always save checkpoint after validation, but silently
             save_path = save_checkpoint(step, loss.item(), val_loss, is_best=is_best)
             
         
