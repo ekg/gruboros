@@ -113,7 +113,8 @@ class ContinuousIIDDataset(Dataset):
     
     Memory-efficient: No pre-materialization of indices, works with datasets of any size.
     """
-    def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, batch_size=1):
+    def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, batch_size=1, 
+                 log_samples=False, sample_log_file=None):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
@@ -146,6 +147,16 @@ class ContinuousIIDDataset(Dataset):
         
         # Calculate batches per epoch (used only for reporting)
         self.batches_per_epoch = self.samples_per_epoch // self.batch_size
+        
+        # Setup sample logging if requested
+        self.log_samples = log_samples
+        self.sample_log_file = sample_log_file
+        self.sample_counter = 0
+        
+        if self.log_samples and self.sample_log_file:
+            # Create/clear the sample log file with a header
+            with open(self.sample_log_file, 'w') as f:
+                f.write("sample_idx\tfile_offset\trelative_position\n")
         
         print(f"ContinuousIIDDataset: Using file {filepath} ({self.file_size:,} bytes)")
         print(f"File contains approximately {self.unique_positions:,} possible unique samples")
@@ -188,6 +199,18 @@ class ContinuousIIDDataset(Dataset):
         # Generate a completely random position using our continuous RNG
         # This ensures pure IID sampling with replacement across the entire training run
         file_pos = self.rng.randint(0, self.max_start)
+        
+        # Log the sample offset if enabled
+        if self.log_samples and self.sample_log_file:
+            # Calculate relative position as percentage of file
+            relative_pos = file_pos / self.max_start if self.max_start > 0 else 0
+            
+            # Append to log file (use with statement to ensure proper closing)
+            with open(self.sample_log_file, 'a') as f:
+                f.write(f"{self.sample_counter}\t{file_pos}\t{relative_pos:.6f}\n")
+            
+            # Increment counter
+            self.sample_counter += 1
         
         try:
             # Get file handle and read data from the determined position
@@ -346,6 +369,12 @@ def get_args():
     # Add gradient accumulation parameter
     parser.add_argument('--grad_accum', type=int, default=1,
                         help='number of gradient accumulation steps (effectively multiplies batch size)')
+                        
+    # Add sampling log parameters
+    parser.add_argument('--log_samples', action='store_true',
+                        help='log sample offsets to file for validating uniform sampling')
+    parser.add_argument('--sample_log_file', type=str, default='sample_offsets.log',
+                        help='file path for logging sample offsets')
     
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
@@ -829,7 +858,9 @@ def main():
         seq_len=seq_len,
         seed=SEED,
         samples_per_epoch=samples_per_epoch,
-        batch_size=batch_size
+        batch_size=batch_size,
+        log_samples=args.log_samples,
+        sample_log_file=args.sample_log_file if args.log_samples else None
     )
     
     # Create a separate validation dataset - use 10% of training batches
@@ -839,7 +870,8 @@ def main():
         seq_len=seq_len,
         seed=SEED + 100,  # Different seed for validation
         samples_per_epoch=val_batches * batch_size,
-        batch_size=batch_size
+        batch_size=batch_size,
+        log_samples=False  # Don't log validation samples
     )
     
     if args.local_rank == 0:
