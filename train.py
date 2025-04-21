@@ -995,7 +995,6 @@ def main():
             if os.path.exists(best_path) or os.path.islink(best_path):
                 try:
                     os.remove(best_path)
-                    print(f"Removed previous best symlink")
                 except Exception as e:
                     print(f"Warning: Failed to remove previous best symlink: {e}")
             
