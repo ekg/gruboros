@@ -317,7 +317,8 @@ def chunked_generation(
     filter_thres: float = 0.9,
     sampling_method: str = 'top_k',  # 'top_k' or 'top_p'
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
-    callback=None
+    callback=None,
+    top_p_tokens: int = 40
 ):
     """
     Generate text in chunks using RNN hidden states.
@@ -385,7 +386,7 @@ def chunked_generation(
                     # First filter with top-p
                     filtered_logits = top_p(logits, thres=filter_thres)
                     # Then apply sampling
-                    sample = improved_top_k_sampling(filtered_logits, temperature, top_k=args.top_p_tokens)
+                    sample = improved_top_k_sampling(filtered_logits, temperature, top_k=top_p_tokens)
                 else:
                     # Direct top-k sampling
                     top_k_value = max(1, int(filter_thres * logits.shape[-1]))
@@ -633,7 +634,8 @@ def main():
             args.top_k,
             'top_p' if args.use_top_p else 'top_k',
             device,
-            progress_callback
+            progress_callback,
+            top_p_tokens=args.top_p_tokens
         )
         
     # Clear cache after generation
