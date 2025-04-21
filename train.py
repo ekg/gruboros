@@ -326,8 +326,8 @@ def get_args():
                         help='validate and save checkpoint every N steps')
     parser.add_argument('--save_every', type=int, default=100,
                         help='additional checkpoints every N steps (optional, validation runs will always save)')
-    parser.add_argument('--batches_per_epoch', type=int, default=100,
-                        help='number of batches to include in each epoch')
+    parser.add_argument('--batches_per_epoch', type=str, default="100",
+                        help='number of batches to include in each epoch (supports k/m/g suffixes)')
     parser.add_argument('--force_lr', action='store_true',
                         help='force use command line learning rate when resuming')
     
@@ -475,6 +475,7 @@ def main():
     train_steps = int(parse_size_with_suffix(args.train_steps))
     seq_len = int(parse_size_with_suffix(args.seq_len))
     batch_size = int(parse_size_with_suffix(args.batch_size))
+    batches_per_epoch = int(parse_size_with_suffix(args.batches_per_epoch))
     
     # Check for resuming from checkpoint
     resuming = args.resume is not None
@@ -839,7 +840,6 @@ def main():
         model_engine.optimizer.train()
     
     # Calculate samples per epoch based on requested batches per epoch
-    batches_per_epoch = args.batches_per_epoch
     samples_per_epoch = batches_per_epoch * batch_size
     
     # Create the training dataset with proper epoch handling
@@ -1198,7 +1198,7 @@ def main():
     for step in range(start_step, start_step + train_steps):
         # Calculate current epoch based on batches_per_epoch parameter
         # With distributed training, we need to multiply by world_size since each GPU processes fewer batches
-        effective_batches_per_epoch = args.batches_per_epoch
+        effective_batches_per_epoch = batches_per_epoch
         epoch = step // effective_batches_per_epoch 
         
         # If we're starting a new epoch, update the dataset and samplers
