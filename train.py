@@ -959,7 +959,6 @@ def main():
         temp_path = checkpoint_path + ".tmp"
         torch.save(checkpoint, temp_path)
         os.replace(temp_path, checkpoint_path)
-        print(f"Checkpoint saved to {checkpoint_path}")
         
         # Create symlink for latest.pt (remove existing one if it exists)
         latest_path = os.path.join(checkpoint_dir, "latest.pt")
@@ -972,7 +971,6 @@ def main():
         # Create symlink from latest.pt to the current checkpoint
         try:
             os.symlink(os.path.basename(checkpoint_path), latest_path)
-            print(f"Created symlink: latest.pt -> {os.path.basename(checkpoint_path)}")
         except Exception as e:
             # Fall back to copy if symlink fails (e.g., on platforms without symlinks)
             print(f"Warning: Failed to create symlink, falling back to copy: {e}")
