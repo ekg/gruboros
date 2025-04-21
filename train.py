@@ -107,12 +107,13 @@ def get_parameter_count_str(config):
 
 class EpochBasedRandomDataset(Dataset):
     """Dataset that samples across the entire file with proper epoch handling"""
-    def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, epoch_size_factor=100):
+    def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=None, batch_size=1):
         super().__init__()
         self.filepath = filepath
         self.seq_len = seq_len
         self.seed = seed
         self.current_epoch = 0
+        self.batch_size = batch_size
         
         # Get file size
         self.file_size = os.path.getsize(filepath)
@@ -120,12 +121,10 @@ class EpochBasedRandomDataset(Dataset):
         # Maximum valid starting position
         self.max_start = max(0, self.file_size - seq_len - 1)
         
-        # Calculate reasonable number of samples per epoch based on file size
-        # This ensures we go through a meaningful portion of the data each epoch
+        # Set samples per epoch directly (used to determine epoch boundaries)
         if samples_per_epoch is None:
-            # Default to file_size / seq_len / epoch_size_factor
-            # This creates epochs that cover approximately 1/epoch_size_factor of the file
-            self.samples_per_epoch = max(100, self.max_start // (seq_len * epoch_size_factor))
+            # Default to 100 batches per epoch
+            self.samples_per_epoch = 100 * self.batch_size
         else:
             self.samples_per_epoch = samples_per_epoch
             
@@ -137,13 +136,14 @@ class EpochBasedRandomDataset(Dataset):
         self.epoch_rng = random.Random(self.seed)
         
         # Calculate how many unique positions we can sample from
-        # (this will help us ensure we're covering the whole file)
         self.unique_positions = self.max_start + 1
-        self.positions_per_epoch = min(self.samples_per_epoch, self.unique_positions)
+        
+        # Calculate batches per epoch
+        self.batches_per_epoch = self.samples_per_epoch // self.batch_size
         
         print(f"EpochBasedRandomDataset: Using file {filepath} ({self.file_size:,} bytes)")
-        print(f"File contains approximately {self.unique_positions:,} possible training samples")
-        print(f"Training with {self.samples_per_epoch:,} samples per epoch")
+        print(f"File contains approximately {self.unique_positions:,} possible unique samples")
+        print(f"Training with {self.batches_per_epoch} batches per epoch ({self.samples_per_epoch} samples)")
         print(f"Each epoch covers ~{100 * self.samples_per_epoch / max(1, self.unique_positions):.1f}% of the dataset")
         print(f"Memory efficient: Only loading individual samples on-demand, not the entire dataset")
     
@@ -327,10 +327,8 @@ def get_args():
                         help='validate and save checkpoint every N steps')
     parser.add_argument('--save_every', type=int, default=100,
                         help='additional checkpoints every N steps (optional, validation runs will always save)')
-    parser.add_argument('--epoch_size_factor', type=int, default=10,
-                        help='factor to control epoch size (higher = smaller epochs)')
-    parser.add_argument('--max_samples_per_epoch', type=int, default=5000,
-                        help='maximum number of samples per epoch')
+    parser.add_argument('--batches_per_epoch', type=int, default=100,
+                        help='number of batches to include in each epoch')
     parser.add_argument('--force_lr', action='store_true',
                         help='force use command line learning rate when resuming')
     
@@ -838,9 +836,9 @@ def main():
     if args.schedulefree:
         model_engine.optimizer.train()
     
-    # Calculate a modest epoch size to control memory usage
-    # Using 10x batch_size as default samples per epoch - smaller to control memory usage
-    samples_per_epoch = min(batch_size * 10, args.max_samples_per_epoch if hasattr(args, 'max_samples_per_epoch') else 5000)
+    # Calculate samples per epoch based on requested batches per epoch
+    batches_per_epoch = args.batches_per_epoch
+    samples_per_epoch = batches_per_epoch * batch_size
     
     # Create the training dataset with proper epoch handling
     train_dataset = EpochBasedRandomDataset(
@@ -848,15 +846,17 @@ def main():
         seq_len=seq_len,
         seed=SEED,
         samples_per_epoch=samples_per_epoch,
-        epoch_size_factor=args.epoch_size_factor if hasattr(args, 'epoch_size_factor') else 10
+        batch_size=batch_size
     )
     
-    # Create a separate validation dataset
+    # Create a separate validation dataset - use 10% of training batches
+    val_batches = max(5, batches_per_epoch // 10)
     val_dataset = EpochBasedRandomDataset(
         filepath=args.data,
         seq_len=seq_len,
         seed=SEED + 100,  # Different seed for validation
-        samples_per_epoch=min(500, samples_per_epoch // 2)  # Smaller validation set
+        samples_per_epoch=val_batches * batch_size,
+        batch_size=batch_size
     )
     
     if args.local_rank == 0:
@@ -1232,7 +1232,7 @@ def main():
         if epoch > current_epoch:
             current_epoch = epoch
             if model_engine.global_rank == 0:
-                print(f"\n--- Starting epoch {current_epoch} ---")
+                print(f"\n--- Starting epoch {current_epoch} ({batches_per_epoch} batches) ---")
             
             # Update dataset epoch for new random sequence
             train_dataset.set_epoch(current_epoch)
