@@ -148,8 +148,10 @@ class ContinuousIIDDataset(Dataset):
         # Print debug info about file size and sampling range
         # Only print from rank 0 if in distributed environment, otherwise always print
         should_print = True
-        if 'model_engine' in globals() and hasattr(model_engine, 'global_rank'):
-            should_print = (model_engine.global_rank == 0)
+        # Safely get model_engine from globals if it exists
+        model_engine_obj = globals().get('model_engine') if 'model_engine' in globals() else None
+        if model_engine_obj is not None and hasattr(model_engine_obj, 'global_rank'):
+            should_print = (model_engine_obj.global_rank == 0)
             
         if should_print:
             print(f"DEBUG: File size: {self.file_size:,} bytes")
