@@ -904,20 +904,22 @@ def main():
         train_dataset,
         batch_size=batch_size,
         sampler=train_sampler,
-        num_workers=1,  # Reduced to prevent multiple copies of memory map
+        num_workers=2,  # Increase slightly
         pin_memory=True,
-        worker_init_fn=lambda wid: torch.manual_seed(SEED + wid),
-        persistent_workers=False  # Avoid persistent workers to prevent hanging
+        worker_init_fn=lambda wid: random.seed(SEED + wid + os.getpid()),
+        persistent_workers=True,  # Keep workers alive
+        prefetch_factor=2  # Prefetch batches
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         sampler=val_sampler,
-        num_workers=1,
+        num_workers=2,
         pin_memory=True,
-        worker_init_fn=lambda wid: torch.manual_seed(SEED + 100 + wid),
-        persistent_workers=False
+        worker_init_fn=lambda wid: random.seed(SEED + 100 + wid + os.getpid()),
+        persistent_workers=True,
+        prefetch_factor=2
     )
     
     # Create metrics log file
