@@ -1189,6 +1189,7 @@ def main():
     start_time = time.time()
     best_val_loss = float('inf')
     total_tokens_processed = 0
+    val_loss_for_checkpoint = None  # Initialize to None at start
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
@@ -1277,11 +1278,18 @@ def main():
                 tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
                 
                 # Update progress bar with stats
-                pbar.set_postfix({
+                postfix_dict = {
                     'loss': f"{loss.item():.4f}",
                     'lr': f"{model_engine.optimizer.param_groups[0]['lr']:.6f}",
                     'tok/s': f"{tokens_per_sec:.2f}"
-                })
+                }
+                
+                # Add validation info if available
+                if val_loss_for_checkpoint is not None:
+                    postfix_dict['val'] = f"{val_loss_for_checkpoint:.4f}"
+                    postfix_dict['best'] = f"{best_val_loss:.4f}"
+                
+                pbar.set_postfix(postfix_dict)
                 pbar.update(1)
                 
                 # Log metrics for training
@@ -1297,7 +1305,7 @@ def main():
             val_loss_for_checkpoint = val_loss
             
             if model_engine.global_rank == 0:
-                print(f"[Step {step:03d}] Validation Loss: {val_loss:.4f}")
+                print(f"[Step {step:03d}] Validation Loss: {val_loss:.4f} (Best: {best_val_loss:.4f})")
                 
                 # Log metrics with validation
                 log_metrics(step, loss.item(), val_loss)
