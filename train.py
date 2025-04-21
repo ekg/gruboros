@@ -373,8 +373,8 @@ def get_args():
     # Add sampling log parameters
     parser.add_argument('--log_samples', action='store_true',
                         help='log sample offsets to file for validating uniform sampling')
-    parser.add_argument('--sample_log_file', type=str, default='sample_offsets.log',
-                        help='file path for logging sample offsets')
+    parser.add_argument('--sample_log_file', type=str, default=None,
+                        help='file path for logging sample offsets (saved in checkpoint dir by default)')
     
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
@@ -853,6 +853,20 @@ def main():
     samples_per_epoch = batches_per_epoch * batch_size
     
     # Create the training dataset with continuous IID sampling
+    # If logging samples, ensure the log file is in the checkpoint directory
+    sample_log_file = None
+    if args.log_samples:
+        if args.sample_log_file:
+            # Check if the provided path is absolute
+            if os.path.isabs(args.sample_log_file):
+                sample_log_file = args.sample_log_file
+            else:
+                # Place in checkpoint directory if it's a relative path
+                sample_log_file = os.path.join(checkpoint_dir, args.sample_log_file)
+        else:
+            # Default filename in checkpoint directory
+            sample_log_file = os.path.join(checkpoint_dir, "sample_offsets.log")
+            
     train_dataset = ContinuousIIDDataset(
         filepath=args.data,
         seq_len=seq_len,
@@ -860,7 +874,7 @@ def main():
         samples_per_epoch=samples_per_epoch,
         batch_size=batch_size,
         log_samples=args.log_samples,
-        sample_log_file=args.sample_log_file if args.log_samples else None
+        sample_log_file=sample_log_file
     )
     
     # Create a separate validation dataset - use 10% of training batches
