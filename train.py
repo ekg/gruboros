@@ -146,7 +146,12 @@ class ContinuousIIDDataset(Dataset):
         self.unique_positions = self.max_start + 1
         
         # Print debug info about file size and sampling range
-        if model_engine.global_rank == 0 if 'model_engine' in globals() else True:
+        # Only print from rank 0 if in distributed environment, otherwise always print
+        should_print = True
+        if 'model_engine' in globals() and hasattr(model_engine, 'global_rank'):
+            should_print = (model_engine.global_rank == 0)
+            
+        if should_print:
             print(f"DEBUG: File size: {self.file_size:,} bytes")
             print(f"DEBUG: Max start position: {self.max_start:,}")
             print(f"DEBUG: Random sampling range type: {type(self.max_start)}")
