@@ -26,15 +26,60 @@ def decode_tokens(tokens):
     return "".join(list(map(decode_token, tokens)))
 
 # Sampling helpers
-def log(t, eps=1e-20):
-    return torch.log(t.clamp(min=eps))
-
-def gumbel_noise(t):
-    noise = torch.zeros_like(t).uniform_(0, 1)
-    return -log(-log(noise))
-
-def gumbel_sample(t, temperature=1., dim=-1, keepdim=True):
-    return ((t / max(temperature, 1e-10)) + gumbel_noise(t)).argmax(dim=dim, keepdim=keepdim)
+def improved_top_k_sampling(logits, temperature=1.0, top_k=40):
+    """
+    Stable top-k sampling implementation using direct probability sampling
+    
+    Args:
+        logits: Raw logits from model output [batch_size, vocab_size]
+        temperature: Controls randomness (higher = more random)
+        top_k: Number of highest probability tokens to consider
+    
+    Returns:
+        Sampled token indices
+    """
+    # Apply temperature scaling
+    if temperature > 0:
+        scaled_logits = logits / temperature
+    else:
+        # If temperature is 0, use greedy sampling (just return argmax)
+        return logits.argmax(dim=-1, keepdim=True)
+        
+    batch_size, vocab_size = scaled_logits.shape
+    device = logits.device
+    
+    # For each item in the batch
+    selected_tokens = []
+    
+    for i in range(batch_size):
+        # Get logits for this batch item
+        item_logits = scaled_logits[i].detach().cpu().numpy()
+        
+        # Find indices of top-k values
+        top_k_indices = np.argpartition(item_logits, -top_k)[-top_k:]
+        
+        # Get the corresponding logit values
+        top_k_logits = item_logits[top_k_indices]
+        
+        # Apply softmax to just these k values to get probabilities
+        top_k_probs = F.softmax(torch.tensor(top_k_logits), dim=0).numpy()
+        
+        # Sample using cumulative probability (inverse CDF sampling)
+        cumulative_probs = np.cumsum(top_k_probs)
+        random_value = np.random.random()
+        selected_idx = 0
+        
+        for j, cumprob in enumerate(cumulative_probs):
+            if random_value < cumprob:
+                selected_idx = j
+                break
+        
+        # Map back to original token index
+        selected_token = top_k_indices[selected_idx]
+        selected_tokens.append(selected_token)
+    
+    # Convert to tensor and reshape appropriately
+    return torch.tensor(selected_tokens, device=device).unsqueeze(-1)
 
 def top_k(logits, thres=0.9):
     """Top-k sampling to limit generated tokens to top k candidates
@@ -335,19 +380,19 @@ def chunked_generation(
                 # Update hidden state for next iteration
                 prev_hiddens = next_prev_hiddens
                 
-                # Apply filtering method (top-k or top-p)
+                # Apply sampling based on method chosen
                 if sampling_method == 'top_p':
+                    # First filter with top-p
                     filtered_logits = top_p(logits, thres=filter_thres)
-                else:  # default to top-k
-                    filtered_logits = top_k(logits, thres=filter_thres)
+                    # Then apply sampling
+                    sample = improved_top_k_sampling(filtered_logits, temperature, top_k=40)
+                else:
+                    # Direct top-k sampling
+                    top_k_value = max(1, int(filter_thres * logits.shape[-1]))
+                    sample = improved_top_k_sampling(logits, temperature, top_k=top_k_value)
                 
-                # Sample from the filtered distribution
-                sample = gumbel_sample(filtered_logits, temperature=temperature, dim=-1)
-                
-                # Ensure sample is Long before concatenation
-                sample_long = sample.long()
                 # Append the new token to the output
-                out = torch.cat((out, sample_long), dim=-1)
+                out = torch.cat((out, sample), dim=-1)
                 
                 tokens_generated += 1
                 
@@ -454,8 +499,9 @@ def main():
     
     # Generation parameters
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling (default: 1.0)")
-    parser.add_argument("--top_k", type=float, default=0.9, help="Threshold for top-k filtering (default: 0.9)")
+    parser.add_argument("--top_k", type=float, default=0.9, help="Threshold for top-k filtering (0.9 = use top 90% of vocab)")
     parser.add_argument("--use_top_p", action="store_true", help="Use nucleus (top-p) sampling instead of top-k")
+    parser.add_argument("--top_p_tokens", type=int, default=40, help="Number of tokens to consider with top-p sampling (default: 40)")
     parser.add_argument("--chunk_length", type=str, default="64", help="Process sequence in chunks of this length (default: 64). Can use k/m/g suffix.")
     parser.add_argument("--generation_length", type=str, default="512", help="Total number of tokens to generate (default: 512). Can use k/m/g suffix.")
     
