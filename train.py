@@ -1091,6 +1091,7 @@ def main():
                 # Update progress bar
                 if model_engine.global_rank == 0:
                     # Skip validation progress updates
+                    pass
                 
                 # Limit validation to a few batches for speed
                 if batch_count >= 5:
