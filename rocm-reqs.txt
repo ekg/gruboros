@@ -19,8 +19,6 @@ huggingface-hub==0.30.2
 hyperframe 
 idna 
 Jinja2 
-lightning 
-lightning-utilities 
 MarkupSafe 
 mpmath 
 msgpack==1.1.0
@@ -35,7 +33,6 @@ pycparser
 pydantic==2.11.3
 pydantic_core==2.33.1
 PySocks 
-pytorch-lightning 
 PyYAML 
 regex==2024.11.6
 requests 

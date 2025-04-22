@@ -4,6 +4,5 @@ channels:
 dependencies:
 - gcc_linux-64=13
 - gxx_linux-64=13
-- lightning
 - python=3.10
 

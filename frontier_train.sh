@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH -A <your_project_code>    # Replace with your project allocation code
+#SBATCH -A BIF148                 # embedding life project
 #SBATCH -J minLM_train            # Job name
 #SBATCH -o %x-%j.out              # Output file name (%x=job name, %j=job id)
 #SBATCH -e %x-%j.err              # Error file name
-#SBATCH -t 8:00:00                # Maximum job time (HH:MM:SS)
-#SBATCH -p batch                  # Partition (queue)
+#SBATCH -t 2:00:00                # Maximum job time (HH:MM:SS)
+#SBATCH -q debug                  # for debugging, batch for 
 #SBATCH -N 1                      # Number of nodes (increase for multi-node)
 #SBATCH --ntasks-per-node=8       # Number of GPUs per node (max 8 on Frontier)
 #SBATCH --gpus-per-node=8         # Request all 8 GPUs on the node
@@ -22,6 +22,9 @@ module load PrgEnv-amd
 module load amd-mixed/5.0.2
 module load rocm/5.6.0
 module load pytorch
+
+# set up env
+micromamba activate gruboros
 
 # Print loaded modules and environment info for debugging
 module list
@@ -70,9 +73,9 @@ rocm-smi
 #--------------------------------------
 
 # Define common training parameters
-DATA_PATH="<path_to_your_data>"
+DATA_PATH="/autofs/nccs-svm1_home1/erikgarrison/gruboros/enwik8.txt"
 MODEL_SIZE="100m"        # Target model size (could be 15m, 100m, 1g, etc.)
-SEQ_LEN="128"            # Sequence length
+SEQ_LEN="2k"             # Sequence length
 BATCH_SIZE="32"          # Batch size per GPU
 
 # Calculate effective batch size
@@ -81,7 +84,7 @@ echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NTASKS G
 
 # Launch training using srun (Recommended for Frontier)
 srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \
-    python train.py \
+    deepspeed train.py \
     --data $DATA_PATH \
     --params $MODEL_SIZE \
     --seq_len $SEQ_LEN \
