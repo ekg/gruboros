@@ -121,11 +121,11 @@ class ContinuousIIDDataset(Dataset):
         self.seed = seed
         self.batch_size = batch_size
         
-        # Get file size
-        self.file_size = os.path.getsize(filepath)
+        # Use memory mapping for faster file access
+        self.mmap = np.memmap(filepath, dtype=np.uint8, mode='r')
         
         # Maximum valid starting position
-        self.max_start = max(0, self.file_size - seq_len - 1)
+        self.max_start = len(self.mmap) - seq_len - 1
         
         # Set samples per epoch directly (used only for calculating total length)
         if samples_per_epoch is None:
@@ -205,13 +205,11 @@ class ContinuousIIDDataset(Dataset):
         self.sample_counter += 1
         
         try:
-            # Get file handle and read data from the determined position
-            f = self._get_file_handle()
-            f.seek(file_pos)
-            data = f.read(self.seq_len + 1)  # +1 for target token
+            # Use memory mapping for faster access
+            data = self.mmap[file_pos:file_pos+self.seq_len+1]  # +1 for target token
             
             # Convert to tensor
-            tensor = torch.tensor(bytearray(data), dtype=torch.long)
+            tensor = torch.tensor(data, dtype=torch.long)
             
             # Handle edge case
             if tensor.size(0) < self.seq_len + 1:
