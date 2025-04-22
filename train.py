@@ -514,7 +514,7 @@ def main():
         else:
             # Create default name based on date and time
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            checkpoint_dir = f"grufinity_{timestamp}"
+            checkpoint_dir = f"gruboros_{timestamp}"
         
         os.makedirs(checkpoint_dir, exist_ok=True)
         print(f"Checkpoints will be saved to: {checkpoint_dir}")
