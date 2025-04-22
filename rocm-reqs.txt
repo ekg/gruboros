@@ -6,7 +6,7 @@ cffi
 charset-normalizer 
 cmake==4.0.0
 colorama 
-deepspeed==0.16.6
+deepspeed>=0.16.0
 deepspeed-kernels==0.0.1.dev1698255861
 einops==0.8.1
 filelock 
