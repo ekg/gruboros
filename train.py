@@ -1,4 +1,6 @@
 import os, random, numpy as np, hashlib
+# Flag to control ROCm vs CUDA setup
+USE_ROCM = True  # Set to False to revert to CUDA behavior
 import torch, torch.nn as nn
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, Subset
@@ -18,20 +20,43 @@ import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 
-# Set NCCL environment variables to help with distributed training issues
-os.environ["NCCL_DEBUG"] = "INFO"  # Enable NCCL debugging
-os.environ["NCCL_SOCKET_IFNAME"] = "^lo,docker"  # Avoid certain interfaces
-os.environ["NCCL_IB_DISABLE"] = "1"  # Disable InfiniBand (use TCP instead)
-os.environ["NCCL_P2P_DISABLE"] = "1"  # Disable GPU Direct P2P if causing issues
+# Set communication environment variables based on platform
+if USE_ROCM:
+    # ROCm/RCCL environment variables for Frontier
+    os.environ["RCCL_DEBUG"] = "INFO"  # Enable RCCL debugging
+    os.environ["NCCL_SOCKET_IFNAME"] = "hsn0,hsn1,hsn2,hsn3"  # HPE Slingshot interfaces
+    os.environ["NCCL_NET_GDR_LEVEL"] = "3"  # Optimized for Frontier
+    
+    # Make sure we use the correct GPU based on Slurm task ID
+    if "SLURM_LOCALID" in os.environ:
+        os.environ["ROCR_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
+    
+    # MIOpen cache setup to prevent file locking issues
+    if "SLURM_NODEID" in os.environ:
+        os.environ["MIOPEN_USER_DB_PATH"] = f"/tmp/{os.environ.get('USER', 'user')}-miopen-cache-{os.environ['SLURM_NODEID']}"
+        os.environ["MIOPEN_SYSTEM_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
+else:
+    # Original NVIDIA settings
+    os.environ["NCCL_DEBUG"] = "INFO"  # Enable NCCL debugging
+    os.environ["NCCL_SOCKET_IFNAME"] = "^lo,docker"  # Avoid certain interfaces
+    os.environ["NCCL_IB_DISABLE"] = "1"  # Disable InfiniBand (use TCP instead)
+    os.environ["NCCL_P2P_DISABLE"] = "1"  # Disable GPU Direct P2P if causing issues
 
 # Make sure the environment variables are actually applied
-for var in ["NCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_IB_DISABLE", "NCCL_P2P_DISABLE"]:
-    if var in os.environ:
-        print(f"{var}={os.environ[var]}")
+if USE_ROCM:
+    for var in ["RCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_NET_GDR_LEVEL", "ROCR_VISIBLE_DEVICES", 
+                "MIOPEN_USER_DB_PATH", "MIOPEN_SYSTEM_DB_PATH"]:
+        if var in os.environ:
+            print(f"{var}={os.environ[var]}")
+else:
+    for var in ["NCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_IB_DISABLE", "NCCL_P2P_DISABLE"]:
+        if var in os.environ:
+            print(f"{var}={os.environ[var]}")
 
 # Set higher precision for float32 matrix multiplication 
-# This enables TensorFloat32 on supported GPUs
-torch.set_float32_matmul_precision('high')
+# This enables TensorFloat32 on supported NVIDIA GPUs (not available on AMD/ROCm)
+if not USE_ROCM:
+    torch.set_float32_matmul_precision('high')
 
 # Import the minLM model
 from mingru.minLM import minLM
@@ -39,7 +64,9 @@ from mingru.minLM import minLM
 # 1) Deterministic seeding
 SEED = 42
 random.seed(SEED); np.random.seed(SEED)
-torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():  # Works for both CUDA and ROCm
+    torch.cuda.manual_seed_all(SEED)
 
 def round_to_multiple(n, multiple=64):
     """Round a number to the nearest multiple of a given value"""
@@ -444,7 +471,10 @@ def verify_gpu_health():
     """Verify that all GPUs are working properly"""
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
-        print(f"Found {device_count} CUDA devices")
+        if USE_ROCM:
+            print(f"Found {device_count} AMD GPUs with ROCm/HIP")
+        else:
+            print(f"Found {device_count} CUDA devices")
         
         # Check each device
         for i in range(device_count):
@@ -472,8 +502,28 @@ def verify_gpu_health():
             except Exception as e:
                 print(f"GPU 0 matrix multiplication test: FAILED - {e}")
 
+def setup_frontier_environment():
+    """Setup environment variables specific to Frontier"""
+    if not USE_ROCM:
+        return
+        
+    # Enable GPU-aware MPI
+    os.environ["MPICH_GPU_SUPPORT_ENABLED"] = "1"
+    
+    # Print ROCm version info
+    try:
+        import subprocess
+        result = subprocess.run(["rocm-smi", "--showdriverversion"], capture_output=True, text=True)
+        print(f"ROCm Driver Version: {result.stdout.strip()}")
+    except:
+        print("Could not detect ROCm version")
+
 def main():
     args = get_args()
+    
+    # Setup Frontier specific environment if using ROCm
+    if USE_ROCM:
+        setup_frontier_environment()
     
     # Set custom port for distributed communication
     if args.port != 29500:
@@ -813,7 +863,11 @@ def main():
     # 3) Initialize DeepSpeed engine with explicit config and better error handling
     try:
         # No barrier before DeepSpeed init - DeepSpeed handles this internally
-        print(f"Rank {args.local_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
+        if USE_ROCM:
+            print(f"Rank {args.local_rank}: Initializing DeepSpeed with ROCm/HIP backend (device: {torch.cuda.current_device()})")
+        else:
+            print(f"Rank {args.local_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
+        
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
