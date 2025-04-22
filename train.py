@@ -159,7 +159,7 @@ class ContinuousIIDDataset(Dataset):
             with open(self.sample_hash_file, 'w') as f:
                 f.write("step_idx\tfile_pos\thash\n")
         
-        print(f"ContinuousIIDDataset: Using file {filepath} ({self.file_size:,} bytes)")
+        print(f"ContinuousIIDDataset: Using file {filepath} ({len(self.mmap):,} bytes)")
         print(f"File contains approximately {self.unique_positions:,} possible unique samples")
         print(f"Training with {self.batches_per_epoch} batches per epoch ({self.samples_per_epoch} samples)")
         print(f"Using true continuous IID sampling with NO resets at epoch boundaries")
