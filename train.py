@@ -154,7 +154,7 @@ class ContinuousIIDDataset(Dataset):
             should_print = (model_engine_obj.global_rank == 0)
             
         if should_print:
-            print(f"DEBUG: File size: {self.file_size:,} bytes")
+            print(f"DEBUG: File size: {len(self.mmap):,} bytes")
             print(f"DEBUG: Max start position: {self.max_start:,}")
             print(f"DEBUG: Random sampling range type: {type(self.max_start)}")
         
