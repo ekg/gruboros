@@ -1,13 +1,9 @@
-name: mingru
+name: gruboros
 channels:
 - conda-forge
-- pytorch
 dependencies:
 - gcc_linux-64=13
 - gxx_linux-64=13
 - lightning
-- pytorch
-- pytorch-cuda
-- torchaudio
-- torchvision
+- python=3.10
 
