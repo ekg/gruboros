@@ -8,6 +8,9 @@ module load miniforge3/23.11.0-0
 module load rocm/6.2.4
 module load craype-accel-amd-gfx90a
 
+# Source .bashrc to ensure micromamba is properly initialized
+source ~/.bashrc
+
 # Set up micromamba - needs proper initialization
 micromamba activate gruboros
 
