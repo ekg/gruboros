@@ -24,7 +24,7 @@ from schedulefree import AdamWScheduleFree
 if USE_ROCM:
     # ROCm/RCCL environment variables for Frontier
     os.environ["RCCL_DEBUG"] = "INFO"  # Enable RCCL debugging
-    os.environ["NCCL_SOCKET_IFNAME"] = "hsn0,hsn1,hsn2,hsn3"  # HPE Slingshot interfaces
+    os.environ["NCCL_SOCKET_IFNAME"] = "hsn0"  # Primary HPE Slingshot interface
     os.environ["NCCL_NET_GDR_LEVEL"] = "3"  # Optimized for Frontier
     
     # Make sure we use the correct GPU based on Slurm task ID
