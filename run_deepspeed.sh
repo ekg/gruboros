@@ -25,6 +25,9 @@ export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
 export NCCL_NET_GDR_LEVEL=3
 export NCCL_DEBUG=INFO
 
+# Set custom port for PyTorch distributed to avoid conflicts
+export MASTER_PORT=${MASTER_PORT:-$(($RANDOM + 10000))}  # Generate random port number
+
 # Create MIOPEN cache directory if it doesn't exist
 mkdir -p $MIOPEN_USER_DB_PATH
 

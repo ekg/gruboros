@@ -48,8 +48,15 @@ BATCH_SIZE="32"          # Batch size per GPU
 EFFECTIVE_BATCH=$((BATCH_SIZE * SLURM_NTASKS))
 echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NTASKS GPUs"
 
+# Clean up any lingering processes from previous runs
+pkill -f "python.*train.py" || true
+sleep 2  # Give some time for processes to terminate
+
 # Make the wrapper script executable
 chmod +x ./run_deepspeed.sh
+
+# Generate a random port for distributed communication
+export MASTER_PORT=$(($RANDOM + 10000))
 
 # Launch training using srun with the wrapper script (Recommended for Frontier)
 srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \
@@ -65,6 +72,7 @@ srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \
     --validate_every 200 \
     --save_every 500 \
     --keep_checkpoints 5 \
-    --log_sample_hashes
+    --log_sample_hashes \
+    --master_port $MASTER_PORT
 
 echo "Training complete. Results saved to $OUTPUT_DIR"
