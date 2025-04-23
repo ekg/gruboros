@@ -39,7 +39,7 @@ echo "======================================"
 #--------------------------------------
 
 # Define common training parameters
-DATA_PATH="/autofs/nccs-svm1_home1/erikgarrison/gruboros/enwik8.txt"
+DATA_PATH="/lustre/orion/scratch/erikgarrison/bif148/enwik8.txt"
 MODEL_SIZE="100m"        # Target model size (could be 15m, 100m, 1g, etc.)
 SEQ_LEN="2k"             # Sequence length
 BATCH_SIZE="32"          # Batch size per GPU
