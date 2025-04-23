@@ -69,6 +69,6 @@ srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \
     --save_every 500 \
     --keep_checkpoints 5 \
     --log_sample_hashes \
-    --master_port $MASTER_PORT
+    --port $MASTER_PORT
 
 echo "Training complete. Results saved to $OUTPUT_DIR"
