@@ -3,8 +3,9 @@
 #SBATCH -J minLM_train            # Job name
 #SBATCH -o %x-%j.out              # Output file name (%x=job name, %j=job id)
 #SBATCH -e %x-%j.err              # Error file name
-#SBATCH -t 2:00:00                # Maximum job time (HH:MM:SS)
-#SBATCH -q debug                  # for debugging, batch for 
+#SBATCH -t 0:10:00                # Maximum job time (HH:MM:SS)
+#SBATCH -p batch                  # batch queue
+#SBATCH -q debug                  # debugging QOS
 #SBATCH -N 1                      # Number of nodes (increase for multi-node)
 #SBATCH --ntasks-per-node=8       # Number of GPUs per node (max 8 on Frontier)
 #SBATCH --gpus-per-node=8         # Request all 8 GPUs on the node
@@ -19,9 +20,10 @@
 
 # Load necessary modules
 module load PrgEnv-amd
-module load amd-mixed/5.0.2
-module load rocm/5.6.0
-module load pytorch
+module load PrgEnv-gnu/8.6.0
+module load miniforge3/23.11.0-0
+module load rocm/6.2.4
+module load craype-accel-amd-gfx90a
 
 # set up env
 micromamba activate gruboros
