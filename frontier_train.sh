@@ -15,42 +15,11 @@
 ##SBATCH --constraint=<feature>   # Use specific node features
 
 #--------------------------------------
-# Environment setup
+# Job setup - minimal environment setup
 #--------------------------------------
 
-# Load necessary modules
+# Only load modules needed for job management
 module load PrgEnv-amd
-module load PrgEnv-gnu/8.6.0
-module load miniforge3/23.11.0-0
-module load rocm/6.2.4
-module load craype-accel-amd-gfx90a
-
-# set up env
-micromamba activate gruboros
-
-# Print loaded modules and environment info for debugging
-module list
-env | grep ROCM
-env | grep SLURM
-
-# Enable detailed ROCm logging and setup
-export MIOPEN_ENABLE_LOGGING=1
-export MIOPEN_ENABLE_LOGGING_CMD=1
-export HSA_TOOLS_LIB=1
-export ROCR_LOG_LEVEL=INFO
-
-# Enable GPU-aware MPI
-export MPICH_GPU_SUPPORT_ENABLED=1
-
-# Prevent file system contention with unique directories
-export MIOPEN_USER_DB_PATH="/tmp/${USER}-miopen-cache-${SLURM_NODEID}"
-export MIOPEN_SYSTEM_DB_PATH="${MIOPEN_USER_DB_PATH}"
-mkdir -p $MIOPEN_USER_DB_PATH
-
-# Enhanced network settings for Frontier Slingshot network
-export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
-export NCCL_NET_GDR_LEVEL=3
-export NCCL_DEBUG=INFO
 
 # Setup output directory with date and run info
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -64,11 +33,6 @@ echo "Nodes: $SLURM_NNODES"
 echo "GPUs per node: $SLURM_GPUS_PER_NODE"
 echo "Output directory: $OUTPUT_DIR"
 echo "======================================"
-
-# Print GPU information
-rocm-smi --showdriverversion
-rocm-smi --showproductname
-rocm-smi
 
 #--------------------------------------
 # Run the training
@@ -102,8 +66,5 @@ srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \
     --save_every 500 \
     --keep_checkpoints 5 \
     --log_sample_hashes
-
-# Alternative distributed launch for simple single-node using DeepSpeed (if needed)
-# deepspeed --num_gpus=$SLURM_GPUS_PER_NODE train.py [...parameters...]
 
 echo "Training complete. Results saved to $OUTPUT_DIR"
