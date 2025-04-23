@@ -51,8 +51,8 @@ echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NTASKS G
 # Make the wrapper script executable
 chmod +x ./run_deepspeed.sh
 
-# Generate a random port for distributed communication
-export MASTER_PORT=$(($RANDOM + 10000))
+# Set recommended fixed port for distributed communication
+export MASTER_PORT=3442
 
 # Launch training using srun with the wrapper script (Recommended for Frontier)
 srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \

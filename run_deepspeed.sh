@@ -25,12 +25,13 @@ export MIOPEN_USER_DB_PATH="/tmp/${USER}-miopen-cache-${SLURM_NODEID}"
 export MIOPEN_SYSTEM_DB_PATH="${MIOPEN_USER_DB_PATH}"
 
 # Network configuration for Frontier's Slingshot network
-export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
+export NCCL_SOCKET_IFNAME=hsn0
 export NCCL_NET_GDR_LEVEL=3
 export NCCL_DEBUG=INFO
 
-# Set custom port for PyTorch distributed to avoid conflicts
-export MASTER_PORT=${MASTER_PORT:-$(($RANDOM + 10000))}  # Generate random port number
+# Set recommended port for PyTorch distributed
+export MASTER_PORT=${MASTER_PORT:-3442}  # Use port 3442 as recommended
+export MASTER_ADDR=$(hostname -i)  # Set master address to current host
 
 # Create MIOPEN cache directory if it doesn't exist
 mkdir -p $MIOPEN_USER_DB_PATH
