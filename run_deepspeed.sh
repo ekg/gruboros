@@ -9,7 +9,6 @@ module load rocm/6.2.4
 module load craype-accel-amd-gfx90a
 
 # Set up micromamba - needs proper initialization
-source $(micromamba info --base)/etc/profile.d/micromamba.sh
 micromamba activate gruboros
 
 # Set ROCm-specific environment variables
