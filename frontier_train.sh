@@ -3,7 +3,7 @@
 #SBATCH -J minLM_train            # Job name
 #SBATCH -o %x-%j.out              # Output file name (%x=job name, %j=job id)
 #SBATCH -e %x-%j.err              # Error file name
-#SBATCH -t 0:10:00                # Maximum job time (HH:MM:SS)
+#SBATCH -t 01:00:00               # Maximum job time (HH:MM:SS)
 #SBATCH -p batch                  # batch queue
 #SBATCH -q debug                  # debugging QOS
 #SBATCH -N 1                      # Number of nodes (increase for multi-node)
@@ -40,9 +40,9 @@ echo "======================================"
 
 # Define common training parameters
 DATA_PATH="/lustre/orion/scratch/erikgarrison/bif148/enwik8.txt"
-MODEL_SIZE="100m"        # Target model size (could be 15m, 100m, 1g, etc.)
+MODEL_SIZE="512m"        # Target model size (could be 15m, 100m, 1g, etc.)
 SEQ_LEN="2k"             # Sequence length
-BATCH_SIZE="32"          # Batch size per GPU
+BATCH_SIZE="4"           # Batch size per GPU
 
 # Calculate effective batch size
 EFFECTIVE_BATCH=$((BATCH_SIZE * SLURM_NTASKS))
@@ -61,12 +61,12 @@ srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \
     --params $MODEL_SIZE \
     --seq_len $SEQ_LEN \
     --batch_size $BATCH_SIZE \
-    --grad_accum 1 \
+    --grad_accum 128 \
     --output $OUTPUT_DIR \
-    --tp_size 1 \
+    --tp_size 8 \
     --train_steps 10000 \
     --validate_every 200 \
-    --save_every 500 \
+    --save_every 200 \
     --keep_checkpoints 5 \
     --log_sample_hashes \
     --port $MASTER_PORT
