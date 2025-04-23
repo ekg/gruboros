@@ -18,7 +18,6 @@ micromamba activate gruboros
 # Set ROCm-specific environment variables
 export MIOPEN_ENABLE_LOGGING=1
 export MIOPEN_ENABLE_LOGGING_CMD=1
-export HSA_TOOLS_LIB=1
 export ROCR_LOG_LEVEL=INFO
 export MPICH_GPU_SUPPORT_ENABLED=1
 export MIOPEN_USER_DB_PATH="/tmp/${USER}-miopen-cache-${SLURM_NODEID}"
