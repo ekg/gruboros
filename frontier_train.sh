@@ -48,10 +48,6 @@ BATCH_SIZE="32"          # Batch size per GPU
 EFFECTIVE_BATCH=$((BATCH_SIZE * SLURM_NTASKS))
 echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NTASKS GPUs"
 
-# Clean up any lingering processes from previous runs
-pkill -f "python.*train.py" || true
-sleep 2  # Give some time for processes to terminate
-
 # Make the wrapper script executable
 chmod +x ./run_deepspeed.sh
 
