@@ -7,7 +7,7 @@
 #SBATCH -p batch                  # batch queue
 #SBATCH -q debug                  # debugging QOS
 #SBATCH -N 1                      # Number of nodes (increase for multi-node)
-#SBATCH --ntasks-per-node=8       # Number of GPUs per node (max 8 on Frontier)
+#SBATCH --ntasks-per-node=1       # Number of tasks per node
 #SBATCH --gpus-per-node=8         # Request all 8 GPUs on the node
 #SBATCH --exclusive               # Request exclusive access to node
 
