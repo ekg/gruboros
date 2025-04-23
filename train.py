@@ -54,9 +54,9 @@ else:
             print(f"{var}={os.environ[var]}")
 
 # Set higher precision for float32 matrix multiplication 
-# This enables TensorFloat32 on supported NVIDIA GPUs (not available on AMD/ROCm)
-if not USE_ROCM:
-    torch.set_float32_matmul_precision('high')
+# This enables TensorFloat32 on supported NVIDIA GPUs
+# We enable this regardless of platform as it's harmless on platforms that don't support it
+torch.set_float32_matmul_precision('high')
 
 # Import the minLM model
 from mingru.minLM import minLM
