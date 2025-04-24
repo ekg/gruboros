@@ -31,13 +31,19 @@ export NCCL_TREE_THRESHOLD=0   # Optimize for multi-node
 export NCCL_NSOCKS_PERTHREAD=4
 export NCCL_SOCKET_NTHREADS=1
 export NCCL_IB_HCA=hsn0,hsn1,hsn2,hsn3
+export NCCL_IB_TIMEOUT=22
+export NCCL_IB_RETRY_CNT=16
+export NCCL_NET_PLUGIN=ucx
 
-# Set master node for distributed training
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+# Set master node for distributed training (if not already set)
+if [ -z "$MASTER_ADDR" ]; then
+    export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+fi
 export MASTER_PORT=${MASTER_PORT:-3442}
 
 echo "MASTER_ADDR set to: $MASTER_ADDR"
 echo "MASTER_PORT set to: $MASTER_PORT"
+echo "Node ID: $SLURM_NODEID of $SLURM_NNODES (Rank out of all nodes)"
 
 # Create MIOPEN cache directory if it doesn't exist
 mkdir -p $MIOPEN_USER_DB_PATH
@@ -49,7 +55,13 @@ echo "Node ID: $SLURM_NODEID of $SLURM_NNODES nodes"
 echo "DeepSpeed path: $(which deepspeed)"
 echo "Python path: $(which python)"
 echo "ROCm version: $(rocm-smi --showdriverversion 2>/dev/null || echo 'not available')"
+echo "Network interface: $(ip addr show hsn0 2>/dev/null | grep 'inet ' | awk '{print $2}' || echo 'hsn0 not found')"
 echo "=================================="
+
+# Print GPU topology information
+echo "======== GPU Topology ========"
+rocm-smi --showtoponuma 2>/dev/null || echo "GPU topology information not available"
+echo "============================="
 
 # Run the actual command, passing all arguments through
 deepspeed train.py "$@"

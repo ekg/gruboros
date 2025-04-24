@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -A BIF148                 # embedding life project
-#SBATCH -J minLM_train            # Job name
+#SBATCH -J minLM_hybrid           # Job name with hybrid parallelism
 #SBATCH -o %x-%j.out              # Output file name (%x=job name, %j=job id)
 #SBATCH -e %x-%j.err              # Error file name
 #SBATCH -t 01:00:00               # Maximum job time (HH:MM:SS)
@@ -29,8 +29,9 @@ mkdir -p $OUTPUT_DIR
 # Display information about the job
 echo "========== Job Information =========="
 echo "Job ID: $SLURM_JOB_ID"
-echo "Nodes: $SLURM_NNODES"
+echo "Nodes: $SLURM_NNODES ($(scontrol show hostnames $SLURM_JOB_NODELIST | tr '\n' ' '))"
 echo "GPUs per node: $SLURM_GPUS_PER_NODE"
+echo "Total GPUs: $((SLURM_NNODES * SLURM_GPUS_PER_NODE))"
 echo "Output directory: $OUTPUT_DIR"
 echo "======================================"
 
@@ -51,8 +52,10 @@ echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NNODES n
 # Make the wrapper script executable
 chmod +x ./run_deepspeed.sh
 
-# Set recommended fixed port for distributed communication
+# Set master node and port for distributed communication
+export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=3442
+echo "Using MASTER_ADDR=$MASTER_ADDR and MASTER_PORT=$MASTER_PORT for multi-node communication"
 
 # Launch training using srun with the wrapper script
 srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \

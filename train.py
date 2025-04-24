@@ -98,6 +98,100 @@ def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5
     depth = (target_params - embed_params) / layer_params
     return max(1, round(depth))
 
+def setup_hybrid_parallelism(args):
+    """Set up hybrid parallelism with DDP across nodes and TP within nodes"""
+    # Calculate ranks and sizes
+    args.node_rank = int(os.environ.get("SLURM_NODEID", "0"))
+    args.global_rank = args.node_rank * args.tp_size + args.local_rank
+    args.world_size = args.ddp_size * args.tp_size
+    
+    if args.local_rank == 0:
+        print(f"Process info: node_rank={args.node_rank}, local_rank={args.local_rank}, "
+              f"global_rank={args.global_rank}, world_size={args.world_size}")
+    
+    # Initialize process group for global coordination if not already initialized
+    if not torch.distributed.is_initialized():
+        # Set backend based on platform
+        backend = "nccl"  # NCCL works with ROCm too
+        
+        # Initialize process group
+        if "MASTER_ADDR" not in os.environ:
+            # Get master address from Slurm
+            if "SLURM_JOB_NODELIST" in os.environ:
+                master_addr = os.popen(
+                    f"scontrol show hostnames {os.environ['SLURM_JOB_NODELIST']} | head -n1"
+                ).read().strip()
+                os.environ["MASTER_ADDR"] = master_addr
+        
+        if "MASTER_PORT" not in os.environ:
+            os.environ["MASTER_PORT"] = str(args.port)
+            
+        if args.local_rank == 0:
+            print(f"Initializing distributed: backend={backend}, "
+                  f"rank={args.global_rank}, world_size={args.world_size}, "
+                  f"MASTER_ADDR={os.environ.get('MASTER_ADDR', 'not-set')}, "
+                  f"MASTER_PORT={os.environ.get('MASTER_PORT', 'not-set')}")
+        
+        torch.distributed.init_process_group(
+            backend=backend,
+            world_size=args.world_size,
+            rank=args.global_rank
+        )
+    
+    return args.world_size
+
+def safe_optimizer_mode(optimizer, mode='train'):
+    """
+    Safely set optimizer to train/eval mode, even when wrapped by DeepSpeed
+    
+    Args:
+        optimizer: The optimizer instance
+        mode: 'train' or 'eval'
+    """
+    if optimizer is None:
+        return
+        
+    # Try direct access
+    if hasattr(optimizer, mode) and callable(getattr(optimizer, mode)):
+        getattr(optimizer, mode)()
+        return
+
+def get_deepspeed_config(args, batch_size):
+    """Generate DeepSpeed config for hybrid parallelism without ZeRO"""
+    return {
+        "train_micro_batch_size_per_gpu": batch_size,
+        "gradient_accumulation_steps": args.grad_accum,
+        
+        # Explicitly disable ZeRO to avoid optimizer conflicts
+        "zero_optimization": {
+            "stage": 0  # Disables ZeRO completely
+        },
+        
+        # Tensor parallelism within node
+        "tensor_parallel": {
+            "tp": {
+                "tp_size": args.tp_size,
+                "tp_grain_size": 64
+            }
+        },
+        
+        # BF16 mixed precision (good for AMD MI250X GPUs)
+        "bf16": {
+            "enabled": True
+        },
+        
+        # Communication optimizations for multi-node
+        "communication_data_type": "bf16",
+        "prescale_gradients": True,
+        "gradient_predivide_factor": args.ddp_size,
+        
+        # Distributed training config
+        "distributed_training": {
+            "tp_size": args.tp_size,
+            "dp_size": args.ddp_size
+        }
+    }
+
 def calculate_model_size(config):
     """Calculate the number of parameters in the model"""
     dim = config["dim"]
@@ -558,14 +652,8 @@ def main():
             print(f"Rank {args.local_rank} was specified to be excluded, forcing CPU execution")
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     
-    # Calculate global rank for multi-node DDP
-    args.node_rank = int(os.environ.get("SLURM_NODEID", "0"))
-    args.global_rank = args.node_rank * args.tp_size + args.local_rank
-    args.world_size = args.ddp_size * args.tp_size
-    
-    if args.local_rank == 0:
-        print(f"Node rank: {args.node_rank}, Local rank: {args.local_rank}, Global rank: {args.global_rank}")
-        print(f"World size: {args.world_size}, DDP size: {args.ddp_size}, TP size: {args.tp_size}")
+    # Setup process groups for multi-node with tensor parallelism
+    setup_hybrid_parallelism(args)
     
     # Verify GPU health before proceeding
     if args.local_rank == 0 and args.node_rank == 0:
@@ -875,31 +963,8 @@ def main():
         if args.local_rank == 0:
             print(f"Using standard AdamW optimizer with lr={args.lr} (ScheduleFree disabled)")
     
-    # 2) DeepSpeed config for tensor parallelism and gradient accumulation
-    ds_config = {
-        "train_micro_batch_size_per_gpu": batch_size,
-        "gradient_accumulation_steps": args.grad_accum,
-        "tensor_parallel": {
-            "tp": {
-                "tp_size": args.tp_size,
-                "tp_grain_size": 64
-            }
-        },
-        "zero_allow_untested_optimizer": True,
-        "zero_optimization": {
-            "stage": 1,   # ZeRO stage 1 for DDP optimization
-            "allgather_partitions": True,
-            "allgather_bucket_size": 5e8,
-            "overlap_comm": True,
-            "reduce_scatter": True,
-            "reduce_bucket_size": 5e8,
-            "contiguous_gradients": True
-        },
-        "communication_data_type": "fp16",  # Optimize communication
-        "bf16": {
-            "enabled": True  # Use bfloat16 if available on Frontier
-        }
-    }
+    # Get DeepSpeed config for hybrid parallelism without ZeRO
+    ds_config = get_deepspeed_config(args, batch_size)
     
     # 3) Initialize DeepSpeed engine with explicit config and better error handling
     try:
@@ -914,7 +979,7 @@ def main():
             optimizer=optimizer,
             config=ds_config,
             model_parameters=model.parameters(),
-            dist_init_required=True
+            dist_init_required=False  # We already initialized distributed
         )
         print(f"Rank {args.local_rank}: DeepSpeed initialization successful")
     except Exception as e:
@@ -959,7 +1024,7 @@ def main():
     
     # 4) Put ScheduleFree optimizer into train mode if used
     if args.schedulefree:
-        model_engine.optimizer.train()
+        safe_optimizer_mode(model_engine.optimizer, 'train')
     
     # Calculate samples per epoch based on requested batches per epoch
     samples_per_epoch = batches_per_epoch * batch_size
@@ -1204,7 +1269,7 @@ def main():
         
         # Switch ScheduleFree to eval mode
         if args.schedulefree:
-            model_engine.optimizer.eval()
+            safe_optimizer_mode(model_engine.optimizer, 'eval')
         
         # Don't display validation progress meter
         
@@ -1246,7 +1311,7 @@ def main():
         # Switch back to train mode
         model_engine.train()
         if args.schedulefree:
-            model_engine.optimizer.train()
+            safe_optimizer_mode(model_engine.optimizer, 'train')
         
         return avg_loss
     
@@ -1343,7 +1408,7 @@ def main():
             # Explicitly reset ScheduleFree optimizer to train mode after epoch transition
             # This is critical as ScheduleFree uses two different points for gradient and test/val loss
             if args.schedulefree and hasattr(model_engine, 'optimizer'):
-                model_engine.optimizer.train()
+                safe_optimizer_mode(model_engine.optimizer, 'train')
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
@@ -1445,7 +1510,7 @@ def main():
         
         # After training, switch to eval mode if using ScheduleFree
         if args.schedulefree:
-            model_engine.optimizer.eval()
+            safe_optimizer_mode(model_engine.optimizer, 'eval')
         
         # Close progress bar
         pbar.close()
