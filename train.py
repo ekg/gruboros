@@ -99,11 +99,12 @@ def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5
     return max(1, round(depth))
 
 def setup_hybrid_parallelism(args):
-    """Set up hybrid parallelism with DDP across nodes and TP within nodes"""
+    """Set up hybrid parallelism with DDP across nodes and TP within nodes using PMI"""
     # Calculate ranks and sizes
     args.node_rank = int(os.environ.get("SLURM_NODEID", "0"))
-    args.global_rank = args.node_rank * args.tp_size + args.local_rank
-    args.world_size = args.ddp_size * args.tp_size
+    args.local_rank = int(os.environ.get("SLURM_LOCALID", "0"))
+    args.global_rank = int(os.environ.get("SLURM_PROCID", "0"))
+    args.world_size = int(os.environ.get("SLURM_NTASKS", "1"))
     
     if args.local_rank == 0:
         print(f"Process info: node_rank={args.node_rank}, local_rank={args.local_rank}, "
@@ -114,28 +115,14 @@ def setup_hybrid_parallelism(args):
         # Set backend based on platform
         backend = "nccl"  # NCCL works with ROCm too
         
-        # Initialize process group
-        if "MASTER_ADDR" not in os.environ:
-            # Get master address from Slurm
-            if "SLURM_JOB_NODELIST" in os.environ:
-                master_addr = os.popen(
-                    f"scontrol show hostnames {os.environ['SLURM_JOB_NODELIST']} | head -n1"
-                ).read().strip()
-                os.environ["MASTER_ADDR"] = master_addr
-        
-        if "MASTER_PORT" not in os.environ:
-            os.environ["MASTER_PORT"] = str(args.port)
-            
         if args.local_rank == 0:
-            print(f"Initializing distributed: backend={backend}, "
-                  f"rank={args.global_rank}, world_size={args.world_size}, "
-                  f"MASTER_ADDR={os.environ.get('MASTER_ADDR', 'not-set')}, "
-                  f"MASTER_PORT={os.environ.get('MASTER_PORT', 'not-set')}")
+            print(f"Initializing distributed with PMI: backend={backend}, "
+                  f"rank={args.global_rank}, world_size={args.world_size}")
         
+        # Use env:// initialization method to leverage Slurm's PMI
         torch.distributed.init_process_group(
             backend=backend,
-            world_size=args.world_size,
-            rank=args.global_rank
+            init_method="env://"
         )
     
     return args.world_size
@@ -969,16 +956,17 @@ def main():
     try:
         # No barrier before DeepSpeed init - DeepSpeed handles this internally
         if USE_ROCM:
-            print(f"Rank {args.local_rank}: Initializing DeepSpeed with ROCm/HIP backend (device: {torch.cuda.current_device()})")
+            print(f"Rank {args.global_rank}: Initializing DeepSpeed with ROCm/HIP backend (device: {torch.cuda.current_device()})")
         else:
-            print(f"Rank {args.local_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
+            print(f"Rank {args.global_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
         
+        # Initialize DeepSpeed with PMI environment already set up
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             config=ds_config,
             model_parameters=model.parameters(),
-            dist_init_required=False  # We already initialized distributed
+            dist_init_required=False  # We already initialized with PMI
         )
         print(f"Rank {args.local_rank}: DeepSpeed initialization successful")
     except Exception as e:
