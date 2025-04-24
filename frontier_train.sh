@@ -86,8 +86,15 @@ mkdir -p $MIOPEN_USER_DB_PATH
 # Set PMI environment variables for improved reliability
 export FI_CXI_RDZV_PROTO=alt_read
 
-# Using PMI for process coordination (no need for MASTER_ADDR/PORT)
-echo "Using Slurm PMI for coordinating $SLURM_NTASKS processes across $SLURM_NNODES nodes"
+# Set PyTorch distributed environment variables
+export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+export MASTER_PORT=3442
+export RANK=$SLURM_PROCID
+export WORLD_SIZE=$SLURM_NTASKS
+export LOCAL_RANK=$SLURM_LOCALID
+
+echo "PyTorch distributed vars: RANK=${RANK}, WORLD_SIZE=${WORLD_SIZE}, LOCAL_RANK=${LOCAL_RANK}"
+echo "MASTER_ADDR=${MASTER_ADDR}, MASTER_PORT=${MASTER_PORT}"
 
 # Set up micromamba environment
 export MAMBA_EXE='/autofs/nccs-svm1_home1/erikgarrison/.local/bin/micromamba'
@@ -95,8 +102,8 @@ export MAMBA_ROOT_PREFIX='/lustre/orion/scratch/erikgarrison/bif148/micromamba'
 eval "$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2> /dev/null)"
 micromamba activate gruboros
 
-# Launch with srun using PMI directly
-srun --mpi=pmi2 python train.py \
+# Launch with srun (standard Slurm launcher)
+srun python train.py \
     --data $DATA_PATH \
     --params $MODEL_SIZE \
     --seq_len $SEQ_LEN \

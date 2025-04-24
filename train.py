@@ -99,12 +99,12 @@ def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5
     return max(1, round(depth))
 
 def setup_hybrid_parallelism(args):
-    """Set up hybrid parallelism with DDP across nodes and TP within nodes using PMI"""
-    # Calculate ranks and sizes
+    """Set up hybrid parallelism with DDP across nodes and TP within nodes using env vars"""
+    # Use environment variables SET by our frontier_train.sh script
     args.node_rank = int(os.environ.get("SLURM_NODEID", "0"))
-    args.local_rank = int(os.environ.get("SLURM_LOCALID", "0"))
-    args.global_rank = int(os.environ.get("SLURM_PROCID", "0"))
-    args.world_size = int(os.environ.get("SLURM_NTASKS", "1"))
+    args.local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", "0")))
+    args.global_rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0")))
+    args.world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", "1")))
     
     if args.local_rank == 0:
         print(f"Process info: node_rank={args.node_rank}, local_rank={args.local_rank}, "
@@ -116,10 +116,13 @@ def setup_hybrid_parallelism(args):
         backend = "nccl"  # NCCL works with ROCm too
         
         if args.local_rank == 0:
-            print(f"Initializing distributed with PMI: backend={backend}, "
-                  f"rank={args.global_rank}, world_size={args.world_size}")
+            print(f"Initializing distributed with env:// method: backend={backend}")
+            print(f"PyTorch distributed vars: RANK={os.environ.get('RANK')}, "
+                  f"WORLD_SIZE={os.environ.get('WORLD_SIZE')}, "
+                  f"MASTER_ADDR={os.environ.get('MASTER_ADDR')}, "
+                  f"MASTER_PORT={os.environ.get('MASTER_PORT')}")
         
-        # Use env:// initialization method to leverage Slurm's PMI
+        # Use env:// initialization method with properly set environment variables
         torch.distributed.init_process_group(
             backend=backend,
             init_method="env://"
@@ -960,13 +963,13 @@ def main():
         else:
             print(f"Rank {args.global_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
         
-        # Initialize DeepSpeed with PMI environment already set up
+        # Initialize DeepSpeed with environment variables already set up
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             config=ds_config,
             model_parameters=model.parameters(),
-            dist_init_required=False  # We already initialized with PMI
+            dist_init_required=False  # We already initialized with distributed env vars
         )
         print(f"Rank {args.local_rank}: DeepSpeed initialization successful")
     except Exception as e:
