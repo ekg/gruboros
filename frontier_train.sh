@@ -23,7 +23,7 @@ module load PrgEnv-amd
 
 # Setup output directory with date and run info
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="./outputs/run_${TIMESTAMP}_${SLURM_JOB_ID}"
+OUTPUT_DIR="/lustre/orion/scratch/erikgarrison/bif148/gruboros/run_${TIMESTAMP}_${SLURM_JOB_ID}"
 mkdir -p $OUTPUT_DIR
 
 # Display information about the job
