@@ -14,6 +14,7 @@ import math
 import json
 import datetime
 from datetime import timedelta
+from datetime import timedelta
 import sys
 import asyncio
 import shutil
@@ -356,6 +357,8 @@ def get_args():
                         help='local rank passed from distributed launcher')
     parser.add_argument('--tp_size', type=int, default=1,
                         help='tensor parallel size')
+    parser.add_argument('--ddp_size', type=int, default=1,
+                        help='number of nodes for distributed data parallel')
     parser.add_argument('--exclude_gpus', type=str, default="",
                         help='comma-separated list of GPU indices to exclude (e.g., "0,3")')
     
@@ -467,6 +470,21 @@ def synchronize_processes():
         print(f"ERROR in synchronize_processes: {e}")
         # Try to proceed anyway
 
+def global_barrier():
+    """Create a barrier that synchronizes all processes across all nodes"""
+    if not torch.distributed.is_initialized():
+        return
+        
+    world_size = torch.distributed.get_world_size()
+    if world_size == 1:
+        return
+        
+    # Create a distributed barrier with appropriate timeout
+    try:
+        torch.distributed.barrier(device_ids=[torch.cuda.current_device()], timeout=timedelta(minutes=10))
+    except Exception as e:
+        print(f"Warning: barrier synchronization failed: {e}")
+
 def verify_gpu_health():
     """Verify that all GPUs are working properly"""
     if torch.cuda.is_available():
@@ -540,8 +558,17 @@ def main():
             print(f"Rank {args.local_rank} was specified to be excluded, forcing CPU execution")
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     
-    # Verify GPU health before proceeding
+    # Calculate global rank for multi-node DDP
+    args.node_rank = int(os.environ.get("SLURM_NODEID", "0"))
+    args.global_rank = args.node_rank * args.tp_size + args.local_rank
+    args.world_size = args.ddp_size * args.tp_size
+    
     if args.local_rank == 0:
+        print(f"Node rank: {args.node_rank}, Local rank: {args.local_rank}, Global rank: {args.global_rank}")
+        print(f"World size: {args.world_size}, DDP size: {args.ddp_size}, TP size: {args.tp_size}")
+    
+    # Verify GPU health before proceeding
+    if args.local_rank == 0 and args.node_rank == 0:
         verify_gpu_health()
     
     # Print memory usage monitoring message
@@ -857,6 +884,19 @@ def main():
                 "tp_size": args.tp_size,
                 "tp_grain_size": 64
             }
+        },
+        "zero_optimization": {
+            "stage": 1,   # ZeRO stage 1 for DDP optimization
+            "allgather_partitions": True,
+            "allgather_bucket_size": 5e8,
+            "overlap_comm": True,
+            "reduce_scatter": True,
+            "reduce_bucket_size": 5e8,
+            "contiguous_gradients": True
+        },
+        "communication_data_type": "fp16",  # Optimize communication
+        "bf16": {
+            "enabled": True  # Use bfloat16 if available on Frontier
         }
     }
     
@@ -914,7 +954,7 @@ def main():
         model_engine.module.load_state_dict(checkpoint['model_state_dict'])
         
         # Synchronize after loading checkpoint to ensure all processes have updated weights
-        synchronize_processes()
+        global_barrier()
     
     # 4) Put ScheduleFree optimizer into train mode if used
     if args.schedulefree:
@@ -952,16 +992,16 @@ def main():
     # Create samplers for both datasets
     train_sampler = DistributedSampler(
         train_dataset,
-        num_replicas=model_engine.world_size,
-        rank=model_engine.global_rank,
+        num_replicas=args.world_size,  # Total number of processes across all nodes
+        rank=args.global_rank,         # Global rank including node ID
         shuffle=True,
         seed=SEED
     )
     
     val_sampler = DistributedSampler(
         val_dataset,
-        num_replicas=model_engine.world_size,
-        rank=model_engine.global_rank,
+        num_replicas=args.world_size,
+        rank=args.global_rank,
         shuffle=False,
         seed=SEED
     )
@@ -1200,7 +1240,7 @@ def main():
         
         # Synchronize all processes after validation to prevent some processes 
         # from continuing while others are still validating
-        synchronize_processes()
+        global_barrier()
         
         # Switch back to train mode
         model_engine.train()

@@ -6,9 +6,9 @@
 #SBATCH -t 01:00:00               # Maximum job time (HH:MM:SS)
 #SBATCH -p batch                  # batch queue
 #SBATCH -q debug                  # debugging QOS
-#SBATCH -N 1                      # Number of nodes (increase for multi-node)
-#SBATCH --ntasks-per-node=1       # Number of tasks per node
-#SBATCH --gpus-per-node=8         # Request all 8 GPUs on the node
+#SBATCH -N 4                      # Request 4 nodes for multi-node training
+#SBATCH --ntasks-per-node=1       # One task per node for DDP
+#SBATCH --gpus-per-node=8         # Request all 8 GPUs on each node
 #SBATCH --exclusive               # Request exclusive access to node
 
 # Uncomment to set specific node features if needed
@@ -45,8 +45,8 @@ SEQ_LEN="2k"             # Sequence length
 BATCH_SIZE="4"           # Batch size per GPU
 
 # Calculate effective batch size
-EFFECTIVE_BATCH=$((BATCH_SIZE * SLURM_NTASKS))
-echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NTASKS GPUs"
+EFFECTIVE_BATCH=$((BATCH_SIZE * SLURM_GPUS_PER_NODE * SLURM_NNODES))
+echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NNODES nodes with $SLURM_GPUS_PER_NODE GPUs each"
 
 # Make the wrapper script executable
 chmod +x ./run_deepspeed.sh
@@ -54,16 +54,17 @@ chmod +x ./run_deepspeed.sh
 # Set recommended fixed port for distributed communication
 export MASTER_PORT=3442
 
-# Launch training using srun with the wrapper script (Recommended for Frontier)
+# Launch training using srun with the wrapper script
 srun -N $SLURM_NNODES -n $SLURM_NTASKS --gpus-per-node=$SLURM_GPUS_PER_NODE \
     ./run_deepspeed.sh \
     --data $DATA_PATH \
     --params $MODEL_SIZE \
     --seq_len $SEQ_LEN \
     --batch_size $BATCH_SIZE \
-    --grad_accum 128 \
+    --grad_accum 32 \
     --output $OUTPUT_DIR \
     --tp_size 8 \
+    --ddp_size $SLURM_NNODES \
     --train_steps 10000 \
     --validate_every 200 \
     --save_every 200 \

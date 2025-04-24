@@ -23,22 +23,18 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 export MIOPEN_USER_DB_PATH="/tmp/${USER}-miopen-cache-${SLURM_NODEID}"
 export MIOPEN_SYSTEM_DB_PATH="${MIOPEN_USER_DB_PATH}"
 
-# Network configuration for Frontier's Slingshot network
+# Enhanced network configuration for multi-node communication
 export NCCL_SOCKET_IFNAME=hsn0
 export NCCL_NET_GDR_LEVEL=3
 export NCCL_DEBUG=INFO
+export NCCL_TREE_THRESHOLD=0   # Optimize for multi-node
+export NCCL_NSOCKS_PERTHREAD=4
+export NCCL_SOCKET_NTHREADS=1
+export NCCL_IB_HCA=hsn0,hsn1,hsn2,hsn3
 
-# Set recommended port for PyTorch distributed
-export MASTER_PORT=${MASTER_PORT:-3442}  # Use port 3442 as recommended
-
-# Set master address based on node rank
-if [ "${SLURM_NODEID:-0}" -eq "0" ]; then
-    # If this is the first node, use its IP as master
-    export MASTER_ADDR=$(hostname -i)
-else
-    # Otherwise, get the hostname of the first node in allocation
-    export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-fi
+# Set master node for distributed training
+export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+export MASTER_PORT=${MASTER_PORT:-3442}
 
 echo "MASTER_ADDR set to: $MASTER_ADDR"
 echo "MASTER_PORT set to: $MASTER_PORT"
@@ -49,6 +45,7 @@ mkdir -p $MIOPEN_USER_DB_PATH
 # Print diagnostic information
 echo "======== Task Environment ========"
 echo "Running on node: $(hostname) with SLURM_LOCALID: $SLURM_LOCALID"
+echo "Node ID: $SLURM_NODEID of $SLURM_NNODES nodes"
 echo "DeepSpeed path: $(which deepspeed)"
 echo "Python path: $(which python)"
 echo "ROCm version: $(rocm-smi --showdriverversion 2>/dev/null || echo 'not available')"
