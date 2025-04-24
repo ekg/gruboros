@@ -716,9 +716,8 @@ def main():
         else:
             padded_dir = torch.zeros(256, dtype=torch.long).cuda()
             
-        # Broadcast from rank 0 to all processes with explicit device
-        current_device = torch.cuda.current_device()
-        torch.distributed.broadcast(padded_dir, 0, device_ids=[current_device])
+        # Broadcast from rank 0 to all processes
+        torch.distributed.broadcast(padded_dir, 0)
         
         # Convert back to string on other ranks
         if args.local_rank != 0:
