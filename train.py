@@ -885,6 +885,7 @@ def main():
                 "tp_grain_size": 64
             }
         },
+        "zero_allow_untested_optimizer": true,
         "zero_optimization": {
             "stage": 1,   # ZeRO stage 1 for DDP optimization
             "allgather_partitions": True,
