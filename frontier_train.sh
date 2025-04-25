@@ -7,7 +7,7 @@
 #SBATCH -p batch                  # batch queue
 #SBATCH -q debug                  # debugging QOS
 #SBATCH -N 4                      # Request 4 nodes for multi-node training
-#SBATCH --ntasks-per-node=8       # 8 tasks per node (1 per GPU)
+#SBATCH --ntasks-per-node=1       # 1 tasks per node (1 per GPU)
 #SBATCH --gpus-per-node=8         # Request all 8 GPUs on each node
 #SBATCH --exclusive               # Request exclusive access to node
 
