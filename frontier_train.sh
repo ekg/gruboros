@@ -11,16 +11,6 @@
 #SBATCH --gpus-per-node=8         # Request all 8 GPUs on each node
 #SBATCH --exclusive               # Request exclusive access to node
 
-# Uncomment to set specific node features if needed
-##SBATCH --constraint=<feature>   # Use specific node features
-
-#--------------------------------------
-# Job setup - minimal environment setup
-#--------------------------------------
-
-# Only load modules needed for job management
-module load PrgEnv-amd
-
 # Setup output directory with date and run info
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="/lustre/orion/scratch/erikgarrison/bif148/gruboros/run_${TIMESTAMP}_${SLURM_JOB_ID}"
@@ -49,9 +39,6 @@ BATCH_SIZE="4"           # Batch size per GPU
 EFFECTIVE_BATCH=$((BATCH_SIZE * SLURM_GPUS_PER_NODE * SLURM_NNODES))
 echo "Running with effective batch size: $EFFECTIVE_BATCH across $SLURM_NNODES nodes with $SLURM_GPUS_PER_NODE GPUs each"
 
-# Make the wrapper script executable
-chmod +x ./run_deepspeed.sh
-
 # Load required modules for Frontier
 module load PrgEnv-amd
 module load PrgEnv-gnu/8.6.0
@@ -70,6 +57,7 @@ export NCCL_NET_PLUGIN=ucx
 export NCCL_NSOCKS_PERTHREAD=4
 export NCCL_SOCKET_NTHREADS=1
 export NCCL_IB_HCA=hsn0,hsn1,hsn2,hsn3
+export NCCL_SOCKET_FAMILY=AF_INET  # Force IPv4
 
 # ROCm settings
 export MIOPEN_ENABLE_LOGGING=1
