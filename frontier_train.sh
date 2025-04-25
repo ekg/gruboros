@@ -7,7 +7,7 @@
 #SBATCH -p batch                  # batch queue
 #SBATCH -q debug                  # debugging QOS
 #SBATCH -N 4                      # Request 4 nodes for multi-node training
-#SBATCH --ntasks-per-node=1       # 1 tasks per node (1 per GPU)
+#SBATCH --ntasks-per-node=8       # 8 tasks per node (1 per GPU)
 #SBATCH --gpus-per-node=8         # Request all 8 GPUs on each node
 #SBATCH --exclusive               # Request exclusive access to node
 
@@ -74,14 +74,16 @@ mkdir -p $MIOPEN_USER_DB_PATH
 # Set PMI environment variables for improved reliability
 export FI_CXI_RDZV_PROTO=alt_read
 
-# Set PyTorch distributed environment variables
+# Set PyTorch distributed environment variables for hybrid parallelism
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=3442
-export RANK=$SLURM_PROCID
-export WORLD_SIZE=$SLURM_NTASKS
+# Proper rank calculation for hybrid parallelism (8 tasks per node)
+export WORLD_SIZE=$((SLURM_NNODES * SLURM_NTASKS_PER_NODE))
+export RANK=$((SLURM_NODEID * SLURM_NTASKS_PER_NODE + SLURM_LOCALID))
 export LOCAL_RANK=$SLURM_LOCALID
 
 echo "PyTorch distributed vars: RANK=${RANK}, WORLD_SIZE=${WORLD_SIZE}, LOCAL_RANK=${LOCAL_RANK}"
+echo "Node ID: ${SLURM_NODEID}, Total nodes: ${SLURM_NNODES}, Tasks per node: ${SLURM_NTASKS_PER_NODE}"
 echo "MASTER_ADDR=${MASTER_ADDR}, MASTER_PORT=${MASTER_PORT}"
 
 # Set up micromamba environment
