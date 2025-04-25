@@ -100,15 +100,26 @@ def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5
 
 def setup_hybrid_parallelism(args):
     """Set up hybrid parallelism with DDP across nodes and TP within nodes using env vars"""
-    # Use environment variables SET by our frontier_train.sh script
-    args.node_rank = int(os.environ.get("SLURM_NODEID", "0"))
-    args.local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", "0")))
-    args.global_rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0")))
-    args.world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", "1")))
+    # Get SLURM variables directly
+    slurm_nodeid = int(os.environ.get("SLURM_NODEID", "0"))
+    slurm_localid = int(os.environ.get("SLURM_LOCALID", "0"))
+    slurm_nnodes = int(os.environ.get("SLURM_NNODES", "1"))
+    slurm_ntasks_per_node = int(os.environ.get("SLURM_NTASKS_PER_NODE", "1"))
     
-    if args.local_rank == 0:
-        print(f"Process info: node_rank={args.node_rank}, local_rank={args.local_rank}, "
-              f"global_rank={args.global_rank}, world_size={args.world_size}")
+    # Calculate ranks directly from SLURM variables
+    args.node_rank = slurm_nodeid
+    args.local_rank = slurm_localid
+    # Explicitly calculate global rank from node ID and local ID
+    args.global_rank = slurm_nodeid * slurm_ntasks_per_node + slurm_localid
+    args.world_size = slurm_nnodes * slurm_ntasks_per_node
+    
+    # Override environment variables with our calculated values
+    os.environ["RANK"] = str(args.global_rank)
+    os.environ["LOCAL_RANK"] = str(args.local_rank)
+    os.environ["WORLD_SIZE"] = str(args.world_size)
+    
+    print(f"Process info: node_rank={args.node_rank}, local_rank={args.local_rank}, "
+          f"global_rank={args.global_rank}, world_size={args.world_size}")
     
     # Initialize process group for global coordination if not already initialized
     if not torch.distributed.is_initialized():
@@ -124,14 +135,39 @@ def setup_hybrid_parallelism(args):
         
         # Initialize with timeout to prevent hanging and explicitly pass rank and world_size
         timeout = timedelta(minutes=5)
-        print(f"Rank {args.global_rank}: Initializing distributed with env:// method")
-        torch.distributed.init_process_group(
-            backend=backend,
-            init_method="env://",
-            timeout=timeout,
-            world_size=args.world_size,
-            rank=args.global_rank
-        )
+        
+        # Print environment variables for debugging
+        print(f"Rank {args.global_rank}: MASTER_ADDR={os.environ.get('MASTER_ADDR')}, "
+              f"MASTER_PORT={os.environ.get('MASTER_PORT')}")
+        print(f"Rank {args.global_rank}: RANK={os.environ.get('RANK')}, "
+              f"WORLD_SIZE={os.environ.get('WORLD_SIZE')}, "
+              f"LOCAL_RANK={os.environ.get('LOCAL_RANK')}")
+        
+        # Try TCP initialization instead of env:// if we have all necessary information
+        if all(var in os.environ for var in ["MASTER_ADDR", "MASTER_PORT"]):
+            master_addr = os.environ["MASTER_ADDR"]
+            master_port = os.environ["MASTER_PORT"]
+            init_method = f"tcp://{master_addr}:{master_port}"
+            print(f"Rank {args.global_rank}: Initializing distributed with TCP method: {init_method}")
+            
+            torch.distributed.init_process_group(
+                backend=backend,
+                init_method=init_method,
+                timeout=timeout,
+                world_size=args.world_size,
+                rank=args.global_rank
+            )
+        else:
+            # Fall back to env:// method
+            print(f"Rank {args.global_rank}: Initializing distributed with env:// method")
+            torch.distributed.init_process_group(
+                backend=backend,
+                init_method="env://",
+                timeout=timeout,
+                world_size=args.world_size,
+                rank=args.global_rank
+            )
+            
         print(f"Rank {args.global_rank}: Distributed initialization successful")
     
     return args.world_size
