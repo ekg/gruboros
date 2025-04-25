@@ -47,8 +47,8 @@ else:
 
 # Make sure the environment variables are actually applied
 if USE_ROCM:
-    for var in ["RCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_NET_GDR_LEVEL", "ROCR_VISIBLE_DEVICES", 
-                "MIOPEN_USER_DB_PATH", "MIOPEN_SYSTEM_DB_PATH"]:
+    for var in ["RCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_NET_GDR_LEVEL", "HIP_VISIBLE_DEVICES", 
+                "CUDA_VISIBLE_DEVICES", "MIOPEN_USER_DB_PATH", "MIOPEN_SYSTEM_DB_PATH"]:
         if var in os.environ:
             print(f"{var}={os.environ[var]}")
 else:
