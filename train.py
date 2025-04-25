@@ -122,11 +122,17 @@ def setup_hybrid_parallelism(args):
                   f"MASTER_ADDR={os.environ.get('MASTER_ADDR')}, "
                   f"MASTER_PORT={os.environ.get('MASTER_PORT')}")
         
-        # Use env:// initialization method with properly set environment variables
+        # Initialize with timeout to prevent hanging and explicitly pass rank and world_size
+        timeout = timedelta(minutes=5)
+        print(f"Rank {args.global_rank}: Initializing distributed with env:// method")
         torch.distributed.init_process_group(
             backend=backend,
-            init_method="env://"
+            init_method="env://",
+            timeout=timeout,
+            world_size=args.world_size,
+            rank=args.global_rank
         )
+        print(f"Rank {args.global_rank}: Distributed initialization successful")
     
     return args.world_size
 
@@ -535,17 +541,24 @@ def synchronize_processes():
         # Get current device and rank info
         current_device = torch.cuda.current_device()
         rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
         
         # Print device health status only if there's an issue
         cuda_ok = torch.cuda.is_available() and torch.cuda.device_count() > current_device
         if not cuda_ok:
             print(f"WARNING: Rank {rank} has CUDA device issues. Available: {torch.cuda.is_available()}, Count: {torch.cuda.device_count()}")
         
+        # Log that we're entering the barrier
+        print(f"Rank {rank}/{world_size} entering barrier synchronization...")
+        
         # Staggered approach: small delay based on rank to avoid thundering herd
         time.sleep(0.01 * rank)
         
-        # Simple barrier with device_ids to prevent hanging
-        torch.distributed.barrier(device_ids=[current_device])
+        # Simple barrier with device_ids to prevent hanging and explicit timeout
+        torch.distributed.barrier(device_ids=[current_device], timeout=timedelta(minutes=2))
+        
+        # Log successful barrier completion
+        print(f"Rank {rank}/{world_size} passed barrier successfully")
         
         # Sleep a bit after barrier to let things settle
         time.sleep(0.01)
@@ -562,12 +575,16 @@ def global_barrier():
     world_size = torch.distributed.get_world_size()
     if world_size == 1:
         return
+    
+    rank = torch.distributed.get_rank()
+    print(f"Rank {rank}/{world_size} entering global barrier...")
         
-    # Create a distributed barrier with appropriate timeout
+    # Create a distributed barrier with appropriate timeout (reduced from 10 to 5 minutes)
     try:
-        torch.distributed.barrier(device_ids=[torch.cuda.current_device()], timeout=timedelta(minutes=10))
+        torch.distributed.barrier(device_ids=[torch.cuda.current_device()], timeout=timedelta(minutes=5))
+        print(f"Rank {rank}/{world_size} passed global barrier successfully")
     except Exception as e:
-        print(f"Warning: barrier synchronization failed: {e}")
+        print(f"Warning: global barrier synchronization failed for rank {rank}: {e}")
 
 def verify_gpu_health():
     """Verify that all GPUs are working properly"""
