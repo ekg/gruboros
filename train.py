@@ -30,7 +30,9 @@ if USE_ROCM:
     
     # Make sure we use the correct GPU based on Slurm task ID
     if "SLURM_LOCALID" in os.environ:
-        os.environ["ROCR_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
+        # Set both HIP and CUDA visible devices for compatibility
+        os.environ["HIP_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
+        os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
     
     # MIOpen cache setup to prevent file locking issues
     if "SLURM_NODEID" in os.environ:
@@ -58,6 +60,13 @@ else:
 # This enables TensorFloat32 on supported NVIDIA GPUs
 # We enable this regardless of platform as it's harmless on platforms that don't support it
 torch.set_float32_matmul_precision('high')
+
+# Explicitly set the CUDA device to match local rank if available
+# This ensures each process binds to the correct GPU
+if torch.cuda.is_available() and "SLURM_LOCALID" in os.environ:
+    local_rank = int(os.environ["SLURM_LOCALID"])
+    torch.cuda.set_device(local_rank)
+    print(f"Process with SLURM_LOCALID {local_rank} binding to CUDA device: {torch.cuda.current_device()}")
 
 # Import the minLM model
 from mingru.minLM import minLM
@@ -105,6 +114,10 @@ def setup_hybrid_parallelism(args):
     slurm_localid = int(os.environ.get("SLURM_LOCALID", "0"))
     slurm_nnodes = int(os.environ.get("SLURM_NNODES", "1"))
     slurm_ntasks_per_node = int(os.environ.get("SLURM_NTASKS_PER_NODE", "1"))
+    
+    # Explicitly set CUDA device based on local rank
+    if torch.cuda.is_available():
+        torch.cuda.set_device(slurm_localid)
     
     # Calculate ranks directly from SLURM variables
     args.node_rank = slurm_nodeid

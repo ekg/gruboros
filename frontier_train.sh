@@ -8,7 +8,7 @@
 #SBATCH -q debug                  # debugging QOS
 #SBATCH -N 4                      # Request 4 nodes for multi-node training
 #SBATCH --ntasks-per-node=8       # 8 tasks per node (1 per GPU)
-#SBATCH --gpus-per-node=8         # Request all 8 GPUs on each node
+#SBATCH --gpus-per-task=1         # Assign 1 GPU per task (better GPU binding)
 #SBATCH --exclusive               # Request exclusive access to node
 
 # Setup output directory with date and run info
@@ -64,6 +64,10 @@ export MIOPEN_ENABLE_LOGGING=1
 export MIOPEN_ENABLE_LOGGING_CMD=1
 export ROCR_LOG_LEVEL=INFO
 export MPICH_GPU_SUPPORT_ENABLED=1
+
+# Proper GPU isolation for ROCm/HIP using the correct environment variables
+export HIP_VISIBLE_DEVICES=$SLURM_LOCALID
+export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID
 
 # MIOpen cache setup
 export MIOPEN_USER_DB_PATH="/tmp/${USER}-miopen-cache-${SLURM_NODEID}"
