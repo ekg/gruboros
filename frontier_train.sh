@@ -6,7 +6,7 @@
 #SBATCH -t 01:00:00               # Maximum job time (HH:MM:SS)
 #SBATCH -p batch                  # batch queue
 #SBATCH -q debug                  # debugging QOS
-#SBATCH -N 4                      # Request 4 nodes for multi-node training
+#SBATCH -N 1                      # Request 1 node for single-node training
 #SBATCH --ntasks-per-node=8       # 8 tasks per node (1 per GPU)
 #SBATCH --gpus-per-task=1         # Assign 1 GPU per task (better GPU binding)
 #SBATCH --exclusive               # Request exclusive access to node
@@ -64,6 +64,11 @@ export MIOPEN_ENABLE_LOGGING=1
 export MIOPEN_ENABLE_LOGGING_CMD=1
 export ROCR_LOG_LEVEL=INFO
 export MPICH_GPU_SUPPORT_ENABLED=1
+
+# Set ROCm/HIP environment variables
+export CUDA_HOME=/opt/rocm-default
+export HIP_CLANG_PATH=/opt/rocm-default/llvm
+export ROCM_HOME=/opt/rocm-default
 
 # Proper GPU isolation for ROCm/HIP using the correct environment variables
 export HIP_VISIBLE_DEVICES=$SLURM_LOCALID
