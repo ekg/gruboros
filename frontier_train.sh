@@ -27,12 +27,19 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="$MEMBERWORK/bif148/gruboros/run_${TIMESTAMP}_${SLURM_JOB_ID}"
 mkdir -p $OUTPUT_DIR
 
+# Create hostfile for DeepSpeed
+HOSTS=.hosts-job$SLURM_JOB_ID
+HOSTFILE=hostfile.txt
+srun hostname > $HOSTS
+sed 's/$/ slots=8/' $HOSTS > $HOSTFILE
+
 # Display information about the job
 echo "========== Job Information =========="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Nodes: $SLURM_NNODES"
 echo "GPUs per node: $SLURM_GPUS_PER_NODE"
 echo "Output directory: $OUTPUT_DIR"
+echo "Hostfile: $HOSTFILE"
 echo "======================================"
 
 #--------------------------------------
@@ -56,8 +63,7 @@ chmod +x ./run_deepspeed.sh
 # Set fixed port for distributed communication
 export MASTER_PORT=29500
 
-# IMPORTANT: Let DeepSpeed handle the process launch instead of srun
-# DeepSpeed has better built-in support for distributed training
+# Run using DeepSpeed launcher through our wrapper script
 ./run_deepspeed.sh train.py \
     --data $DATA_PATH \
     --params $MODEL_SIZE \
@@ -71,6 +77,27 @@ export MASTER_PORT=29500
     --save_every 500 \
     --keep_checkpoints 5 \
     --log_sample_hashes \
-    --port $MASTER_PORT
+    --port $MASTER_PORT \
+    --deepspeed \
+    --deepspeed_config ds_config.json
 
 echo "Training complete. Results saved to $OUTPUT_DIR"
+
+# Option for srun-based launch (uncomment to use instead of DeepSpeed launcher)
+# srun -u -n$TOTAL_RANKS -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=closest \
+#     python train.py \
+#     --data $DATA_PATH \
+#     --params $MODEL_SIZE \
+#     --seq_len $SEQ_LEN \
+#     --batch_size $BATCH_SIZE \
+#     --grad_accum $GRAD_ACCUM \
+#     --output $OUTPUT_DIR \
+#     --tp_size 1 \
+#     --train_steps 10000 \
+#     --validate_every 200 \
+#     --save_every 500 \
+#     --keep_checkpoints 5 \
+#     --log_sample_hashes \
+#     --port $MASTER_PORT \
+#     --deepspeed \
+#     --deepspeed_config ds_config.json

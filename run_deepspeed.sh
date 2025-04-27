@@ -32,15 +32,14 @@ export LD_LIBRARY_PATH=/opt/rocm-6.2.4/rccl/build:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/opt/cray/libfabric/1.15.2.0/lib64/:$LD_LIBRARY_PATH
 export FI_LOG_LEVEL=info
 
-# SIMPLER APPROACH: Use the first node hostname as master (much more reliable)
-# Directly get the hostnames from SLURM
+# Get the master node from SLURM
 NODE_HOSTNAMES=$(scontrol show hostnames $SLURM_JOB_NODELIST)
 MASTER_NODE=$(echo $NODE_HOSTNAMES | awk '{print $1}')
 export MASTER_ADDR=$MASTER_NODE
 
 echo "Using hostname $MASTER_ADDR as MASTER_ADDR"
 
-# Set fixed port for reproducibility (as in example code)
+# Set fixed port for reproducibility
 export MASTER_PORT=${MASTER_PORT:-29500}
 
 echo "MASTER_ADDR set to: $MASTER_ADDR"
@@ -57,6 +56,10 @@ echo "Python path: $(which python)"
 echo "ROCm version: $(rocm-smi --showdriverversion 2>/dev/null || echo 'not available')"
 echo "=================================="
 
-# Run the actual command, passing all arguments through
-# Add the DeepSpeed launcher args here instead of in frontier_train.sh
-deepspeed --deepspeed --deepspeed_config ds_config.json --num_gpus $SLURM_GPUS_PER_NODE --num_nodes $SLURM_NNODES "$@"
+# Run DeepSpeed with proper command structure
+# --hostfile is optional but recommended for multi-node runs
+if [ -f "hostfile.txt" ]; then
+  deepspeed --hostfile hostfile.txt --num_gpus $SLURM_GPUS_PER_NODE --num_nodes $SLURM_NNODES "$@"
+else
+  deepspeed --num_gpus $SLURM_GPUS_PER_NODE --num_nodes $SLURM_NNODES "$@"
+fi
