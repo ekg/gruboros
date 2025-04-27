@@ -620,7 +620,7 @@ def main():
     # After DeepSpeed initializes, we'll get proper ranks from it
     
     # Verify GPU health before proceeding (only on rank 0)
-    if global_rank == 0:
+    if args.local_rank == 0:
         verify_gpu_health()
     
     # Print memory usage monitoring message
