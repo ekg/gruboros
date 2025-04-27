@@ -15,6 +15,13 @@ eval "$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 
 # Set up micromamba - needs proper initialization
 micromamba activate gruboros
 
+# Set ROCm/HIP environment variables to use instead of CUDA
+export CUDA_HOME=/opt/rocm-6.2.4
+export HIP_CLANG_PATH=/opt/rocm-6.2.4/llvm
+export ROCM_HOME=/opt/rocm-6.2.4
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
 # Set ROCm-specific environment variables
 export MIOPEN_ENABLE_LOGGING=1
 export MIOPEN_ENABLE_LOGGING_CMD=1
@@ -31,6 +38,11 @@ export FI_CXI_ATS=0
 export LD_LIBRARY_PATH=/opt/rocm-6.2.4/rccl/build:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/opt/cray/libfabric/1.15.2.0/lib64/:$LD_LIBRARY_PATH
 export FI_LOG_LEVEL=info
+
+# DeepSpeed settings for ROCm compatibility
+export DS_BUILD_OPS=1
+export DS_BUILD_CPU_ADAM=1
+export DS_BUILD_UTILS=1
 
 # Get the master node from SLURM
 NODE_HOSTNAMES=$(scontrol show hostnames $SLURM_JOB_NODELIST)

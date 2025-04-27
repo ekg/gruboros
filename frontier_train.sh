@@ -36,6 +36,14 @@ sed 's/$/ slots=8/' unique_hosts_$SLURM_JOB_ID > $HOSTFILE
 # Clean up temporary file
 rm -f unique_hosts_$SLURM_JOB_ID
 
+# Set ROCm environment variables for DeepSpeed
+export CUDA_HOME=/opt/rocm-6.2.4
+export HIP_CLANG_PATH=/opt/rocm-6.2.4/llvm
+export ROCM_HOME=/opt/rocm-6.2.4
+export DS_BUILD_OPS=1
+export DS_BUILD_CPU_ADAM=1
+export DS_BUILD_UTILS=1
+
 # Display information about the job
 echo "========== Job Information =========="
 echo "Job ID: $SLURM_JOB_ID"
@@ -43,6 +51,7 @@ echo "Nodes: $SLURM_NNODES"
 echo "GPUs per node: $SLURM_GPUS_PER_NODE"
 echo "Output directory: $OUTPUT_DIR"
 echo "Hostfile: $HOSTFILE"
+echo "ROCm version: $(rocm-smi --showdriverversion 2>/dev/null || echo 'not available')"
 echo "======================================"
 
 #--------------------------------------
