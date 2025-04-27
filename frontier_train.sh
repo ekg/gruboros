@@ -58,12 +58,7 @@ export MASTER_PORT=29500
 
 # IMPORTANT: Let DeepSpeed handle the process launch instead of srun
 # DeepSpeed has better built-in support for distributed training
-./run_deepspeed.sh \
-    --deepspeed \
-    --deepspeed_config ds_config.json \
-    --num_gpus $SLURM_GPUS_PER_NODE \
-    --num_nodes $SLURM_NNODES \
-    train.py \
+./run_deepspeed.sh train.py \
     --data $DATA_PATH \
     --params $MODEL_SIZE \
     --seq_len $SEQ_LEN \

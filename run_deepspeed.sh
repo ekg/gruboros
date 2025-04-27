@@ -57,6 +57,6 @@ echo "Python path: $(which python)"
 echo "ROCm version: $(rocm-smi --showdriverversion 2>/dev/null || echo 'not available')"
 echo "=================================="
 
-# Run deepspeed properly - we need to pass the DeepSpeed args to 'deepspeed' command
-# and the script args to the script itself
-deepspeed "$@"
+# Run the actual command, passing all arguments through
+# Add the DeepSpeed launcher args here instead of in frontier_train.sh
+deepspeed --deepspeed --deepspeed_config ds_config.json --num_gpus $SLURM_GPUS_PER_NODE --num_nodes $SLURM_NNODES "$@"
