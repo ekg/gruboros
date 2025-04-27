@@ -945,66 +945,19 @@ def main():
         }
     }
     
-    # 3) Initialize DeepSpeed engine with explicit config and better error handling
-    try:
-        if torch.cuda.is_available():
-            device_id = torch.cuda.current_device()
-            print(f"Initializing DeepSpeed on device {device_id} ({torch.cuda.get_device_name(device_id)})")
-        
-        # Add debug info about environment variables
-        print(f"CUDA_HOME: {os.environ.get('CUDA_HOME', 'Not set')}")
-        print(f"ROCM_HOME: {os.environ.get('ROCM_HOME', 'Not set')}")
-        print(f"DS_SKIP_CUDA_CHECK: {os.environ.get('DS_SKIP_CUDA_CHECK', 'Not set')}")
-        print(f"DS_BUILD_OPS: {os.environ.get('DS_BUILD_OPS', 'Not set')}")
-        
-        # Manually apply DS_SKIP_CUDA_CHECK workaround
-        import deepspeed.ops.op_builder.builder as ds_builder
-        # Patch the installed_cuda_version function to return a fake CUDA version
-        def patched_cuda_version():
-            print("Using patched CUDA version check for ROCm compatibility")
-            return (11, 0)
-        
-        # Apply the patch if not on CUDA system
-        if not os.path.exists("/usr/local/cuda") and not os.environ.get('CUDA_HOME', '').startswith('/usr/local/cuda'):
-            print("Applying DeepSpeed CUDA check workaround for ROCm")
-            ds_builder.installed_cuda_version = patched_cuda_version
-        
-        # Check if we're using command-line DeepSpeed config
-        if args.deepspeed and args.deepspeed_config:
-            # Command-line specified config
-            ds_config_path = args.deepspeed_config
-            if os.path.exists(ds_config_path):
-                with open(ds_config_path, 'r') as f:
-                    ds_config = json.load(f)
-                    
-                # Replace auto values with actual values
-                if "train_micro_batch_size_per_gpu" in ds_config and ds_config["train_micro_batch_size_per_gpu"] == "auto":
-                    ds_config["train_micro_batch_size_per_gpu"] = batch_size
-                    
-                if "gradient_accumulation_steps" in ds_config and ds_config["gradient_accumulation_steps"] == "auto":
-                    ds_config["gradient_accumulation_steps"] = args.grad_accum
-                    
-                if "optimizer" in ds_config and "params" in ds_config["optimizer"]:
-                    params = ds_config["optimizer"]["params"]
-                    if "lr" in params and params["lr"] == "auto":
-                        params["lr"] = args.lr
-                    if "weight_decay" in params and params["weight_decay"] == "auto":
-                        params["weight_decay"] = args.weight_decay
-                
-                print(f"Loaded DeepSpeed config from {ds_config_path}")
-                print(f"Using micro-batch size: {ds_config.get('train_micro_batch_size_per_gpu')}")
-                print(f"Using gradient accumulation steps: {ds_config.get('gradient_accumulation_steps')}")
-            else:
-                print(f"Warning: DeepSpeed config file {ds_config_path} not found, using default config")
-        
-        # Let DeepSpeed handle distributed initialization
-        model_engine, optimizer, _, _ = deepspeed.initialize(
-            model=model,
-            optimizer=optimizer,
-            config=ds_config,
-            model_parameters=model.parameters(),
-            dist_init_required=True  # Let DeepSpeed handle distributed init
-        )
+    # 3) Initialize DeepSpeed engine with minimal approach - simpler is better
+    print(f"Initializing DeepSpeed with {'ROCM' if USE_ROCM else 'CUDA'}")
+    
+    # Let the DeepSpeed launcher initialize distributed training
+    # Just load config from file path, don't try to modify it in-memory
+    model_engine, optimizer, _, _ = deepspeed.initialize(
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        model_parameters=model.parameters(),
+        config_params=args.deepspeed_config if args.deepspeed_config else None,
+        dist_init_required=True
+    )
         
         # Store ranks after DeepSpeed initialization
         args.world_size = model_engine.world_size
