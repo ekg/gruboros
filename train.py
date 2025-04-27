@@ -950,14 +950,15 @@ def main():
     
     # Let the DeepSpeed launcher initialize distributed training
     # Just load config from file path, don't try to modify it in-memory
-    model_engine, optimizer, _, _ = deepspeed.initialize(
-        model=model,
-        optimizer=optimizer,
-        args=args,
-        model_parameters=model.parameters(),
-        config_params=args.deepspeed_config if args.deepspeed_config else None,
-        dist_init_required=True
-    )
+    try:
+        model_engine, optimizer, _, _ = deepspeed.initialize(
+            model=model,
+            optimizer=optimizer,
+            args=args,
+            model_parameters=model.parameters(),
+            config_params=args.deepspeed_config if args.deepspeed_config else None,
+            dist_init_required=True
+        )
         
         # Store ranks after DeepSpeed initialization
         args.world_size = model_engine.world_size
