@@ -75,8 +75,18 @@ chmod +x ./run_deepspeed.sh
 # Set fixed port for distributed communication
 export MASTER_PORT=29500
 
-# Run using DeepSpeed launcher through our wrapper script
-./run_deepspeed.sh train.py \
+# Set critical environment variables for all processes
+export CUDA_HOME=/opt/rocm-6.2.4
+export HIP_CLANG_PATH=/opt/rocm-6.2.4/llvm
+export ROCM_HOME=/opt/rocm-6.2.4
+export DS_SKIP_CUDA_CHECK=1
+export DS_BUILD_OPS=0
+export TORCH_EXTENSIONS_DIR=$PWD/deepspeed_rocm_extensions
+mkdir -p $TORCH_EXTENSIONS_DIR
+
+# We'll try both approaches - first the direct srun launch (more reliable for environment vars)
+srun -u -n$TOTAL_RANKS -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=closest \
+    ./run_deepspeed.sh python train.py \
     --data $DATA_PATH \
     --params $MODEL_SIZE \
     --seq_len $SEQ_LEN \

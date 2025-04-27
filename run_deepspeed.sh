@@ -21,6 +21,9 @@ export HIP_CLANG_PATH=/opt/rocm-6.2.4/llvm
 export ROCM_HOME=/opt/rocm-6.2.4
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
+# Fix for DeepSpeed CUDA compatibility check
+export DS_SKIP_CUDA_CHECK=1
+export DS_BUILD_OPS=0  # Disable building ops until compatibility is fixed
 
 # Set ROCm-specific environment variables
 export MIOPEN_ENABLE_LOGGING=1

@@ -951,6 +951,24 @@ def main():
             device_id = torch.cuda.current_device()
             print(f"Initializing DeepSpeed on device {device_id} ({torch.cuda.get_device_name(device_id)})")
         
+        # Add debug info about environment variables
+        print(f"CUDA_HOME: {os.environ.get('CUDA_HOME', 'Not set')}")
+        print(f"ROCM_HOME: {os.environ.get('ROCM_HOME', 'Not set')}")
+        print(f"DS_SKIP_CUDA_CHECK: {os.environ.get('DS_SKIP_CUDA_CHECK', 'Not set')}")
+        print(f"DS_BUILD_OPS: {os.environ.get('DS_BUILD_OPS', 'Not set')}")
+        
+        # Manually apply DS_SKIP_CUDA_CHECK workaround
+        import deepspeed.ops.op_builder.builder as ds_builder
+        # Patch the installed_cuda_version function to return a fake CUDA version
+        def patched_cuda_version():
+            print("Using patched CUDA version check for ROCm compatibility")
+            return (11, 0)
+        
+        # Apply the patch if not on CUDA system
+        if not os.path.exists("/usr/local/cuda") and not os.environ.get('CUDA_HOME', '').startswith('/usr/local/cuda'):
+            print("Applying DeepSpeed CUDA check workaround for ROCm")
+            ds_builder.installed_cuda_version = patched_cuda_version
+        
         # Check if we're using command-line DeepSpeed config
         if args.deepspeed and args.deepspeed_config:
             # Command-line specified config
