@@ -70,9 +70,9 @@ export CUDA_HOME=/opt/rocm-default
 export HIP_CLANG_PATH=/opt/rocm-default/llvm
 export ROCM_HOME=/opt/rocm-default
 
-# Proper GPU isolation for ROCm/HIP using the correct environment variables
-export HIP_VISIBLE_DEVICES=$SLURM_LOCALID
-export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID
+# Let Slurm handle GPU binding via gpus-per-task=1
+# We'll rely on Slurm's GPU binding instead of manual environment variables
+# This ensures each process gets the correct GPU without visibility issues
 
 # MIOpen cache setup
 export MIOPEN_USER_DB_PATH="/tmp/${USER}-miopen-cache-${SLURM_NODEID}"
@@ -98,8 +98,9 @@ eval "$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 
 micromamba activate gruboros
 
 # Launch with srun explicitly exporting the distributed environment variables
-# This ensures each task gets the correct rank variables
+# This ensures each task gets the correct rank variables and GPU binding
 srun --export=ALL,MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=${WORLD_SIZE} \
+    --gpu-bind=closest \
     python train.py \
     --data $DATA_PATH \
     --params $MODEL_SIZE \

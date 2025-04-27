@@ -28,11 +28,10 @@ if USE_ROCM:
     os.environ["NCCL_SOCKET_IFNAME"] = "hsn0"  # Primary HPE Slingshot interface
     os.environ["NCCL_NET_GDR_LEVEL"] = "3"  # Optimized for Frontier
     
-    # Make sure we use the correct GPU based on Slurm task ID
+    # No need to manually set GPU visibility - we'll let Slurm handle this
+    # Just log the current SLURM environment for debugging
     if "SLURM_LOCALID" in os.environ:
-        # Set both HIP and CUDA visible devices for compatibility
-        os.environ["HIP_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
-        os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
+        print(f"SLURM task ID: {os.environ['SLURM_LOCALID']}")
     
     # MIOpen cache setup to prevent file locking issues
     if "SLURM_NODEID" in os.environ:
@@ -61,12 +60,13 @@ else:
 # We enable this regardless of platform as it's harmless on platforms that don't support it
 torch.set_float32_matmul_precision('high')
 
-# Explicitly set the CUDA device to match local rank if available
-# This ensures each process binds to the correct GPU
-if torch.cuda.is_available() and "SLURM_LOCALID" in os.environ:
-    local_rank = int(os.environ["SLURM_LOCALID"])
-    torch.cuda.set_device(local_rank)
-    print(f"Process with SLURM_LOCALID {local_rank} binding to CUDA device: {torch.cuda.current_device()}")
+# Use visible GPU correctly - with Slurm's binding, only one GPU is visible
+# so we should always use device 0, not the SLURM_LOCALID which could be > 0
+if torch.cuda.is_available():
+    device_count = torch.cuda.device_count()
+    torch.cuda.set_device(0)  # Always use device 0 when HIP_VISIBLE_DEVICES restricts visibility
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", "0")))
+    print(f"Process with rank {local_rank} binding to CUDA device 0 (visible devices: {device_count})")
 
 # Import the minLM model
 from mingru.minLM import minLM
@@ -115,9 +115,9 @@ def setup_hybrid_parallelism(args):
     slurm_nnodes = int(os.environ.get("SLURM_NNODES", "1"))
     slurm_ntasks_per_node = int(os.environ.get("SLURM_NTASKS_PER_NODE", "1"))
     
-    # Explicitly set CUDA device based on local rank
+    # When using Slurm with gpus-per-task=1, device 0 is the only visible device
     if torch.cuda.is_available():
-        torch.cuda.set_device(slurm_localid)
+        torch.cuda.set_device(0)  # Always use device 0 when visibility is restricted
     
     # Calculate ranks directly from SLURM variables
     args.node_rank = slurm_nodeid
