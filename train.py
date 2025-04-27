@@ -47,7 +47,8 @@ else:
 # Make sure the environment variables are actually applied
 if USE_ROCM:
     for var in ["RCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_NET_GDR_LEVEL", "HIP_VISIBLE_DEVICES", 
-                "CUDA_VISIBLE_DEVICES", "MIOPEN_USER_DB_PATH", "MIOPEN_SYSTEM_DB_PATH"]:
+                "CUDA_VISIBLE_DEVICES", "MIOPEN_USER_DB_PATH", "MIOPEN_SYSTEM_DB_PATH",
+                "SLURM_JOB_GPUS", "SLURM_STEP_GPUS", "LOCAL_RANK", "SLURM_LOCALID"]:
         if var in os.environ:
             print(f"{var}={os.environ[var]}")
 else:
@@ -66,6 +67,18 @@ if torch.cuda.is_available():
     device_count = torch.cuda.device_count()
     torch.cuda.set_device(0)  # Always use device 0 when HIP_VISIBLE_DEVICES restricts visibility
     local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", "0")))
+    
+    # Document Slurm-set GPU variables for debugging
+    if "SLURM_JOB_GPUS" in os.environ:
+        print(f"SLURM_JOB_GPUS: {os.environ['SLURM_JOB_GPUS']}")
+    if "SLURM_STEP_GPUS" in os.environ:
+        print(f"SLURM_STEP_GPUS: {os.environ['SLURM_STEP_GPUS']}")
+    
+    # Validate GPU count when using Slurm binding
+    if "SLURM_LOCALID" in os.environ and device_count != 1:
+        print(f"WARNING: Expected device_count=1 with Slurm GPU binding, but got {device_count}")
+        print(f"This might indicate a mismatch between Slurm allocation and code expectations")
+    
     print(f"Process with rank {local_rank} binding to CUDA device 0 (visible devices: {device_count})")
 
 # Import the minLM model

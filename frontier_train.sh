@@ -99,7 +99,7 @@ micromamba activate gruboros
 
 # Launch with srun explicitly exporting the distributed environment variables
 # This ensures each task gets the correct rank variables and GPU binding
-srun --export=ALL,MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=${WORLD_SIZE} \
+srun --export=ALL,MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=${WORLD_SIZE},LOCAL_RANK=${SLURM_LOCALID} \
     --gpu-bind=closest \
     python train.py \
     --data $DATA_PATH \
