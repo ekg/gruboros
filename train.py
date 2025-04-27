@@ -2,6 +2,13 @@ import os, random, numpy as np, hashlib
 # Flag to control ROCm vs CUDA setup
 USE_ROCM = True  # Set to False to revert to CUDA behavior
 import torch, torch.nn as nn
+# Add MPI import for distributed training
+try:
+    from mpi4py import MPI
+    has_mpi = True
+except ImportError:
+    has_mpi = False
+    print("WARNING: mpi4py not found. Multi-node training may not function correctly.")
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
@@ -19,6 +26,68 @@ import asyncio
 import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
+
+def setup_distributed_env(init_method=None, rank=0, world_size=16): 
+    """Set up the distributed environment using MPI, following Frontier best practices"""
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    world_size = comm.Get_size()
+    world_rank = rank = comm.Get_rank()
+    
+    # Let PyTorch choose the backend automatically based on what's available
+    backend = None
+    
+    # Set required environment variables for distributed training
+    os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', 'localhost')
+    os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '29500')
+    os.environ['WORLD_SIZE'] = str(world_size)
+    os.environ['RANK'] = str(world_rank)
+    
+    # Local rank within the node (assuming 8 GPUs per node on Frontier)
+    local_rank = world_rank % 8
+    os.environ['LOCAL_RANK'] = str(local_rank)
+    
+    print(f"Initializing process group: rank={rank}, world_size={world_size}, "
+          f"local_rank={local_rank}, master={os.environ['MASTER_ADDR']}")
+    
+    # Initialize the process group
+    torch.distributed.init_process_group(
+        backend,
+        init_method=init_method,
+        rank=rank,
+        world_size=world_size
+    )
+    
+    # Report if using MPI backend
+    using_mpi = torch.distributed.get_backend() == 'mpi'
+    print(f"Using MPI backend: {using_mpi}")
+    
+    return world_size, world_rank, local_rank
+
+def debug_distributed_info():
+    """Print debug information about the distributed environment"""
+    print(f"\n----- Distributed Environment Debug Info -----")
+    print(f"MASTER_ADDR: {os.environ.get('MASTER_ADDR', 'Not set')}")
+    print(f"MASTER_PORT: {os.environ.get('MASTER_PORT', 'Not set')}")
+    print(f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'Not set')}")
+    print(f"RANK: {os.environ.get('RANK', 'Not set')}")
+    print(f"LOCAL_RANK: {os.environ.get('LOCAL_RANK', 'Not set')}")
+    
+    if torch.cuda.is_available():
+        device_count = torch.cuda.device_count()
+        print(f"CUDA Device Count: {device_count}")
+        current_device = torch.cuda.current_device()
+        print(f"CUDA Current Device: {current_device} ({torch.cuda.get_device_name(current_device)})")
+    
+    if torch.distributed.is_initialized():
+        print(f"Distributed is initialized:")
+        print(f"  - World size: {torch.distributed.get_world_size()}")
+        print(f"  - Rank: {torch.distributed.get_rank()}")
+        print(f"  - Backend: {torch.distributed.get_backend()}")
+    else:
+        print(f"Distributed is NOT initialized")
+        
+    print(f"------------------------------------------\n")
 
 # Set communication environment variables based on platform
 if USE_ROCM:
@@ -532,16 +601,27 @@ def main():
     # Handle GPU exclusion if specified
     if args.exclude_gpus:
         exclude_list = [int(x.strip()) for x in args.exclude_gpus.split(',')]
-        if args.local_rank == 0:
-            print(f"Excluding GPUs: {exclude_list}")
+        print(f"Excluding GPUs: {exclude_list}")
         
         # If current GPU is in exclude list, disable CUDA for this process
         if args.local_rank in exclude_list:
             print(f"Rank {args.local_rank} was specified to be excluded, forcing CPU execution")
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     
-    # Verify GPU health before proceeding
-    if args.local_rank == 0:
+    # Initialize distributed environment with MPI before DeepSpeed
+    # This must happen before DeepSpeed initialization
+    world_size, global_rank, local_rank = setup_distributed_env()
+    
+    # Store for later use
+    args.world_size = world_size
+    args.global_rank = global_rank
+    args.local_rank = local_rank
+    
+    # Print debug information about distributed environment
+    debug_distributed_info()
+    
+    # Verify GPU health before proceeding (only on rank 0)
+    if global_rank == 0:
         verify_gpu_health()
     
     # Print memory usage monitoring message
@@ -862,20 +942,27 @@ def main():
     
     # 3) Initialize DeepSpeed engine with explicit config and better error handling
     try:
-        # No barrier before DeepSpeed init - DeepSpeed handles this internally
+        # Create synchronization point after process group initialization
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+            print(f"Rank {args.global_rank}: Passed distributed barrier.")
+            
+        # Update DeepSpeed config with explicit local rank from MPI
+        ds_config["local_rank"] = args.local_rank
+            
         if USE_ROCM:
-            print(f"Rank {args.local_rank}: Initializing DeepSpeed with ROCm/HIP backend (device: {torch.cuda.current_device()})")
+            print(f"Rank {args.global_rank}: Initializing DeepSpeed with ROCm/HIP backend (device: {torch.cuda.current_device()})")
         else:
-            print(f"Rank {args.local_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
+            print(f"Rank {args.global_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
         
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             config=ds_config,
             model_parameters=model.parameters(),
-            dist_init_required=True
+            dist_init_required=False  # We already initialized the process group
         )
-        print(f"Rank {args.local_rank}: DeepSpeed initialization successful")
+        print(f"Rank {args.global_rank}: DeepSpeed initialization successful")
     except Exception as e:
         print(f"ERROR in DeepSpeed initialization (rank {args.local_rank}): {e}")
         # Try to recover

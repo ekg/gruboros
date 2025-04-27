@@ -23,22 +23,51 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 export MIOPEN_USER_DB_PATH="/tmp/${USER}-miopen-cache-${SLURM_NODEID}"
 export MIOPEN_SYSTEM_DB_PATH="${MIOPEN_USER_DB_PATH}"
 
-# Network configuration for Frontier's Slingshot network
+# Critical network settings for Frontier's Slingshot fabric
 export NCCL_SOCKET_IFNAME=hsn0
 export NCCL_NET_GDR_LEVEL=3
 export NCCL_DEBUG=INFO
+export FI_CXI_ATS=0
+export LD_LIBRARY_PATH=/opt/rocm-6.2.4/rccl/build:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/opt/cray/libfabric/1.15.2.0/lib64/:$LD_LIBRARY_PATH
+export FI_LOG_LEVEL=info
 
-# Set recommended port for PyTorch distributed
-export MASTER_PORT=${MASTER_PORT:-3442}  # Use port 3442 as recommended
-
-# Set master address based on node rank
-if [ "${SLURM_NODEID:-0}" -eq "0" ]; then
-    # If this is the first node, use its IP as master
-    export MASTER_ADDR=$(hostname -i)
+# Determine MASTER_ADDR more robustly
+if [ "${SLURM_PROCID}" -eq 0 ]; then
+    # If this is the main process, extract node list and find first node
+    NODES=$(scontrol show hostnames $SLURM_JOB_NODELIST)
+    FIRST_NODE=$(echo $NODES | awk '{print $1}')
+    
+    # Get the IP address of the first node for distributed communication
+    NODE_IPS=$(ssh $FIRST_NODE hostname -I)
+    MASTER_ADDR=$(echo $NODE_IPS | awk '{print $1}')
+    
+    # Export and save for other processes
+    export MASTER_ADDR=$MASTER_ADDR
+    echo $MASTER_ADDR > /tmp/master_addr_${SLURM_JOB_ID}
+    
+    echo "Master process detected. Set MASTER_ADDR to $MASTER_ADDR"
 else
-    # Otherwise, get the hostname of the first node in allocation
-    export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+    # Other processes need to wait for the master to write the address
+    MAX_ATTEMPTS=60
+    ATTEMPTS=0
+    while [ ! -f /tmp/master_addr_${SLURM_JOB_ID} ] && [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+        sleep 1
+        ATTEMPTS=$((ATTEMPTS+1))
+        echo "Waiting for master address... ($ATTEMPTS/$MAX_ATTEMPTS)"
+    done
+    
+    if [ -f /tmp/master_addr_${SLURM_JOB_ID} ]; then
+        export MASTER_ADDR=$(cat /tmp/master_addr_${SLURM_JOB_ID})
+        echo "Retrieved MASTER_ADDR: $MASTER_ADDR"
+    else
+        echo "ERROR: Could not retrieve master address after $MAX_ATTEMPTS attempts"
+        exit 1
+    fi
 fi
+
+# Set fixed port for reproducibility (as in example code)
+export MASTER_PORT=${MASTER_PORT:-29500}
 
 echo "MASTER_ADDR set to: $MASTER_ADDR"
 echo "MASTER_PORT set to: $MASTER_PORT"
