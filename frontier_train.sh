@@ -56,10 +56,14 @@ chmod +x ./run_deepspeed.sh
 # Set fixed port for distributed communication
 export MASTER_PORT=29500
 
-# Launch training with srun - optimized for Frontier
-# Note the use of --gpu-bind=closest and increased cores per task
-srun -u -n $TOTAL_RANKS -c 2 --ntasks-per-node=$RANKS_PER_NODE --gpus-per-node=$SLURM_GPUS_PER_NODE --gpu-bind=closest \
-    ./run_deepspeed.sh \
+# IMPORTANT: Let DeepSpeed handle the process launch instead of srun
+# DeepSpeed has better built-in support for distributed training
+./run_deepspeed.sh \
+    --deepspeed \
+    --deepspeed_config ds_config.json \
+    --num_gpus $SLURM_GPUS_PER_NODE \
+    --num_nodes $SLURM_NNODES \
+    train.py \
     --data $DATA_PATH \
     --params $MODEL_SIZE \
     --seq_len $SEQ_LEN \

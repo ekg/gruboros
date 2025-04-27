@@ -32,39 +32,13 @@ export LD_LIBRARY_PATH=/opt/rocm-6.2.4/rccl/build:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/opt/cray/libfabric/1.15.2.0/lib64/:$LD_LIBRARY_PATH
 export FI_LOG_LEVEL=info
 
-# Determine MASTER_ADDR more robustly
-if [ "${SLURM_PROCID}" -eq 0 ]; then
-    # If this is the main process, extract node list and find first node
-    NODES=$(scontrol show hostnames $SLURM_JOB_NODELIST)
-    FIRST_NODE=$(echo $NODES | awk '{print $1}')
-    
-    # Get the IP address of the first node for distributed communication
-    NODE_IPS=$(ssh $FIRST_NODE hostname -I)
-    MASTER_ADDR=$(echo $NODE_IPS | awk '{print $1}')
-    
-    # Export and save for other processes
-    export MASTER_ADDR=$MASTER_ADDR
-    echo $MASTER_ADDR > /tmp/master_addr_${SLURM_JOB_ID}
-    
-    echo "Master process detected. Set MASTER_ADDR to $MASTER_ADDR"
-else
-    # Other processes need to wait for the master to write the address
-    MAX_ATTEMPTS=60
-    ATTEMPTS=0
-    while [ ! -f /tmp/master_addr_${SLURM_JOB_ID} ] && [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-        sleep 1
-        ATTEMPTS=$((ATTEMPTS+1))
-        echo "Waiting for master address... ($ATTEMPTS/$MAX_ATTEMPTS)"
-    done
-    
-    if [ -f /tmp/master_addr_${SLURM_JOB_ID} ]; then
-        export MASTER_ADDR=$(cat /tmp/master_addr_${SLURM_JOB_ID})
-        echo "Retrieved MASTER_ADDR: $MASTER_ADDR"
-    else
-        echo "ERROR: Could not retrieve master address after $MAX_ATTEMPTS attempts"
-        exit 1
-    fi
-fi
+# SIMPLER APPROACH: Use the first node hostname as master (much more reliable)
+# Directly get the hostnames from SLURM
+NODE_HOSTNAMES=$(scontrol show hostnames $SLURM_JOB_NODELIST)
+MASTER_NODE=$(echo $NODE_HOSTNAMES | awk '{print $1}')
+export MASTER_ADDR=$MASTER_NODE
+
+echo "Using hostname $MASTER_ADDR as MASTER_ADDR"
 
 # Set fixed port for reproducibility (as in example code)
 export MASTER_PORT=${MASTER_PORT:-29500}

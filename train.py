@@ -608,17 +608,16 @@ def main():
             print(f"Rank {args.local_rank} was specified to be excluded, forcing CPU execution")
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     
-    # Initialize distributed environment with MPI before DeepSpeed
-    # This must happen before DeepSpeed initialization
-    world_size, global_rank, local_rank = setup_distributed_env()
+    # Log environment variables for debugging
+    print("Environment variables for distributed training:")
+    for var in ["MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK"]:
+        print(f"{var}={os.environ.get(var, 'Not set')}")
     
-    # Store for later use
-    args.world_size = world_size
-    args.global_rank = global_rank
-    args.local_rank = local_rank
-    
-    # Print debug information about distributed environment
+    # Don't call setup_distributed_env() - let DeepSpeed handle initialization
+    # But do print debug information
     debug_distributed_info()
+    
+    # After DeepSpeed initializes, we'll get proper ranks from it
     
     # Verify GPU health before proceeding (only on rank 0)
     if global_rank == 0:
@@ -942,26 +941,26 @@ def main():
     
     # 3) Initialize DeepSpeed engine with explicit config and better error handling
     try:
-        # Create synchronization point after process group initialization
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-            print(f"Rank {args.global_rank}: Passed distributed barrier.")
-            
-        # Update DeepSpeed config with explicit local rank from MPI
-        ds_config["local_rank"] = args.local_rank
-            
-        if USE_ROCM:
-            print(f"Rank {args.global_rank}: Initializing DeepSpeed with ROCm/HIP backend (device: {torch.cuda.current_device()})")
-        else:
-            print(f"Rank {args.global_rank}: Initializing DeepSpeed (device: {torch.cuda.current_device()})")
+        if torch.cuda.is_available():
+            device_id = torch.cuda.current_device()
+            print(f"Initializing DeepSpeed on device {device_id} ({torch.cuda.get_device_name(device_id)})")
         
+        # Let DeepSpeed handle distributed initialization
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             config=ds_config,
             model_parameters=model.parameters(),
-            dist_init_required=False  # We already initialized the process group
+            dist_init_required=True  # Let DeepSpeed handle distributed init
         )
+        
+        # Store ranks after DeepSpeed initialization
+        args.world_size = model_engine.world_size
+        args.global_rank = model_engine.global_rank
+        args.local_rank = model_engine.local_rank
+        
+        print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
+              f"local_rank={args.local_rank}, world_size={args.world_size}")
         print(f"Rank {args.global_rank}: DeepSpeed initialization successful")
     except Exception as e:
         print(f"ERROR in DeepSpeed initialization (rank {args.local_rank}): {e}")
