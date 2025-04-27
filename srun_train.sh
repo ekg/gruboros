@@ -11,17 +11,52 @@
 #SBATCH --gpus-per-node=8         # All 8 GPUs per node
 #SBATCH --exclusive               # Exclusive node access
 
-# Essential environment setup
+# Essential environment setup with error handling
 module load PrgEnv-gnu
 module load gcc/11.2.0
 module load rocm/6.2.4
 export ROCM_HOME=/opt/rocm-6.2.4
 
-# Micromamba activation
+# Verify ROCM is available
+if [ ! -d "$ROCM_HOME" ]; then
+  echo "ERROR: ROCm directory not found at $ROCM_HOME"
+  echo "Loading module may have failed. Check module system."
+fi
+
+# Micromamba activation with better error handling
 export MAMBA_EXE='/autofs/nccs-svm1_home1/erikgarrison/.local/bin/micromamba'
 export MAMBA_ROOT_PREFIX='/lustre/orion/scratch/erikgarrison/bif148/micromamba'
-eval "$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2> /dev/null)"
+
+if [ ! -f "$MAMBA_EXE" ]; then
+  echo "ERROR: micromamba executable not found at $MAMBA_EXE"
+  exit 1
+fi
+
+# Execute shell hook with better error capture
+HOOK_OUTPUT=$(eval "$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2>&1)")
+if [ $? -ne 0 ]; then
+  echo "ERROR: Failed to initialize micromamba environment:"
+  echo "$HOOK_OUTPUT"
+  exit 1
+fi
+
+# Activate with explicit error checking
+echo "Activating micromamba environment 'gruboros'..."
 micromamba activate gruboros
+if [ $? -ne 0 ]; then
+  echo "ERROR: Failed to activate gruboros environment"
+  echo "Available environments:"
+  micromamba env list
+  exit 1
+fi
+
+# Verify we have python in path
+which python
+if [ $? -ne 0 ]; then
+  echo "ERROR: Python not found in path after environment activation"
+  echo "PATH: $PATH"
+  exit 1
+fi
 
 # Critical ROCm + Network settings
 export LD_LIBRARY_PATH=$ROCM_HOME/rccl/build:$LD_LIBRARY_PATH
@@ -32,12 +67,29 @@ export NCCL_NET_GDR_LEVEL=3
 export FI_LOG_LEVEL=info
 export OMP_NUM_THREADS=2
 
-# Find master node for distributed communication
-scontrol show hostnames $SLURM_NODELIST > job.node.list
-first=$(head -n 1 job.node.list)
-ips=$(ssh $first hostname -I)
-read -ra arr <<< ${ips}
-export MASTER_ADDR=${arr[0]}
+# Find master node for distributed communication - more robust approach
+if [ -z "$SLURM_NODELIST" ]; then
+  echo "ERROR: SLURM_NODELIST is empty. Are you running under SLURM?"
+  exit 1
+fi
+
+# Create node list file
+NODE_LIST_FILE="job.node.list"
+scontrol show hostnames $SLURM_NODELIST > $NODE_LIST_FILE
+
+# Check if the file has content
+if [ ! -s "$NODE_LIST_FILE" ]; then
+  echo "ERROR: Failed to get node list from SLURM"
+  # Fallback to local hostname if no nodes listed
+  hostname > $NODE_LIST_FILE
+fi
+
+# Get first node in the list
+first=$(head -n 1 $NODE_LIST_FILE)
+echo "First node in allocation: $first"
+
+# Directly use the hostname as MASTER_ADDR (more reliable than trying to get IP)
+export MASTER_ADDR=$first
 export MASTER_PORT=29500
 
 echo "MASTER_ADDR = $MASTER_ADDR"
@@ -48,9 +100,22 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="$MEMBERWORK/bif148/gruboros/run_${TIMESTAMP}_${SLURM_JOB_ID}"
 mkdir -p $OUTPUT_DIR
 
-# Calculate ranks
+# Calculate ranks with safety checks
+if [ -z "$SLURM_NNODES" ]; then
+  echo "ERROR: SLURM_NNODES is not set. Defaulting to 1."
+  SLURM_NNODES=1
+fi
+
 RANKS_PER_NODE=8
 TOTAL_RANKS=$((SLURM_NNODES * RANKS_PER_NODE))
+
+# Make sure we have at least one task
+if [ "$TOTAL_RANKS" -lt 1 ]; then
+  echo "ERROR: Invalid task count ($TOTAL_RANKS). Setting to 8."
+  TOTAL_RANKS=8
+fi
+
+echo "Calculated $TOTAL_RANKS total ranks ($SLURM_NNODES nodes × $RANKS_PER_NODE ranks per node)"
 
 # Training parameters
 DATA_PATH="/lustre/orion/scratch/erikgarrison/bif148/enwik8.txt"
