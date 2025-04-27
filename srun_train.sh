@@ -32,17 +32,23 @@ if [ ! -f "$MAMBA_EXE" ]; then
   exit 1
 fi
 
-# Execute shell hook with better error capture
-HOOK_OUTPUT=$(eval "$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2>&1)")
-if [ $? -ne 0 ]; then
-  echo "ERROR: Failed to initialize micromamba environment:"
-  echo "$HOOK_OUTPUT"
-  exit 1
-fi
+# Create a temporary hook script and source it directly (more reliable)
+HOOK_SCRIPT=$(mktemp)
+"$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" > "$HOOK_SCRIPT"
+source "$HOOK_SCRIPT"
+rm -f "$HOOK_SCRIPT"
 
 # Activate with explicit error checking
 echo "Activating micromamba environment 'gruboros'..."
-micromamba activate gruboros
+micromamba activate gruboros || (echo "Failed to activate environment directly, trying alternative method" && \
+  eval "$("$MAMBA_EXE" shell init --shell bash --root-prefix "$MAMBA_ROOT_PREFIX")" && \
+  micromamba activate gruboros)
+
+# Verify Python is available
+if ! command -v python &> /dev/null; then
+    echo "Python not found after activation. Trying direct path execution..."
+    export PATH="/lustre/orion/bif148/scratch/erikgarrison/micromamba/envs/gruboros/bin:$PATH"
+fi
 if [ $? -ne 0 ]; then
   echo "ERROR: Failed to activate gruboros environment"
   echo "Available environments:"

@@ -46,5 +46,8 @@ if [ -z "$SLURM_JOB_ID" ]; then
   exit 0
 fi
 
+# Add direct path to micromamba environment (as fallback)
+export PATH="/lustre/orion/bif148/scratch/erikgarrison/micromamba/envs/gruboros/bin:$PATH"
+
 # Launch the training script directly if this is a slurm job
 ./srun_train.sh

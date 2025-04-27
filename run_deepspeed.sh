@@ -10,10 +10,21 @@ module load craype-accel-amd-gfx90a
 
 export MAMBA_EXE='/autofs/nccs-svm1_home1/erikgarrison/.local/bin/micromamba';
 export MAMBA_ROOT_PREFIX='/lustre/orion/scratch/erikgarrison/bif148/micromamba';
-eval "$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2> /dev/null)"
 
-# Set up micromamba - needs proper initialization
-micromamba activate gruboros
+# Create a temporary hook script and source it directly
+HOOK_SCRIPT=$(mktemp)
+"$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" > "$HOOK_SCRIPT"
+source "$HOOK_SCRIPT"
+rm -f "$HOOK_SCRIPT"
+
+# Set up micromamba - with fallback options
+echo "Activating micromamba environment 'gruboros'..."
+micromamba activate gruboros || (echo "Failed direct activation, trying alternative method" && \
+  eval "$("$MAMBA_EXE" shell init --shell bash --root-prefix "$MAMBA_ROOT_PREFIX")" && \
+  micromamba activate gruboros)
+
+# Ensure Python is in PATH
+export PATH="/lustre/orion/bif148/scratch/erikgarrison/micromamba/envs/gruboros/bin:$PATH"
 
 # Set ROCm/HIP environment variables to use instead of CUDA
 export CUDA_HOME=/opt/rocm-6.2.4
