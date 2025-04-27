@@ -27,11 +27,14 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="$MEMBERWORK/bif148/gruboros/run_${TIMESTAMP}_${SLURM_JOB_ID}"
 mkdir -p $OUTPUT_DIR
 
-# Create hostfile for DeepSpeed
-HOSTS=.hosts-job$SLURM_JOB_ID
+# Create hostfile for DeepSpeed - each node should appear only once
 HOSTFILE=hostfile.txt
-srun hostname > $HOSTS
-sed 's/$/ slots=8/' $HOSTS > $HOSTFILE
+# Get unique hostnames using scontrol
+scontrol show hostnames $SLURM_JOB_NODELIST > unique_hosts_$SLURM_JOB_ID
+# Add slot information - each host gets 8 slots (for 8 GPUs)
+sed 's/$/ slots=8/' unique_hosts_$SLURM_JOB_ID > $HOSTFILE
+# Clean up temporary file
+rm -f unique_hosts_$SLURM_JOB_ID
 
 # Display information about the job
 echo "========== Job Information =========="
