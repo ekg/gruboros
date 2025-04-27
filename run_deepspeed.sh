@@ -57,5 +57,6 @@ echo "Python path: $(which python)"
 echo "ROCm version: $(rocm-smi --showdriverversion 2>/dev/null || echo 'not available')"
 echo "=================================="
 
-# Run the actual command, passing all arguments through
-deepspeed train.py "$@"
+# Run deepspeed properly - we need to pass the DeepSpeed args to 'deepspeed' command
+# and the script args to the script itself
+deepspeed "$@"
