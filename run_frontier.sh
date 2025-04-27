@@ -42,7 +42,7 @@ echo "SLURM_GPUS_PER_NODE: $SLURM_GPUS_PER_NODE"
 # Check if running as SLURM job or interactive - if interactive, submit job
 if [ -z "$SLURM_JOB_ID" ]; then
   echo "Not running as a SLURM job. Submitting batch job..."
-  sbatch -N 2 -t 01:00:00 -p batch --exclusive $0
+  sbatch -A BIF148 -N 2 -t 01:00:00 -p batch -q debug --exclusive $0
   exit 0
 fi
 
