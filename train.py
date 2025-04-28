@@ -2,13 +2,7 @@ import os, random, numpy as np, hashlib
 # Flag to control ROCm vs CUDA setup
 USE_ROCM = True  # Set to False to revert to CUDA behavior
 import torch, torch.nn as nn
-# Add MPI import for distributed training
-try:
-    from mpi4py import MPI
-    has_mpi = True
-except ImportError:
-    has_mpi = False
-    print("WARNING: mpi4py not found. Multi-node training may not function correctly.")
+# DeepSpeed will handle distributed initialization
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
@@ -27,57 +21,23 @@ import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 
-def setup_distributed_env(init_method=None, rank=0, world_size=16): 
-    """Set up the distributed environment using MPI, following Frontier best practices"""
-    from mpi4py import MPI
-    comm = MPI.COMM_WORLD
-    world_size = comm.Get_size()
-    world_rank = rank = comm.Get_rank()
-    
-    # Let PyTorch choose the backend automatically based on what's available
-    backend = None
-    
-    # Set required environment variables for distributed training
-    os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', 'localhost')
-    os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '29500')
-    os.environ['WORLD_SIZE'] = str(world_size)
-    os.environ['RANK'] = str(world_rank)
-    
-    # Local rank within the node (assuming 8 GPUs per node on Frontier)
-    local_rank = world_rank % 8
-    os.environ['LOCAL_RANK'] = str(local_rank)
-    
-    print(f"Initializing process group: rank={rank}, world_size={world_size}, "
-          f"local_rank={local_rank}, master={os.environ['MASTER_ADDR']}")
-    
-    # Initialize the process group
-    torch.distributed.init_process_group(
-        backend,
-        init_method=init_method,
-        rank=rank,
-        world_size=world_size
-    )
-    
-    # Report if using MPI backend
-    using_mpi = torch.distributed.get_backend() == 'mpi'
-    print(f"Using MPI backend: {using_mpi}")
-    
-    return world_size, world_rank, local_rank
+# DeepSpeed will handle distributed initialization with dist_init_required=True
 
 def debug_distributed_info():
     """Print debug information about the distributed environment"""
+    # This will be called after DeepSpeed initialization
     print(f"\n----- Distributed Environment Debug Info -----")
     print(f"MASTER_ADDR: {os.environ.get('MASTER_ADDR', 'Not set')}")
     print(f"MASTER_PORT: {os.environ.get('MASTER_PORT', 'Not set')}")
-    print(f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'Not set')}")
-    print(f"RANK: {os.environ.get('RANK', 'Not set')}")
-    print(f"LOCAL_RANK: {os.environ.get('LOCAL_RANK', 'Not set')}")
+    print(f"SLURM_JOB_ID: {os.environ.get('SLURM_JOB_ID', 'Not set')}")
+    print(f"SLURM_PROCID: {os.environ.get('SLURM_PROCID', 'Not set')}")
+    print(f"SLURM_LOCALID: {os.environ.get('SLURM_LOCALID', 'Not set')}")
     
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
-        print(f"CUDA Device Count: {device_count}")
+        print(f"GPU Device Count: {device_count}")
         current_device = torch.cuda.current_device()
-        print(f"CUDA Current Device: {current_device} ({torch.cuda.get_device_name(current_device)})")
+        print(f"Current Device: {current_device} ({torch.cuda.get_device_name(current_device)})")
     
     if torch.distributed.is_initialized():
         print(f"Distributed is initialized:")
@@ -89,38 +49,14 @@ def debug_distributed_info():
         
     print(f"------------------------------------------\n")
 
-# Set communication environment variables based on platform
-if USE_ROCM:
-    # ROCm/RCCL environment variables for Frontier
-    os.environ["RCCL_DEBUG"] = "INFO"  # Enable RCCL debugging
-    os.environ["NCCL_SOCKET_IFNAME"] = "hsn0"  # Primary HPE Slingshot interface
-    os.environ["NCCL_NET_GDR_LEVEL"] = "3"  # Optimized for Frontier
-    
-    # Make sure we use the correct GPU based on Slurm task ID
-    if "SLURM_LOCALID" in os.environ:
-        os.environ["ROCR_VISIBLE_DEVICES"] = os.environ["SLURM_LOCALID"]
-    
-    # MIOpen cache setup to prevent file locking issues
-    if "SLURM_NODEID" in os.environ:
-        os.environ["MIOPEN_USER_DB_PATH"] = f"/tmp/{os.environ.get('USER', 'user')}-miopen-cache-{os.environ['SLURM_NODEID']}"
-        os.environ["MIOPEN_SYSTEM_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
-else:
-    # Original NVIDIA settings
-    os.environ["NCCL_DEBUG"] = "INFO"  # Enable NCCL debugging
-    os.environ["NCCL_SOCKET_IFNAME"] = "^lo,docker"  # Avoid certain interfaces
-    os.environ["NCCL_IB_DISABLE"] = "1"  # Disable InfiniBand (use TCP instead)
-    os.environ["NCCL_P2P_DISABLE"] = "1"  # Disable GPU Direct P2P if causing issues
+# Environment variables for distributed training are now set in the batch script
+# This makes the Python code cleaner and provides better separation of concerns
 
-# Make sure the environment variables are actually applied
-if USE_ROCM:
-    for var in ["RCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_NET_GDR_LEVEL", "ROCR_VISIBLE_DEVICES", 
-                "MIOPEN_USER_DB_PATH", "MIOPEN_SYSTEM_DB_PATH"]:
-        if var in os.environ:
-            print(f"{var}={os.environ[var]}")
-else:
-    for var in ["NCCL_DEBUG", "NCCL_SOCKET_IFNAME", "NCCL_IB_DISABLE", "NCCL_P2P_DISABLE"]:
-        if var in os.environ:
-            print(f"{var}={os.environ[var]}")
+# Only handle MIOpen cache setup which is Python-specific
+if USE_ROCM and "SLURM_NODEID" in os.environ:
+    os.environ["MIOPEN_USER_DB_PATH"] = f"/tmp/{os.environ.get('USER', 'user')}-miopen-cache-{os.environ['SLURM_NODEID']}"
+    os.environ["MIOPEN_SYSTEM_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
+    print(f"MIOpen cache path: {os.environ['MIOPEN_USER_DB_PATH']}")
 
 # Set higher precision for float32 matrix multiplication 
 # This enables TensorFloat32 on supported NVIDIA GPUs (not available on AMD/ROCm)
@@ -577,34 +513,14 @@ def verify_gpu_health():
             except Exception as e:
                 print(f"GPU 0 matrix multiplication test: FAILED - {e}")
 
-def setup_frontier_environment():
-    """Setup environment variables specific to Frontier"""
-    if not USE_ROCM:
-        return
-        
-    # Enable GPU-aware MPI
-    os.environ["MPICH_GPU_SUPPORT_ENABLED"] = "1"
-    
-    # Print ROCm version info
-    try:
-        import subprocess
-        result = subprocess.run(["rocm-smi", "--showdriverversion"], capture_output=True, text=True)
-        print(f"ROCm Driver Version: {result.stdout.strip()}")
-    except:
-        print("Could not detect ROCm version")
+# Environment setup is now handled by the batch script
 
 def main():
     args = get_args()
     
-    # Setup Frontier specific environment if using ROCm
-    if USE_ROCM:
-        setup_frontier_environment()
-    
-    # Set custom port for distributed communication (with fallback to our standard port)
-    if args.port != 3442:
+    # Use the MASTER_PORT from the environment if it exists, otherwise from args
+    if args.port != 3442 and 'MASTER_PORT' not in os.environ:
         os.environ['MASTER_PORT'] = str(args.port)
-    else:
-        os.environ['MASTER_PORT'] = "3442"  # Always set a port to ensure consistency
         
     # Handle GPU exclusion if specified
     if args.exclude_gpus:
@@ -616,19 +532,20 @@ def main():
             print(f"Rank {args.local_rank} was specified to be excluded, forcing CPU execution")
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     
-    # Log environment variables for debugging
-    print("Environment variables for distributed training:")
-    for var in ["MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK"]:
-        print(f"{var}={os.environ.get(var, 'Not set')}")
+    # Initial local_rank from args (will be updated after DeepSpeed init)
+    local_rank = args.local_rank
     
-    # Don't call setup_distributed_env() - let DeepSpeed handle initialization
-    # But do print debug information
+    # Log environment variables for debugging
+    if local_rank == 0:
+        print("Environment variables for distributed training:")
+        for var in ["MASTER_ADDR", "MASTER_PORT", "SLURM_PROCID", "SLURM_LOCALID", "SLURM_NTASKS"]:
+            print(f"{var}={os.environ.get(var, 'Not set')}")
+    
+    # Print debug information (initial)
     debug_distributed_info()
     
-    # After DeepSpeed initializes, we'll get proper ranks from it
-    
     # Verify GPU health before proceeding (only on rank 0)
-    if args.local_rank == 0:
+    if local_rank == 0:
         verify_gpu_health()
     
     # Print memory usage monitoring message
@@ -947,11 +864,9 @@ def main():
         }
     }
     
-    # 3) Initialize DeepSpeed engine with minimal approach - simpler is better
+    # Initialize DeepSpeed engine - let it handle distributed initialization
     print(f"Initializing DeepSpeed with {'ROCM' if USE_ROCM else 'CUDA'}")
     
-    # Let the DeepSpeed launcher initialize distributed training
-    # Just load config from file path, don't try to modify it in-memory
     try:
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
@@ -959,28 +874,30 @@ def main():
             args=args,
             model_parameters=model.parameters(),
             config_params=args.deepspeed_config if args.deepspeed_config else None,
-            dist_init_required=True
+            dist_init_required=True  # Let DeepSpeed handle distributed init
         )
         
-        # Store ranks after DeepSpeed initialization
+        # Update args with DeepSpeed ranks after initialization
         args.world_size = model_engine.world_size
         args.global_rank = model_engine.global_rank
         args.local_rank = model_engine.local_rank
         
+        # Update local variable for easier access
+        local_rank = model_engine.local_rank
+        
         print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
               f"local_rank={args.local_rank}, world_size={args.world_size}")
-        print(f"Rank {args.global_rank}: DeepSpeed initialization successful")
     except Exception as e:
-        print(f"ERROR in DeepSpeed initialization (rank {args.local_rank}): {e}")
-        # Try to recover
+        print(f"ERROR in DeepSpeed initialization (rank {local_rank}): {e}")
+        # Try to recover with minimal approach
         if torch.distributed.is_initialized():
-            print(f"Rank {args.local_rank}: Trying to synchronize after error...")
-            torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
-            print(f"Rank {args.local_rank}: Synchronization after error complete")
+            print(f"Trying to synchronize after error...")
+            torch.distributed.barrier()
         raise
     
-    # Synchronize after DeepSpeed initialization to ensure all processes are ready
-    synchronize_processes()
+    # Print updated debug info after DeepSpeed initialization
+    if local_rank == 0:
+        debug_distributed_info()
     
     # 3.1) Load optimizer state if resuming
     if resuming and 'optimizer_state_dict' in checkpoint:
