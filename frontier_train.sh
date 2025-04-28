@@ -72,8 +72,8 @@ echo "Running with effective batch size: $EFFECTIVE_BATCH across $TOTAL_RANKS GP
 # Make the wrapper script executable
 chmod +x ./run_deepspeed.sh
 
-# Set fixed port for distributed communication
-export MASTER_PORT=29500
+# Set fixed port for distributed communication - use specific port to avoid conflicts
+export MASTER_PORT=3442
 
 # Set critical environment variables for all processes
 export CUDA_HOME=/opt/rocm-6.2.4

@@ -65,8 +65,8 @@ export MASTER_ADDR=$MASTER_NODE
 
 echo "Using hostname $MASTER_ADDR as MASTER_ADDR"
 
-# Set fixed port for reproducibility
-export MASTER_PORT=${MASTER_PORT:-29500}
+# Set fixed port for reproducibility - use specific port to avoid conflicts
+export MASTER_PORT=${MASTER_PORT:-3442}
 
 echo "MASTER_ADDR set to: $MASTER_ADDR"
 echo "MASTER_PORT set to: $MASTER_PORT"

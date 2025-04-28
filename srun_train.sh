@@ -96,7 +96,7 @@ echo "First node in allocation: $first"
 
 # Directly use the hostname as MASTER_ADDR (more reliable than trying to get IP)
 export MASTER_ADDR=$first
-export MASTER_PORT=29500
+export MASTER_PORT=3442
 
 echo "MASTER_ADDR = $MASTER_ADDR"
 echo "MASTER_PORT = $MASTER_PORT"

@@ -437,7 +437,7 @@ def get_args():
     # Training arguments
     parser.add_argument('--train_steps', type=str, default="100",
                         help='number of training steps')
-    parser.add_argument('--port', type=int, default=29500,
+    parser.add_argument('--port', type=int, default=3442,
                         help='port for distributed communication')
     parser.add_argument('--data', type=str, required=True,
                         help='path to training data file')
@@ -600,9 +600,11 @@ def main():
     if USE_ROCM:
         setup_frontier_environment()
     
-    # Set custom port for distributed communication
-    if args.port != 29500:
+    # Set custom port for distributed communication (with fallback to our standard port)
+    if args.port != 3442:
         os.environ['MASTER_PORT'] = str(args.port)
+    else:
+        os.environ['MASTER_PORT'] = "3442"  # Always set a port to ensure consistency
         
     # Handle GPU exclusion if specified
     if args.exclude_gpus:

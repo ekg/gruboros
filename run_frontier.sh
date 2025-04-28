@@ -27,6 +27,7 @@ export NCCL_NET_GDR_LEVEL=3
 export FI_CXI_ATS=0
 export FI_LOG_LEVEL=info
 export MPICH_GPU_SUPPORT_ENABLED=1
+export MASTER_PORT=3442  # Use specific port to avoid conflicts
 
 # Make training script executable
 chmod +x srun_train.sh
