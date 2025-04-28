@@ -6,6 +6,7 @@
 #SBATCH -t 01:00:00                # Walltime HH:MM:SS
 #SBATCH -p batch                   # Queue
 #SBATCH -N 2                       # Nodes
+#SBATCH -q debug
 #SBATCH --ntasks-per-node=8       # One task per GPU
 #SBATCH --gpus-per-node=8         # All 8 GPUs
 #SBATCH --exclusive                # Exclusive node access
@@ -24,9 +25,15 @@ module load craype-accel-amd-gfx90a
 
 # 0) Setup Python environment - CRITICAL!
 # Set up micromamba environment
-micromamba activate gruboros
-
-# Activate the environment
+export MAMBA_EXE='/autofs/nccs-svm1_home1/erikgarrison/.local/bin/micromamba';
+export MAMBA_ROOT_PREFIX='/lustre/orion/scratch/erikgarrison/bif148/micromamba';
+__mamba_setup="$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__mamba_setup"
+else
+    alias micromamba="$MAMBA_EXE"  # Fallback on help from micromamba activate
+fi
+unset __mamba_setup
 micromamba activate gruboros
 
 # 2) ROCm & NCCL tuning for Frontier
