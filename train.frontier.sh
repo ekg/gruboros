@@ -12,6 +12,15 @@
 
 set -euo pipefail
 
+# 0) Setup Python environment - CRITICAL!
+set +x
+# Adjust these paths to your specific conda installation and environment
+source /lustre/orion/world-shared/stf218/sajal/miniconda3/bin/activate
+conda activate /lustre/orion/world-shared/stf218/sajal/TORCH2/env-py310-rccl
+
+# Set LD_PRELOAD for necessary libraries
+export LD_PRELOAD="/usr/lib64/libcrypto.so /usr/lib64/libssh.so.4 /usr/lib64/libssl.so.1.1"
+
 # 1) Load modules
 module load PrgEnv-gnu
 module load gcc/11.2.0
@@ -49,7 +58,7 @@ srun --mpi=pmi2 \
      --ntasks-per-node=8 \
      --gpus-per-node=8 \
      --gpu-bind=closest \
-     python train.py \
+     python3 train.py \
          --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
          --output ./outputs \
          --train_steps 10000 \
