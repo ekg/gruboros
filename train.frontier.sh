@@ -42,7 +42,7 @@ echo "WORLD_SIZE=$(( SLURM_NNODES * SLURM_GPUS_PER_NODE ))"
 mkdir -p logs
 
 # 5) Launch
-srun --mpi=pmix_v3 \
+srun --mpi=pmi2 \
      -u \
      -n $(( SLURM_NNODES * SLURM_GPUS_PER_NODE )) \
      -c2 \
