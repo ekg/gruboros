@@ -861,28 +861,17 @@ def main():
         if args.local_rank == 0:
             print(f"Using standard AdamW optimizer with lr={args.lr} (ScheduleFree disabled)")
     
-    # 2) DeepSpeed config for tensor parallelism and gradient accumulation
-    ds_config = {
-        "train_micro_batch_size_per_gpu": batch_size,
-        "gradient_accumulation_steps": args.grad_accum,
-        "tensor_parallel": {
-            "tp": {
-                "tp_size": args.tp_size,
-                "tp_grain_size": 64
-            }
-        }
-    }
-    
     # Initialize DeepSpeed engine - let it handle distributed initialization
     print(f"Initializing DeepSpeed with {'ROCM' if USE_ROCM else 'CUDA'}")
     
     try:
+        # Use only the config file specified on the command line, don't pass any in-memory config
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             args=args,
             model_parameters=model.parameters(),
-            config_params=args.deepspeed_config if args.deepspeed_config else None,
+            config=None,  # Don't pass config_params directly
             dist_init_required=True  # Let DeepSpeed handle distributed init
         )
         

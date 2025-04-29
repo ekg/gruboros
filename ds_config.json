@@ -14,5 +14,9 @@
   "gradient_clipping": 1.0,
   "prescale_gradients": false,
   "wall_clock_breakdown": false,
-  "zero_allow_untested_optimizer": true
+  "zero_allow_untested_optimizer": true,
+  "tensor_parallel": {
+    "tp_size": "auto",
+    "tp_grain_size": 64
+  }
 }
