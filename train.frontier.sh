@@ -1,79 +1,69 @@
 #!/bin/bash
-#SBATCH -A BIF148                  # Your project allocation
-#SBATCH -J minLM_frontier          # Job name
-#SBATCH -o logs/%x-%j.out          # STDOUT → logs/minLM_frontier-<jobid>.out
-#SBATCH -e logs/%x-%j.err          # STDERR → logs/minLM_frontier-<jobid>.err
-#SBATCH -t 01:00:00                # Walltime HH:MM:SS
-#SBATCH -p batch                   # Queue
-#SBATCH -N 2                       # Nodes
+
+#SBATCH -A BIF148
+#SBATCH -J minLM_frontier
+#SBATCH -o logs/minLM_frontier-%j.out
+#SBATCH -e logs/minLM_frontier-%j.err
+#SBATCH -t 01:00:00
+#SBATCH -p batch
+#SBATCH -N 2
 #SBATCH -q debug
-#SBATCH --ntasks-per-node=8       # One task per GPU
-#SBATCH --gpus-per-node=8         # All 8 GPUs
-#SBATCH --exclusive                # Exclusive node access
 
-#set -euo pipefail
+set +x
+# Setup Python environment
+eval "$(micromamba shell hook --shell bash)"
+micromamba activate gruboros
 
-# Set LD_PRELOAD for necessary libraries
 export LD_PRELOAD="/usr/lib64/libcrypto.so /usr/lib64/libssh.so.4 /usr/lib64/libssl.so.1.1"
-
-# 1) Load modules
 module load PrgEnv-gnu
 module load gcc/11.2.0
 module load rocm/6.2.4
 module load craype-accel-amd-gfx90a
 
-# 0) Setup Python environment - CRITICAL!
-# Set up micromamba environment
-eval "$(micromamba shell hook --shell bash)"
-micromamba activate gruboros
+# Export settings
+export TORCH_EXTENSIONS_DIR=$PWD/deepspeed
+export HF_HOME=$PWD/hfdata
+export OMP_NUM_THREADS=2
 
-# 2) ROCm & NCCL tuning for Frontier
+# NCCL/ROCm settings
+export NCCL_DEBUG=INFO
 export NCCL_SOCKET_IFNAME=hsn0
 export NCCL_NET_GDR_LEVEL=3
 export RCCL_DEBUG=INFO
 export FI_CXI_ATS=0
 export FI_LOG_LEVEL=info
 
-# 3) Build hostfile & MASTER_ADDR
-srun hostname > .hosts.$SLURM_JOB_ID
-sed 's/$/ slots=8/' .hosts.$SLURM_JOB_ID > hostfile
-MASTER_NODE=$(head -n1 .hosts.$SLURM_JOB_ID)
-# Get IP of master node
-MASTER_ADDR=$(ssh $MASTER_NODE hostname -i | awk '{print $1}')
-export MASTER_ADDR
+# Setup hostfile
+scontrol show hostnames $SLURM_NODELIST > job.node.list
+input="./job.node.list"
+readarray -t arr <"$input"
+first=${arr[0]}
+echo "first=" $first
+ips=$(ssh $first hostname -I)
+read -ra arr <<< ${ips}
+export MASTER_ADDR=${arr[0]}
+echo "MASTER_ADDR=" $MASTER_ADDR
 export MASTER_PORT=29500
 
-echo "MASTER_ADDR=${MASTER_ADDR}"
-echo "MASTER_PORT=${MASTER_PORT}"
-echo "WORLD_SIZE=$(( SLURM_NNODES * SLURM_GPUS_PER_NODE ))"
+# Calculate ranks
+ranks_per_node=8
+ranks_total=$(($ranks_per_node*$SLURM_JOB_NUM_NODES))
+echo "Total ranks: $ranks_total"
 
-# 4) Create log dir
+# Create log dir
 mkdir -p logs
 
-echo slum nodes $SLURM_NNODES
-echo slum gpus $SLURM_GPUS_PER_NODE
-echo thing is $(( SLURM_NNODES * SLURM_GPUS_PER_NODE ))
-export count=8
-
-# 5) Launch
-srun --mpi=pmi2 \
-     -u \
-     -n $count \
-     -c2 \
-     --ntasks=8 \
-     --ntasks-per-node=8 \
-     --gpus-per-node=8 \
-     --gpu-bind=closest \
-     python train.py \
-         --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
-         --output ./outputs \
-         --train_steps 10000 \
-         --validate_every 200 \
-         --save_every 500 \
-         --batch_size 4 \
-         --grad_accum 1 \
-         --seq_len 2048 \
-         --params 100m \
-         --tp_size 1 \
-         --keep_checkpoints 5 \
-         --port $MASTER_PORT
+# Launch with srun (matches the working GPT-J example pattern)
+srun -u -n$ranks_total -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=closest python train.py \
+   --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
+   --output ./outputs \
+   --train_steps 10000 \
+   --validate_every 200 \
+   --save_every 500 \
+   --batch_size 4 \
+   --grad_accum 1 \
+   --seq_len 2048 \
+   --params 100m \
+   --tp_size 1 \
+   --keep_checkpoints 5 \
+   --port $MASTER_PORT

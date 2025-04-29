@@ -363,6 +363,8 @@ def get_args():
                         help='tensor parallel size')
     parser.add_argument('--exclude_gpus', type=str, default="",
                         help='comma-separated list of GPU indices to exclude (e.g., "0,3")')
+    parser.add_argument('--master_addr', type=str, default=None,
+                        help='Master node address (overrides environment variable)')
     
     # DeepSpeed arguments
     parser.add_argument('--deepspeed', action='store_true',
@@ -517,6 +519,11 @@ def verify_gpu_health():
 
 def main():
     args = get_args()
+    
+    # Set MASTER_ADDR from command line if provided
+    if args.master_addr is not None:
+        os.environ['MASTER_ADDR'] = args.master_addr
+        print(f"Setting MASTER_ADDR={args.master_addr} from command line")
     
     # Use the MASTER_PORT from the environment if it exists, otherwise from args
     if args.port != 3442 and 'MASTER_PORT' not in os.environ:
