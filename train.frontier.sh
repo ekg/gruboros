@@ -11,8 +11,7 @@
 #SBATCH --gpus-per-node=8         # All 8 GPUs
 #SBATCH --exclusive                # Exclusive node access
 
-set -euo pipefail
-set +x
+#set -euo pipefail
 
 # Set LD_PRELOAD for necessary libraries
 export LD_PRELOAD="/usr/lib64/libcrypto.so /usr/lib64/libssh.so.4 /usr/lib64/libssl.so.1.1"
@@ -25,15 +24,7 @@ module load craype-accel-amd-gfx90a
 
 # 0) Setup Python environment - CRITICAL!
 # Set up micromamba environment
-export MAMBA_EXE='/autofs/nccs-svm1_home1/erikgarrison/.local/bin/micromamba';
-export MAMBA_ROOT_PREFIX='/lustre/orion/scratch/erikgarrison/bif148/micromamba';
-__mamba_setup="$("$MAMBA_EXE" shell hook --shell bash --root-prefix "$MAMBA_ROOT_PREFIX" 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__mamba_setup"
-else
-    alias micromamba="$MAMBA_EXE"  # Fallback on help from micromamba activate
-fi
-unset __mamba_setup
+eval "$(micromamba shell hook --shell bash)"
 micromamba activate gruboros
 
 # 2) ROCm & NCCL tuning for Frontier
@@ -59,10 +50,15 @@ echo "WORLD_SIZE=$(( SLURM_NNODES * SLURM_GPUS_PER_NODE ))"
 # 4) Create log dir
 mkdir -p logs
 
+echo slum nodes $SLURM_NNODES
+echo slum gpus $SLURM_GPUS_PER_NODE
+echo thing is $(( SLURM_NNODES * SLURM_GPUS_PER_NODE ))
+export count=8
+
 # 5) Launch
 srun --mpi=pmi2 \
      -u \
-     -n $(( SLURM_NNODES * SLURM_GPUS_PER_NODE )) \
+     -n $count \
      -c2 \
      --ntasks-per-node=8 \
      --gpus-per-node=8 \
