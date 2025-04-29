@@ -523,7 +523,9 @@ def main():
     # Set MASTER_ADDR from command line if provided
     if args.master_addr is not None:
         os.environ['MASTER_ADDR'] = args.master_addr
-        print(f"Setting MASTER_ADDR={args.master_addr} from command line")
+        print(f"Setting MASTER_ADDR={args.master_addr} from command line (CRITICAL for multi-node)")
+        # Make sure the environment variable is seen by all processes
+        os.environ['MASTER_ADDR_SET_BY'] = 'command_line'
     
     # Use the MASTER_PORT from the environment if it exists, otherwise from args
     if args.port != 3442 and 'MASTER_PORT' not in os.environ:

@@ -33,7 +33,7 @@ export RCCL_DEBUG=INFO
 export FI_CXI_ATS=0
 export FI_LOG_LEVEL=info
 
-# Setup hostfile
+# Setup hostfile - this is the exact method used in the working GPT-J example
 scontrol show hostnames $SLURM_NODELIST > job.node.list
 input="./job.node.list"
 readarray -t arr <"$input"
@@ -43,7 +43,10 @@ ips=$(ssh $first hostname -I)
 read -ra arr <<< ${ips}
 export MASTER_ADDR=${arr[0]}
 echo "MASTER_ADDR=" $MASTER_ADDR
-export MASTER_PORT=29500
+
+# Use a random port to avoid conflicts with other jobs
+export MASTER_PORT=$((29500 + $RANDOM % 10000))
+echo "MASTER_PORT=" $MASTER_PORT
 
 # Calculate ranks
 ranks_per_node=8
@@ -66,4 +69,7 @@ srun -u -n$ranks_total -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=clos
    --params 100m \
    --tp_size 1 \
    --keep_checkpoints 5 \
+   --deepspeed \
+   --deepspeed_config ds_config.json \
+   --master_addr=$MASTER_ADDR \
    --port $MASTER_PORT
