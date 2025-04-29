@@ -60,6 +60,7 @@ srun --mpi=pmi2 \
      -u \
      -n $count \
      -c2 \
+     --ntasks=8 \
      --ntasks-per-node=8 \
      --gpus-per-node=8 \
      --gpu-bind=closest \
