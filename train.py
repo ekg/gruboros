@@ -977,7 +977,11 @@ def main():
     
     # 4) Put ScheduleFree optimizer into train mode if used
     if args.schedulefree:
-        model_engine.optimizer.train()
+        if hasattr(model_engine.optimizer, 'optimizer'):
+            model_engine.optimizer.optimizer.train()
+            print("Successfully set ScheduleFree optimizer to train mode via underlying optimizer.")
+        else:
+            print("Warning: Cannot access underlying optimizer for initial train mode in ScheduleFree.")
     
     # Calculate samples per epoch based on requested batches per epoch
     samples_per_epoch = batches_per_epoch * batch_size
@@ -1222,7 +1226,10 @@ def main():
         
         # Switch ScheduleFree to eval mode
         if args.schedulefree:
-            model_engine.optimizer.eval()
+            if hasattr(model_engine.optimizer, 'optimizer'):
+                model_engine.optimizer.optimizer.eval()
+            else:
+                print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree.")
         
         # Don't display validation progress meter
         
@@ -1264,7 +1271,10 @@ def main():
         # Switch back to train mode
         model_engine.train()
         if args.schedulefree:
-            model_engine.optimizer.train()
+            if hasattr(model_engine.optimizer, 'optimizer'):
+                model_engine.optimizer.optimizer.train()
+            else:
+                print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree.")
         
         return avg_loss
     
@@ -1361,7 +1371,10 @@ def main():
             # Explicitly reset ScheduleFree optimizer to train mode after epoch transition
             # This is critical as ScheduleFree uses two different points for gradient and test/val loss
             if args.schedulefree and hasattr(model_engine, 'optimizer'):
-                model_engine.optimizer.train()
+                if hasattr(model_engine.optimizer, 'optimizer'):
+                    model_engine.optimizer.optimizer.train()
+                else:
+                    print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree during epoch transition.")
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
@@ -1463,7 +1476,10 @@ def main():
         
         # After training, switch to eval mode if using ScheduleFree
         if args.schedulefree:
-            model_engine.optimizer.eval()
+            if hasattr(model_engine.optimizer, 'optimizer'):
+                model_engine.optimizer.optimizer.eval()
+            else:
+                print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree after training.")
         
         # Close progress bar
         pbar.close()
