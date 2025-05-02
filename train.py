@@ -520,7 +520,8 @@ def verify_gpu_health():
 def main():
     args = get_args()
     
-    # local_rank is already defined above
+    # Initialize local_rank from args
+    local_rank = args.local_rank
     
     # Log distributed environment variables (don't modify them - rely on batch script)
     if local_rank <= 0:  # Print from rank 0 or if local_rank not yet set properly
@@ -538,8 +539,8 @@ def main():
             print(f"Rank {args.local_rank} was specified to be excluded, forcing CPU execution")
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     
-    # Initial local_rank from args (will be updated after DeepSpeed init)
-    local_rank = args.local_rank
+    # local_rank was already initialized at the beginning of the function
+    # Will be updated after DeepSpeed init
     
     # Log environment variables for debugging
     if local_rank == 0:
