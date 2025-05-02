@@ -567,6 +567,10 @@ def main():
     batch_size = int(parse_size_with_suffix(args.batch_size))
     batches_per_epoch = int(parse_size_with_suffix(args.batches_per_epoch))
     
+    # Update args with parsed integer values for DeepSpeed
+    args.batch_size = batch_size
+    args.grad_accum = int(args.grad_accum)  # Ensure grad_accum is also an integer
+    
     # Check for resuming from checkpoint
     resuming = args.resume is not None
     resume_step = 0
