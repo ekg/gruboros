@@ -44,8 +44,8 @@ read -ra arr <<< ${ips}
 export MASTER_ADDR=${arr[0]}
 echo "MASTER_ADDR=" $MASTER_ADDR
 
-# Use a random port to avoid conflicts with other jobs
-export MASTER_PORT=$((29500 + $RANDOM % 10000))
+# Use fixed port 3442 for consistency
+export MASTER_PORT=3442
 echo "MASTER_PORT=" $MASTER_PORT
 
 # Calculate ranks
@@ -56,7 +56,7 @@ echo "Total ranks: $ranks_total"
 # Create log dir
 mkdir -p logs
 
-# Launch with srun (matches the working GPT-J example pattern)
+# Launch with srun - no master_addr or port on command line, use environment variables
 srun -u -n$ranks_total -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=closest python train.py \
    --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
    --output ./outputs \
@@ -70,6 +70,4 @@ srun -u -n$ranks_total -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=clos
    --tp_size 1 \
    --keep_checkpoints 5 \
    --deepspeed \
-   --deepspeed_config ds_config.json \
-   --master_addr=$MASTER_ADDR \
-   --port $MASTER_PORT
+   --deepspeed_config ds_config.json

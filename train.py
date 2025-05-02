@@ -520,16 +520,11 @@ def verify_gpu_health():
 def main():
     args = get_args()
     
-    # Set MASTER_ADDR from command line if provided
-    if args.master_addr is not None:
-        os.environ['MASTER_ADDR'] = args.master_addr
-        print(f"Setting MASTER_ADDR={args.master_addr} from command line (CRITICAL for multi-node)")
-        # Make sure the environment variable is seen by all processes
-        os.environ['MASTER_ADDR_SET_BY'] = 'command_line'
-    
-    # Use the MASTER_PORT from the environment if it exists, otherwise from args
-    if args.port != 3442 and 'MASTER_PORT' not in os.environ:
-        os.environ['MASTER_PORT'] = str(args.port)
+    # Log distributed environment variables (don't modify them - rely on batch script)
+    if local_rank <= 0:  # Print from rank 0 or if local_rank not yet set properly
+        print("Environment variables seen by Python script:")
+        for var in ["MASTER_ADDR", "MASTER_PORT", "SLURM_PROCID", "SLURM_LOCALID", "SLURM_NTASKS", "RANK", "WORLD_SIZE", "LOCAL_RANK"]:
+            print(f"  {var}={os.environ.get(var, 'Not set')}")
         
     # Handle GPU exclusion if specified
     if args.exclude_gpus:
@@ -897,6 +892,10 @@ def main():
         # Print the config for debugging
         print(f"DeepSpeed config with batch sizes: {json.dumps(ds_config, indent=2)}")
         
+        # Set explicit backend for better control
+        dist_backend = 'nccl'  # Use nccl for ROCm
+        print(f"Using distributed backend: {dist_backend}")
+        
         try:
             # ONLY use the config file approach - don't pass args for DeepSpeed config
             model_engine, optimizer, _, _ = deepspeed.initialize(
@@ -904,7 +903,8 @@ def main():
                 optimizer=optimizer,
                 config=ds_config,
                 model_parameters=model.parameters(),
-                dist_init_required=True  # Let DeepSpeed handle distributed init
+                dist_init_required=True,  # Let DeepSpeed handle distributed init
+                dist_backend=dist_backend  # Explicitly set backend
             )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with config (rank {local_rank}): {e}")
@@ -922,7 +922,8 @@ def main():
                 args=args,
                 model_parameters=model.parameters(),
                 config=None,
-                dist_init_required=True  # Let DeepSpeed handle distributed init
+                dist_init_required=True,  # Let DeepSpeed handle distributed init
+                dist_backend=dist_backend  # Use the same backend
             )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with args (rank {local_rank}): {e}")
