@@ -906,6 +906,13 @@ def main():
                 model_parameters=model.parameters(),
                 dist_init_required=True  # Let DeepSpeed handle distributed init
             )
+        except Exception as e:
+            print(f"ERROR in DeepSpeed initialization with config (rank {local_rank}): {e}")
+            # Try to recover with minimal approach
+            if torch.distributed.is_initialized():
+                print(f"Trying to synchronize after error...")
+                torch.distributed.barrier()
+            raise
     else:
         # No config file, use args-only approach
         try:
@@ -917,24 +924,24 @@ def main():
                 config=None,
                 dist_init_required=True  # Let DeepSpeed handle distributed init
             )
+        except Exception as e:
+            print(f"ERROR in DeepSpeed initialization with args (rank {local_rank}): {e}")
+            # Try to recover with minimal approach
+            if torch.distributed.is_initialized():
+                print(f"Trying to synchronize after error...")
+                torch.distributed.barrier()
+            raise
         
-        # Update args with DeepSpeed ranks after initialization
-        args.world_size = model_engine.world_size
-        args.global_rank = model_engine.global_rank
-        args.local_rank = model_engine.local_rank
-        
-        # Update local variable for easier access
-        local_rank = model_engine.local_rank
-        
-        print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
-              f"local_rank={args.local_rank}, world_size={args.world_size}")
-    except Exception as e:
-        print(f"ERROR in DeepSpeed initialization (rank {local_rank}): {e}")
-        # Try to recover with minimal approach
-        if torch.distributed.is_initialized():
-            print(f"Trying to synchronize after error...")
-            torch.distributed.barrier()
-        raise
+    # Update args with DeepSpeed ranks after initialization
+    args.world_size = model_engine.world_size
+    args.global_rank = model_engine.global_rank
+    args.local_rank = model_engine.local_rank
+    
+    # Update local variable for easier access
+    local_rank = model_engine.local_rank
+    
+    print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
+          f"local_rank={args.local_rank}, world_size={args.world_size}")
     
     # Print updated debug info after DeepSpeed initialization
     if local_rank == 0:
