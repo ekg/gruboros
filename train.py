@@ -520,6 +520,8 @@ def verify_gpu_health():
 def main():
     args = get_args()
     
+    # local_rank was already defined above
+    
     # Log distributed environment variables (don't modify them - rely on batch script)
     if local_rank <= 0:  # Print from rank 0 or if local_rank not yet set properly
         print("Environment variables seen by Python script:")
