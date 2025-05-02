@@ -883,7 +883,7 @@ def main():
         args.grad_accum = int(args.grad_accum)
     
     # If using a config file, make a direct modification to relevant DeepSpeed fields in-memory
-    if args.deepspeed and args.deepspeed_config:
+    if args.deepspeed_config:
         # Load the config file to modify it in-memory
         with open(args.deepspeed_config, 'r') as f:
             ds_config = json.load(f)
@@ -897,21 +897,26 @@ def main():
         # Print the config for debugging
         print(f"DeepSpeed config with batch sizes: {json.dumps(ds_config, indent=2)}")
         
-        # Use the in-memory config instead of the file
-        config_params = ds_config
+        try:
+            # ONLY use the config file approach - don't pass args for DeepSpeed config
+            model_engine, optimizer, _, _ = deepspeed.initialize(
+                model=model,
+                optimizer=optimizer,
+                config=ds_config,
+                model_parameters=model.parameters(),
+                dist_init_required=True  # Let DeepSpeed handle distributed init
+            )
     else:
-        config_params = None
-    
-    try:
-        # Use the updated in-memory config if available
-        model_engine, optimizer, _, _ = deepspeed.initialize(
-            model=model,
-            optimizer=optimizer,
-            args=args,
-            model_parameters=model.parameters(),
-            config=config_params,  # Use our updated config if available
-            dist_init_required=True  # Let DeepSpeed handle distributed init
-        )
+        # No config file, use args-only approach
+        try:
+            model_engine, optimizer, _, _ = deepspeed.initialize(
+                model=model,
+                optimizer=optimizer,
+                args=args,
+                model_parameters=model.parameters(),
+                config=None,
+                dist_init_required=True  # Let DeepSpeed handle distributed init
+            )
         
         # Update args with DeepSpeed ranks after initialization
         args.world_size = model_engine.world_size
