@@ -568,8 +568,13 @@ def main():
     batches_per_epoch = int(parse_size_with_suffix(args.batches_per_epoch))
     
     # Update args with parsed integer values for DeepSpeed
+    # Modify the args object to ensure integers are used
     args.batch_size = batch_size
     args.grad_accum = int(args.grad_accum)  # Ensure grad_accum is also an integer
+    
+    # Debug print to verify types
+    print(f"DEBUG: batch_size type: {type(args.batch_size)}, value: {args.batch_size}")
+    print(f"DEBUG: grad_accum type: {type(args.grad_accum)}, value: {args.grad_accum}")
     
     # Check for resuming from checkpoint
     resuming = args.resume is not None
@@ -868,14 +873,43 @@ def main():
     # Initialize DeepSpeed engine - let it handle distributed initialization
     print(f"Initializing DeepSpeed with {'ROCM' if USE_ROCM else 'CUDA'}")
     
+    # Explicitly verify and fix batch size and grad_accum types right before DeepSpeed init
+    if not isinstance(args.batch_size, int):
+        print(f"WARNING: args.batch_size is not an int, fixing... Current type: {type(args.batch_size)}")
+        args.batch_size = int(args.batch_size)
+    
+    if not isinstance(args.grad_accum, int):
+        print(f"WARNING: args.grad_accum is not an int, fixing... Current type: {type(args.grad_accum)}")
+        args.grad_accum = int(args.grad_accum)
+    
+    # If using a config file, make a direct modification to relevant DeepSpeed fields in-memory
+    if args.deepspeed and args.deepspeed_config:
+        # Load the config file to modify it in-memory
+        with open(args.deepspeed_config, 'r') as f:
+            ds_config = json.load(f)
+        
+        # Set batch sizes directly in the config to ensure they're integers
+        if 'train_micro_batch_size_per_gpu' in ds_config:
+            ds_config['train_micro_batch_size_per_gpu'] = args.batch_size
+        if 'gradient_accumulation_steps' in ds_config:
+            ds_config['gradient_accumulation_steps'] = args.grad_accum
+            
+        # Print the config for debugging
+        print(f"DeepSpeed config with batch sizes: {json.dumps(ds_config, indent=2)}")
+        
+        # Use the in-memory config instead of the file
+        config_params = ds_config
+    else:
+        config_params = None
+    
     try:
-        # Use only the config file specified on the command line, don't pass any in-memory config
+        # Use the updated in-memory config if available
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             args=args,
             model_parameters=model.parameters(),
-            config=None,  # Don't pass config_params directly
+            config=config_params,  # Use our updated config if available
             dist_init_required=True  # Let DeepSpeed handle distributed init
         )
         
