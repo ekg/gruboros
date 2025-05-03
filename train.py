@@ -895,10 +895,6 @@ def main():
         # Print the config for debugging
         print(f"DeepSpeed config with batch sizes: {json.dumps(ds_config, indent=2)}")
         
-        # Set explicit backend for better control
-        dist_backend = 'nccl'  # Use nccl for ROCm
-        print(f"Using distributed backend: {dist_backend}")
-        
         try:
             # ONLY use the config file approach - don't pass args for DeepSpeed config
             model_engine, optimizer, _, _ = deepspeed.initialize(
@@ -906,8 +902,7 @@ def main():
                 optimizer=optimizer,
                 config=ds_config,
                 model_parameters=model.parameters(),
-                dist_init_required=True,  # Let DeepSpeed handle distributed init
-                dist_backend=dist_backend  # Explicitly set backend
+                dist_init_required=True  # Let DeepSpeed handle distributed init
             )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with config (rank {local_rank}): {e}")
@@ -925,8 +920,7 @@ def main():
                 args=args,
                 model_parameters=model.parameters(),
                 config=None,
-                dist_init_required=True,  # Let DeepSpeed handle distributed init
-                dist_backend=dist_backend  # Use the same backend
+                dist_init_required=True  # Let DeepSpeed handle distributed init
             )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with args (rank {local_rank}): {e}")
