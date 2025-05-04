@@ -56,9 +56,11 @@ echo "MASTER_ADDR=" $MASTER_ADDR
 export MASTER_PORT=3442
 echo "MASTER_PORT=" $MASTER_PORT
 
-# Explicitly export LOCAL_RANK from SLURM_LOCALID for DeepSpeed
+# Export all distributed environment variables needed by PyTorch/DeepSpeed
 export LOCAL_RANK="$SLURM_LOCALID"
-echo "Set LOCAL_RANK environment variable using SLURM_LOCALID"
+export RANK="$SLURM_PROCID"
+export WORLD_SIZE="$SLURM_NTASKS"
+echo "Set distributed environment variables: LOCAL_RANK=$LOCAL_RANK, RANK=$RANK, WORLD_SIZE=$WORLD_SIZE"
 
 # Ensure MASTER_PORT is propagated to all processes
 export UCX_TLS=rc,tcp,sm
