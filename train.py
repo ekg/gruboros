@@ -564,7 +564,7 @@ def main():
         verify_gpu_health()
     
     # Print memory usage monitoring message
-    if global_rank == 0:
+    if local_rank <= 0:  # Use local_rank before DeepSpeed initialization
         print("Memory-efficient dataset initialized. Only loading necessary data.")
     
     # Parse numeric arguments with potential suffixes
@@ -596,7 +596,7 @@ def main():
             checkpoint_dir = args.resume
         else:
             checkpoint_dir = os.path.dirname(args.resume)
-        if global_rank == 0:
+        if local_rank <= 0:  # Use local_rank before DeepSpeed initialization
             print(f"Resuming from checkpoint: {args.resume}")
             print(f"Using checkpoint directory: {checkpoint_dir}")
             if not os.path.exists(checkpoint_dir):
@@ -604,17 +604,17 @@ def main():
                 return
     elif args.output:
         checkpoint_dir = args.output
-        if global_rank == 0:
+        if local_rank <= 0:  # Use local_rank before DeepSpeed initialization
             print(f"Using specified output directory: {checkpoint_dir}")
     else:
         # Create default name based on date and time
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         checkpoint_dir = f"gruboros_{timestamp}"
-        if global_rank == 0:
+        if local_rank <= 0:  # Use local_rank before DeepSpeed initialization
             print(f"Output directory not specified, auto-generating: {checkpoint_dir}")
 
     # Rank 0 creates the directory if it doesn't exist (and isn't resuming)
-    if global_rank == 0 and checkpoint_dir and not resuming:
+    if local_rank <= 0 and checkpoint_dir and not resuming:
         os.makedirs(checkpoint_dir, exist_ok=True)
         print(f"Checkpoints will be saved to: {checkpoint_dir}")
     
@@ -1037,7 +1037,7 @@ def main():
     )
     
     # Create metrics log file
-    if global_rank == 0 and checkpoint_dir:
+    if model_engine.global_rank == 0 and checkpoint_dir:
         metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
         with open(metrics_log_path, 'w') as f:
             header = [
