@@ -15,9 +15,5 @@
   "prescale_gradients": false,
   "wall_clock_breakdown": false,
   "zero_allow_untested_optimizer": true,
-  "communication_data_type": "bf16",
-  "tensor_parallel": {
-    "tp_size": 8,
-    "enabled": true
-  }
+  "communication_data_type": "bf16"
 }
