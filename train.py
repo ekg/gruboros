@@ -528,41 +528,15 @@ def verify_gpu_health():
 def main():
     args = get_args()
     
-    # Determine ranks using environment variables set by Slurm/launcher
-    global_rank = int(os.environ.get('RANK', os.environ.get('SLURM_PROCID', 0)))
-    local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('SLURM_LOCALID', args.local_rank if args.local_rank >= 0 else 0)))
-    world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SLURM_NTASKS', 1)))
+    # Let local_rank come from DeepSpeed launcher via args
+    local_rank = args.local_rank
     
-    # Ensure args has correct local_rank for DeepSpeed
-    args.local_rank = local_rank
-    
-    # Initialize distributed with DeepSpeed's helper function
-    print(f"Global Rank {global_rank}: Calling deepspeed.init_distributed()...")
-    deepspeed.init_distributed(dist_backend='nccl')
-    print(f"Global Rank {global_rank}: deepspeed.init_distributed() finished.")
-    
-    # Verify initialization
-    if not dist.is_initialized():
-        print(f"ERROR: Rank {global_rank} failed to initialize torch.distributed via deepspeed.init_distributed()")
-        sys.exit(1)  # Exit if initialization failed
-    
-    # Set device based on local rank after distributed initialization
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-        print(f"Rank {global_rank}: Set device to CUDA:{local_rank} after init_distributed")
-        print(f"Rank {global_rank}: Current device: {torch.cuda.current_device()}")
-    
-    # Update args with potentially updated ranks from initialization
-    args.global_rank = dist.get_rank() 
-    args.local_rank = local_rank  # Keep the one from env
-    args.world_size = dist.get_world_size()
-    
-    # Log distributed environment variables (don't modify them - rely on batch script)
-    if local_rank == 0:  # Print from rank 0 only
-        print("Environment variables seen by Python script:")
+    # Log distributed environment variables before initialization
+    if local_rank <= 0:  # Could be -1 before proper initialization
+        print("Environment variables seen by Python script before initialization:")
         for var in ["MASTER_ADDR", "MASTER_PORT", "SLURM_PROCID", "SLURM_LOCALID", "SLURM_NTASKS", "RANK", "WORLD_SIZE", "LOCAL_RANK"]:
             print(f"  {var}={os.environ.get(var, 'Not set')}")
-        
+    
     # Handle GPU exclusion if specified
     if args.exclude_gpus:
         exclude_list = [int(x.strip()) for x in args.exclude_gpus.split(',')]
@@ -890,9 +864,9 @@ def main():
         print(f"WARNING: args.grad_accum is not an int, fixing... Current type: {type(args.grad_accum)}")
         args.grad_accum = int(args.grad_accum)
     
-    # We already initialized the distributed environment, so tell DeepSpeed not to do it again
-    deepspeed_dist_init = False
-    print(f"DeepSpeed dist_init_required set to: {deepspeed_dist_init} (already initialized)")
+    # Let DeepSpeed handle the distributed initialization
+    deepspeed_dist_init = True
+    print(f"DeepSpeed dist_init_required set to: {deepspeed_dist_init} (letting DeepSpeed handle initialization)")
     
     # If using a config file, make a direct modification to relevant DeepSpeed fields in-memory
     if args.deepspeed_config:

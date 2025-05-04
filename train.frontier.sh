@@ -33,34 +33,20 @@ export RCCL_DEBUG=INFO
 export FI_CXI_ATS=0
 export FI_LOG_LEVEL=info
 
-# Setup hostfile - get a reliable IPv4 address for hsn0 interface
-scontrol show hostnames $SLURM_NODELIST > job.node.list
-first_node=$(head -n 1 job.node.list)
-# Get IPv4 address specifically for hsn0 interface
-export MASTER_ADDR=$(ssh $first_node "ip -4 addr show hsn0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}'")
-if [ -z "$MASTER_ADDR" ]; then
-  echo "ERROR: Failed to get MASTER_ADDR for hsn0 on node $first_node"
-  # Fallback to hostname -I as before, but print warning
-  echo "Falling back to hostname -I..."
-  ips=$(ssh $first_node hostname -I)
-  read -ra arr <<< ${ips}
-  export MASTER_ADDR=${arr[0]}
-  if [ -z "$MASTER_ADDR" ]; then
-    echo "ERROR: Fallback hostname -I also failed. Exiting."
-    exit 1
-  fi
-fi
-echo "MASTER_ADDR=" $MASTER_ADDR
+# Setup hostfile for DeepSpeed launcher
+HOSTS_PATH=./hosts-job$SLURM_JOB_ID
+HOSTFILE_PATH=./hostfile-job$SLURM_JOB_ID.txt
+scontrol show hostnames $SLURM_NODELIST > $HOSTS_PATH
+# Create hostfile with node names and slots (GPUs per node)
+while IFS= read -r host; do
+  echo "$host slots=8" >> $HOSTFILE_PATH
+done < $HOSTS_PATH
+echo "Hostfile created at $HOSTFILE_PATH"
+cat $HOSTFILE_PATH # Print hostfile content for verification
 
-# Use fixed port 3442 for consistency
-export MASTER_PORT=3442
-echo "MASTER_PORT=" $MASTER_PORT
-
-# Export all distributed environment variables needed by PyTorch/DeepSpeed
-export LOCAL_RANK="$SLURM_LOCALID"
-export RANK="$SLURM_PROCID"
-export WORLD_SIZE="$SLURM_NTASKS"
-echo "Set distributed environment variables: LOCAL_RANK=$LOCAL_RANK, RANK=$RANK, WORLD_SIZE=$WORLD_SIZE"
+# DeepSpeed launcher will handle all distributed environment variables
+# No need to export MASTER_ADDR, MASTER_PORT, LOCAL_RANK, RANK, WORLD_SIZE
+echo "Using DeepSpeed launcher with hostfile to manage distributed setup"
 
 # Ensure MASTER_PORT is propagated to all processes
 export UCX_TLS=rc,tcp,sm
@@ -76,8 +62,9 @@ echo "Total ranks: $ranks_total"
 # Create log dir
 mkdir -p logs
 
-# Launch with srun - pass local_rank to the script
-srun -u -n$ranks_total -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=closest python train.py \
+# Launch with DeepSpeed - no need to pass local_rank, DeepSpeed handles it
+echo "Starting DeepSpeed launcher..."
+deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 python train.py \
    --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
    --output ./outputs \
    --train_steps 10000 \
@@ -90,5 +77,7 @@ srun -u -n$ranks_total -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=clos
    --tp_size 8 \
    --keep_checkpoints 5 \
    --deepspeed \
-   --deepspeed_config ds_config.json \
-   --local_rank $LOCAL_RANK
+   --deepspeed_config ds_config.json
+
+# Clean up temporary files
+rm -f $HOSTS_PATH $HOSTFILE_PATH
