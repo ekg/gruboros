@@ -29,6 +29,10 @@ def initialize_distributed():
         world_size = int(os.environ['SLURM_NTASKS'])
         local_rank = int(os.environ.get('SLURM_LOCALID', 0))  # Use SLURM_LOCALID for local rank
         
+        # Set LOCAL_RANK environment variable required by DeepSpeed
+        os.environ['LOCAL_RANK'] = str(local_rank)
+        print(f"Rank {rank}: Set LOCAL_RANK environment variable to {local_rank}")
+        
         # Get MASTER_ADDR and MASTER_PORT from environment (set by the launch script)
         master_addr = os.environ.get('MASTER_ADDR')
         master_port = os.environ.get('MASTER_PORT')
@@ -43,20 +47,29 @@ def initialize_distributed():
         print(f"Rank {rank}/{world_size} (local {local_rank}): Initializing torch.distributed with init_method={init_method}")
 
         try:
+            # Set the device for the current process BEFORE init_process_group
+            if torch.cuda.is_available():
+                torch.cuda.set_device(local_rank)
+                print(f"Rank {rank}: Set device to CUDA:{local_rank} BEFORE init_process_group")
+                backend = 'nccl'  # Use nccl for GPU
+            else:
+                # Handle CPU-only case if necessary
+                print(f"Rank {rank}: CUDA not available, using 'gloo' backend.")
+                backend = 'gloo'  # Use gloo for CPU
+
             # Initialize torch.distributed with increased timeout
             timeout = timedelta(minutes=5)
             dist.init_process_group(
-                backend='nccl',  # Explicitly use nccl for ROCm/NVIDIA GPUs
+                backend=backend,  # Use determined backend
                 init_method=init_method,
                 world_size=world_size,
                 rank=rank,
                 timeout=timeout
             )
             
-            # Set the device for the current process AFTER init_process_group
+            # Verify device setting after init
             if torch.cuda.is_available():
-                torch.cuda.set_device(local_rank)
-                print(f"Rank {rank}: Set device to CUDA:{local_rank}")
+                print(f"Rank {rank}: Current device after init: {torch.cuda.current_device()}")
 
             print(f"Rank {rank}: torch.distributed initialized successfully. Backend: {dist.get_backend()}")
             return True
