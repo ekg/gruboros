@@ -73,7 +73,7 @@ srun -u -n$ranks_total -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=clos
    --grad_accum 1 \
    --seq_len 2048 \
    --params 100m \
-   --tp_size 1 \
+   --tp_size 8 \
    --keep_checkpoints 5 \
    --deepspeed \
    --deepspeed_config ds_config.json

@@ -2,7 +2,7 @@ import os, random, numpy as np, hashlib
 # Flag to control ROCm vs CUDA setup
 USE_ROCM = True  # Set to False to revert to CUDA behavior
 import torch, torch.nn as nn
-# DeepSpeed will handle distributed initialization
+import torch.distributed as dist
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
@@ -21,7 +21,53 @@ import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 
-# DeepSpeed will handle distributed initialization with dist_init_required=True
+# Handle distributed initialization explicitly
+def initialize_distributed():
+    """Initialize distributed environment explicitly before DeepSpeed"""
+    if 'SLURM_PROCID' in os.environ:  # Check if running under Slurm srun
+        rank = int(os.environ['SLURM_PROCID'])
+        world_size = int(os.environ['SLURM_NTASKS'])
+        local_rank = int(os.environ.get('SLURM_LOCALID', 0))  # Use SLURM_LOCALID for local rank
+        
+        # Get MASTER_ADDR and MASTER_PORT from environment (set by the launch script)
+        master_addr = os.environ.get('MASTER_ADDR')
+        master_port = os.environ.get('MASTER_PORT')
+
+        if master_addr is None or master_port is None:
+             print(f"ERROR: MASTER_ADDR={master_addr} or MASTER_PORT={master_port} not set in environment. Cannot initialize distributed.")
+             # Fallback or raise error - for now, just print and let DeepSpeed try
+             return False 
+
+        # Construct the init_method URL (ensure MASTER_PORT is used here)
+        init_method = f"tcp://{master_addr}:{master_port}"
+        print(f"Rank {rank}/{world_size} (local {local_rank}): Initializing torch.distributed with init_method={init_method}")
+
+        try:
+            # Initialize torch.distributed with increased timeout
+            timeout = timedelta(minutes=5)
+            dist.init_process_group(
+                backend='nccl',  # Explicitly use nccl for ROCm/NVIDIA GPUs
+                init_method=init_method,
+                world_size=world_size,
+                rank=rank,
+                timeout=timeout
+            )
+            
+            # Set the device for the current process AFTER init_process_group
+            if torch.cuda.is_available():
+                torch.cuda.set_device(local_rank)
+                print(f"Rank {rank}: Set device to CUDA:{local_rank}")
+
+            print(f"Rank {rank}: torch.distributed initialized successfully. Backend: {dist.get_backend()}")
+            return True
+        except Exception as e:
+            print(f"Rank {rank}: ERROR during torch.distributed.init_process_group: {e}")
+            # Print detailed environment for debugging
+            print(f"Rank {rank} Environment: MASTER_ADDR={master_addr}, MASTER_PORT={master_port}, RANK={rank}, WORLD_SIZE={world_size}, LOCAL_RANK={local_rank}")
+            return False
+    else:
+        print("WARNING: Not running under Slurm? Cannot determine rank/world_size for manual init.")
+        return False  # Let DeepSpeed handle it if not Slurm
 
 def debug_distributed_info():
     """Print debug information about the distributed environment"""
@@ -528,6 +574,9 @@ def verify_gpu_health():
 # Environment setup is now handled by the batch script
 
 def main():
+    # Initialize distributed environment early
+    distributed_initialized_early = initialize_distributed()
+    
     args = get_args()
     
     # Initialize local_rank from args
@@ -878,7 +927,7 @@ def main():
         if args.local_rank == 0:
             print(f"Using standard AdamW optimizer with lr={args.lr} (ScheduleFree disabled)")
     
-    # Initialize DeepSpeed engine - let it handle distributed initialization
+    # Initialize DeepSpeed engine - use early initialization if it succeeded
     print(f"Initializing DeepSpeed with {'ROCM' if USE_ROCM else 'CUDA'}")
     
     # Explicitly verify and fix batch size and grad_accum types right before DeepSpeed init
@@ -889,6 +938,10 @@ def main():
     if not isinstance(args.grad_accum, int):
         print(f"WARNING: args.grad_accum is not an int, fixing... Current type: {type(args.grad_accum)}")
         args.grad_accum = int(args.grad_accum)
+    
+    # Set dist_init_required based on whether we already initialized
+    deepspeed_dist_init = not distributed_initialized_early
+    print(f"DeepSpeed dist_init_required set to: {deepspeed_dist_init}")
     
     # If using a config file, make a direct modification to relevant DeepSpeed fields in-memory
     if args.deepspeed_config:
@@ -912,14 +965,14 @@ def main():
                 optimizer=optimizer,
                 config=ds_config,
                 model_parameters=model.parameters(),
-                dist_init_required=True  # Let DeepSpeed handle distributed init
+                dist_init_required=deepspeed_dist_init  # Use our flag instead of always True
             )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with config (rank {local_rank}): {e}")
             # Try to recover with minimal approach
-            if torch.distributed.is_initialized():
+            if dist.is_initialized():
                 print(f"Trying to synchronize after error...")
-                torch.distributed.barrier()
+                dist.barrier()
             raise
     else:
         # No config file, use args-only approach
@@ -930,23 +983,30 @@ def main():
                 args=args,
                 model_parameters=model.parameters(),
                 config=None,
-                dist_init_required=True  # Let DeepSpeed handle distributed init
+                dist_init_required=deepspeed_dist_init  # Use our flag instead of always True
             )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with args (rank {local_rank}): {e}")
             # Try to recover with minimal approach
-            if torch.distributed.is_initialized():
+            if dist.is_initialized():
                 print(f"Trying to synchronize after error...")
-                torch.distributed.barrier()
+                dist.barrier()
             raise
         
-    # Update args with DeepSpeed ranks after initialization
-    args.world_size = model_engine.world_size
-    args.global_rank = model_engine.global_rank
-    args.local_rank = model_engine.local_rank
+    # Update args with proper ranks - use distributed if initialized or model_engine if not
+    if dist.is_initialized():
+        args.world_size = dist.get_world_size()
+        args.global_rank = dist.get_rank()
+        # Assuming local_rank was set correctly by Slurm or args
+        args.local_rank = int(os.environ.get('SLURM_LOCALID', args.local_rank))
+    else:
+        # Fall back to model_engine ranks
+        args.world_size = model_engine.world_size
+        args.global_rank = model_engine.global_rank
+        args.local_rank = model_engine.local_rank
     
     # Update local variable for easier access
-    local_rank = model_engine.local_rank
+    local_rank = args.local_rank
     
     print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
           f"local_rank={args.local_rank}, world_size={args.world_size}")
