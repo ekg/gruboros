@@ -48,6 +48,12 @@ echo "MASTER_ADDR=" $MASTER_ADDR
 export MASTER_PORT=3442
 echo "MASTER_PORT=" $MASTER_PORT
 
+# Ensure MASTER_PORT is propagated to all processes
+export UCX_TLS=rc,tcp,sm
+export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
 # Calculate ranks
 ranks_per_node=8
 ranks_total=$(($ranks_per_node*$SLURM_JOB_NUM_NODES))

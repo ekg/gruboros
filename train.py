@@ -49,8 +49,17 @@ def debug_distributed_info():
         
     print(f"------------------------------------------\n")
 
-# Environment variables for distributed training are now set in the batch script
-# This makes the Python code cleaner and provides better separation of concerns
+# Explicitly set port for torch.distributed to avoid conflicts
+# This ensures we're using the same port as passed in MASTER_PORT environment variable
+if 'MASTER_PORT' in os.environ:
+    os.environ['MASTER_PORT'] = os.environ['MASTER_PORT']
+else:
+    os.environ['MASTER_PORT'] = '3442'  # Fallback to our fixed port
+    
+print(f"Using MASTER_PORT={os.environ['MASTER_PORT']}")
+
+# Disable torch.distributed direct initialization to allow DeepSpeed to handle it
+os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'  # Enable detailed distributed logging
 
 # Only handle MIOpen cache setup which is Python-specific
 if USE_ROCM and "SLURM_NODEID" in os.environ:
@@ -310,10 +319,11 @@ def get_model(model_config):
         dropout=model_config.get("dropout", 0.0)
     )
     
-    # Use torch.compile to accelerate the model if available
-    if hasattr(torch, 'compile') and callable(torch.compile):
-        model = torch.compile(model)
-        print("Model compiled with torch.compile")
+    # Disable torch.compile due to "incorrect arg count" errors with dynamo
+    # if hasattr(torch, 'compile') and callable(torch.compile):
+    #     model = torch.compile(model)
+    #     print("Model compiled with torch.compile")
+    print("torch.compile disabled to avoid dynamo errors")
     
     return model
 
