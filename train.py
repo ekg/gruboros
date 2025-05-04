@@ -579,11 +579,26 @@ def main():
     
     args = get_args()
     
-    # Initialize local_rank from args
-    local_rank = args.local_rank
+    # Determine ranks *after* potential initialization
+    global_rank = 0
+    local_rank = 0
+    world_size = 1
+    if dist.is_initialized():
+        global_rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        # Try getting local rank from environment first, fallback to args
+        local_rank = int(os.environ.get('SLURM_LOCALID', args.local_rank if args.local_rank >= 0 else 0))
+        # Ensure args reflect the reality after initialization
+        args.global_rank = global_rank
+        args.local_rank = local_rank
+        args.world_size = world_size
+    else:
+        # Handle non-distributed case or if early init failed
+        args.local_rank = 0 if args.local_rank < 0 else args.local_rank
+        local_rank = args.local_rank
     
     # Log distributed environment variables (don't modify them - rely on batch script)
-    if local_rank <= 0:  # Print from rank 0 or if local_rank not yet set properly
+    if local_rank == 0:  # Print from rank 0 only
         print("Environment variables seen by Python script:")
         for var in ["MASTER_ADDR", "MASTER_PORT", "SLURM_PROCID", "SLURM_LOCALID", "SLURM_NTASKS", "RANK", "WORLD_SIZE", "LOCAL_RANK"]:
             print(f"  {var}={os.environ.get(var, 'Not set')}")
@@ -615,7 +630,7 @@ def main():
         verify_gpu_health()
     
     # Print memory usage monitoring message
-    if args.local_rank == 0:
+    if global_rank == 0:
         print("Memory-efficient dataset initialized. Only loading necessary data.")
     
     # Parse numeric arguments with potential suffixes
@@ -638,60 +653,36 @@ def main():
     resume_step = 0
     loaded_config = None
     
-    # Create output directory
-    if args.local_rank == 0:
-        if resuming:
-            # Extract checkpoint directory from checkpoint path
-            if os.path.isdir(args.resume):
-                # If resume path is already a directory
-                checkpoint_dir = args.resume
-            else:
-                # If resume path is a file, use its parent directory
-                checkpoint_dir = os.path.dirname(args.resume)
-            
+    # Determine checkpoint_dir consistently across all ranks
+    checkpoint_dir = None
+    resuming = args.resume is not None
+
+    if resuming:
+        if os.path.isdir(args.resume):
+            checkpoint_dir = args.resume
+        else:
+            checkpoint_dir = os.path.dirname(args.resume)
+        if global_rank == 0:
             print(f"Resuming from checkpoint: {args.resume}")
             print(f"Using checkpoint directory: {checkpoint_dir}")
-            
-            # Check if directory exists
             if not os.path.exists(checkpoint_dir):
                 print(f"Error: Checkpoint directory {checkpoint_dir} does not exist.")
                 return
-                
-        elif args.output:
-            checkpoint_dir = args.output
-        else:
-            # Create default name based on date and time
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            checkpoint_dir = f"gruboros_{timestamp}"
-        
+    elif args.output:
+        checkpoint_dir = args.output
+        if global_rank == 0:
+            print(f"Using specified output directory: {checkpoint_dir}")
+    else:
+        # Create default name based on date and time
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        checkpoint_dir = f"gruboros_{timestamp}"
+        if global_rank == 0:
+            print(f"Output directory not specified, auto-generating: {checkpoint_dir}")
+
+    # Rank 0 creates the directory if it doesn't exist (and isn't resuming)
+    if global_rank == 0 and checkpoint_dir and not resuming:
         os.makedirs(checkpoint_dir, exist_ok=True)
         print(f"Checkpoints will be saved to: {checkpoint_dir}")
-    else:
-        checkpoint_dir = ""
-    
-    # Synchronize checkpoint directory across processes if distributed
-    if torch.distributed.is_initialized():
-        if args.local_rank == 0:
-            print(f"Broadcasting checkpoint directory: {checkpoint_dir}")
-            dir_tensor = torch.tensor([ord(c) for c in checkpoint_dir], dtype=torch.long).cuda()
-            # Pad to fixed length
-            padded_dir = torch.zeros(256, dtype=torch.long).cuda()
-            padded_dir[:len(dir_tensor)] = dir_tensor
-        else:
-            padded_dir = torch.zeros(256, dtype=torch.long).cuda()
-            
-        # Broadcast from rank 0 to all processes with explicit device
-        current_device = torch.cuda.current_device()
-        torch.distributed.broadcast(padded_dir, 0, device_ids=[current_device])
-        
-        # Convert back to string on other ranks
-        if args.local_rank != 0:
-            nonzero_indices = padded_dir.nonzero().squeeze(-1)
-            if len(nonzero_indices) > 0:
-                str_len = nonzero_indices[-1].item() + 1
-                checkpoint_dir = ''.join([chr(i) for i in padded_dir[:str_len].tolist()])
-            else:
-                checkpoint_dir = ""
     
     # Load model configuration from checkpoint or determine from arguments
     if resuming:
@@ -1125,7 +1116,7 @@ def main():
     )
     
     # Create metrics log file
-    if model_engine.global_rank == 0 and checkpoint_dir:
+    if global_rank == 0 and checkpoint_dir:
         metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
         with open(metrics_log_path, 'w') as f:
             header = [
@@ -1157,6 +1148,9 @@ def main():
     def save_checkpoint(step, train_loss, val_loss=None, is_best=False):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
+        
+        # Ensure checkpoint directory exists
+        os.makedirs(checkpoint_dir, exist_ok=True)
             
         checkpoint = {
             'step': step,
