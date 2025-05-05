@@ -80,7 +80,7 @@ cat .deepspeed_env # Show content for debugging
 # Ensure MASTER_PORT is propagated to all processes
 export UCX_TLS=rc,tcp,sm
 export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
-export TORCH_DISTRIBUTED_DEBUG=WARN # Reduce noise now that things are working
+export TORCH_DISTRIBUTED_DEBUG=INFO # Valid values are OFF, INFO, or DETAIL
 
 # --- Generate Timestamped Output Directory ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
