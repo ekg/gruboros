@@ -1381,10 +1381,14 @@ def main():
             
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
-                # Update tokens processed
-                total_tokens_processed += batch_size * seq_len
+                # Calculate data parallel world size
+                data_parallel_world_size = args.world_size // args.tp_size
                 
-                # Calculate tokens per second
+                # Update tokens processed considering all data parallel workers
+                tokens_this_step = batch_size * seq_len * data_parallel_world_size
+                total_tokens_processed += tokens_this_step
+                
+                # Calculate tokens per second across the whole system
                 elapsed = time.time() - start_time
                 tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
                 
