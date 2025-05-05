@@ -1432,7 +1432,7 @@ def main():
                 best_val_loss = val_loss
             
             # Always save checkpoint after validation, but silently
-            save_path = save_checkpoint(step, loss.item(), val_loss, is_best=is_best)
+            save_path = save_checkpoint(step, loss_value, val_loss, is_best=is_best)
             
         
         # Save additional checkpoints periodically (if not already saved by validation)
