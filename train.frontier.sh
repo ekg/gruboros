@@ -4,7 +4,7 @@
 #SBATCH -J minLM_frontier
 #SBATCH -o logs/minLM_frontier-%j.out
 #SBATCH -e logs/minLM_frontier-%j.err
-#SBATCH -t 02:00:00
+#SBATCH -t 2-0:00:00
 #SBATCH -p batch
 #SBATCH -N 16
 
