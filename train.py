@@ -1373,6 +1373,9 @@ def main():
             # Backward pass
             model_engine.backward(loss)
             
+            # Get the loss value for logging/checkpointing before the optimizer step
+            loss_value = loss.detach().item()
+            
             # Optimizer step
             model_engine.step()
             
@@ -1387,7 +1390,7 @@ def main():
                 
                 # Update progress bar with stats in the format key=value
                 formatted_stats = [
-                    f"loss={loss.item():.4f}",
+                    f"loss={loss.detach().item():.4f}",
                     f"lr={model_engine.optimizer.param_groups[0]['lr']:.6f}",
                     f"tok/s={tokens_per_sec:.2f}"
                 ]
@@ -1408,7 +1411,7 @@ def main():
                 pbar.update(1)
                 
                 # Log metrics for training
-                log_metrics(step, loss.item())
+                log_metrics(step, loss.detach().item())
             
             # Break after one batch per step
             break
@@ -1421,7 +1424,7 @@ def main():
             
             if model_engine.global_rank == 0:
                 # Log metrics with validation
-                log_metrics(step, loss.item(), val_loss)
+                log_metrics(step, loss_value, val_loss)
             
             # Determine if this is the best model based on validation loss
             is_best = val_loss < best_val_loss
@@ -1437,7 +1440,7 @@ def main():
             # Skip if we just saved during validation
             if not (args.validate_every > 0 and step % args.validate_every == 0):
                 # Save checkpoint without affecting best model status
-                save_path = save_checkpoint(step, loss.item(), None, is_best=False)
+                save_path = save_checkpoint(step, loss_value, None, is_best=False)
                 
     
     # Final validation
@@ -1450,7 +1453,7 @@ def main():
         if is_final_best:
             best_val_loss = final_val_loss
         
-        final_path = save_checkpoint(train_steps + start_step, loss.item(), final_val_loss, is_best=is_final_best)
+        final_path = save_checkpoint(train_steps + start_step, loss_value, final_val_loss, is_best=is_final_best)
         
         # Ensure best.pt exists as final fallback
         best_path = os.path.join(checkpoint_dir, "best.pt")
