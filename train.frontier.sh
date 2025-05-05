@@ -92,7 +92,7 @@ mkdir -p logs
 
 # Launch with DeepSpeed - using .deepspeed_env for environment propagation
 echo "Starting DeepSpeed launcher with ROCm environment..."
-deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 --include="localhost" python train.py \
+deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 python train.py \
    --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
    --output ./outputs \
    --train_steps 10000 \
