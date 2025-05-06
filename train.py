@@ -1401,11 +1401,15 @@ def main():
             
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
-                # Calculate data parallel world size
+                # Calculate total node count from environment variable
+                slurm_nnodes = int(os.environ.get('SLURM_NNODES', '1'))
+                
+                # Calculate data parallel world size (workers per node)
                 data_parallel_world_size = args.world_size // args.tp_size
                 
-                # Update tokens processed considering all data parallel workers
-                tokens_this_step = batch_size * seq_len * data_parallel_world_size
+                # Update tokens processed considering ALL nodes and ALL data parallel workers
+                # This is: batch_size * seq_len * (workers per node) * (total nodes)
+                tokens_this_step = batch_size * seq_len * data_parallel_world_size * slurm_nnodes
                 total_tokens_processed += tokens_this_step
                 
                 # Calculate tokens per second across the whole system
