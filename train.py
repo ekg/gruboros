@@ -1404,12 +1404,10 @@ def main():
                 # Calculate total node count from environment variable
                 slurm_nnodes = int(os.environ.get('SLURM_NNODES', '1'))
                 
-                # Calculate data parallel world size (workers per node)
-                data_parallel_world_size = args.world_size // args.tp_size
-                
-                # Update tokens processed considering ALL nodes and ALL data parallel workers
-                # This is: batch_size * seq_len * (workers per node) * (total nodes)
-                tokens_this_step = batch_size * seq_len * data_parallel_world_size * slurm_nnodes
+                # When using full-node tensor parallelism (tp_size = GPUs per node),
+                # each node acts as one data parallel worker
+                # Update tokens processed considering all nodes working in data parallelism
+                tokens_this_step = batch_size * seq_len * slurm_nnodes
                 total_tokens_processed += tokens_this_step
                 
                 # Calculate tokens per second across the whole system
