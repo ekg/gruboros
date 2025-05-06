@@ -7,7 +7,6 @@
 #SBATCH -t 02:00:00
 #SBATCH -p batch
 #SBATCH -N 16
-#SBATCH -q debug
 
 # Enable command echoing for better debugging
 set -x
