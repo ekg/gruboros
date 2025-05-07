@@ -4,10 +4,9 @@
 #SBATCH -J minLM_frontier
 #SBATCH -o logs/minLM_frontier-%j.out
 #SBATCH -e logs/minLM_frontier-%j.err
-#SBATCH -t 00:10:00
+#SBATCH -t 06:00:00
 #SBATCH -p batch
-#SBATCH -N 2
-#SBATCH -q debug
+#SBATCH -N 128
 
 # Enable command echoing for better debugging
 set -x
@@ -93,6 +92,10 @@ ranks_per_node=8
 ranks_total=$(($ranks_per_node*$SLURM_JOB_NUM_NODES))
 echo "Total ranks: $ranks_total"
 
+#DATA=/lustre/orion/scratch/erikgarrison/bif148/enwik8.txt
+DATA=/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt
+echo "Using data: $DATA"
+
 # Create base log dir (timestamped run dir created by rank 0 in script)
 mkdir -p logs
 mkdir -p ./outputs # Ensure the base ./outputs directory exists
@@ -100,11 +103,11 @@ mkdir -p ./outputs # Ensure the base ./outputs directory exists
 # Launch with DeepSpeed - using .deepspeed_env for environment propagation
 echo "Starting DeepSpeed launcher with ROCm environment..."
 deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
-   --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
+   --data "$DATA" \
    --output "$OUTPUT_DIR" \
-   --train_steps 10000 \
+   --train_steps 100000 \
    --validate_every 100 \
-   --save_every 50 \
+   --save_every 100 \
    --lr 1e-3 \
    --batch_size 6 \
    --grad_accum 1 \
