@@ -4,7 +4,7 @@
 #SBATCH -J minLM_frontier
 #SBATCH -o logs/minLM_frontier-%j.out
 #SBATCH -e logs/minLM_frontier-%j.err
-#SBATCH -t 02:00:00
+#SBATCH -t 00:10:00
 #SBATCH -p batch
 #SBATCH -N 2
 #SBATCH -q debug
@@ -108,7 +108,7 @@ deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
    --lr 1e-3 \
    --batch_size 1 \
    --grad_accum 1 \
-   --seq_len 2048 \
+   --seq_len 4096 \
    --params 1g \
    --tp_size 8 \
    --keep_checkpoints 5 \
