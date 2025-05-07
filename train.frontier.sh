@@ -4,9 +4,9 @@
 #SBATCH -J minLM_frontier
 #SBATCH -o logs/minLM_frontier-%j.out
 #SBATCH -e logs/minLM_frontier-%j.err
-#SBATCH -t 01:00:00
+#SBATCH -t 02:00:00
 #SBATCH -p batch
-#SBATCH -N 8
+#SBATCH -N 2
 #SBATCH -q debug
 
 # Enable command echoing for better debugging
@@ -103,13 +103,13 @@ deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
    --data /lustre/orion/scratch/erikgarrison/bif148/enwik8.txt \
    --output "$OUTPUT_DIR" \
    --train_steps 10000 \
-   --validate_every 200 \
-   --save_every 500 \
+   --validate_every 100 \
+   --save_every 50 \
    --lr 1e-3 \
-   --batch_size 16 \
+   --batch_size 1 \
    --grad_accum 1 \
    --seq_len 2048 \
-   --params 100m \
+   --params 1g \
    --tp_size 8 \
    --keep_checkpoints 5 \
    --deepspeed \

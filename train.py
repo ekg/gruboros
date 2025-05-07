@@ -961,7 +961,12 @@ def main():
             model_engine.optimizer.optimizer.train()
             print("Successfully set ScheduleFree optimizer to train mode via underlying optimizer.")
         else:
-            print("Warning: Cannot access underlying optimizer for initial train mode in ScheduleFree.")
+            # Try direct access approach
+            try:
+                model_engine.optimizer.train()
+                print("Successfully set ScheduleFree optimizer to train mode via direct access.")
+            except:
+                print("Warning: Cannot access underlying optimizer for initial train mode in ScheduleFree.")
     
     # Calculate samples per epoch based on requested batches per epoch
     samples_per_epoch = batches_per_epoch * batch_size
@@ -1212,7 +1217,12 @@ def main():
             if hasattr(model_engine.optimizer, 'optimizer'):
                 model_engine.optimizer.optimizer.eval()
             else:
-                print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree.")
+                # Try direct access approach
+                try:
+                    model_engine.optimizer.eval()
+                    print("Successfully set ScheduleFree optimizer to eval mode via direct access.")
+                except:
+                    print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree.")
         
         # Don't display validation progress meter
         
@@ -1257,7 +1267,12 @@ def main():
             if hasattr(model_engine.optimizer, 'optimizer'):
                 model_engine.optimizer.optimizer.train()
             else:
-                print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree.")
+                # Try direct access approach
+                try:
+                    model_engine.optimizer.train()
+                    print("Successfully set ScheduleFree optimizer to train mode via direct access.")
+                except:
+                    print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree.")
         
         return avg_loss
     
@@ -1357,7 +1372,12 @@ def main():
                 if hasattr(model_engine.optimizer, 'optimizer'):
                     model_engine.optimizer.optimizer.train()
                 else:
-                    print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree during epoch transition.")
+                    # Try direct access approach
+                    try:
+                        model_engine.optimizer.train()
+                        print("Successfully set ScheduleFree optimizer to train mode via direct access during epoch transition.")
+                    except:
+                        print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree during epoch transition.")
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
@@ -1381,11 +1401,13 @@ def main():
             
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
-                # Calculate data parallel world size
-                data_parallel_world_size = args.world_size // args.tp_size
+                # Calculate total node count from environment variable
+                slurm_nnodes = int(os.environ.get('SLURM_NNODES', '1'))
                 
-                # Update tokens processed considering all data parallel workers
-                tokens_this_step = batch_size * seq_len * data_parallel_world_size
+                # When using full-node tensor parallelism (tp_size = GPUs per node),
+                # each node acts as one data parallel worker
+                # Update tokens processed considering all nodes working in data parallelism
+                tokens_this_step = batch_size * seq_len * slurm_nnodes
                 total_tokens_processed += tokens_this_step
                 
                 # Calculate tokens per second across the whole system
@@ -1469,7 +1491,12 @@ def main():
             if hasattr(model_engine.optimizer, 'optimizer'):
                 model_engine.optimizer.optimizer.eval()
             else:
-                print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree after training.")
+                # Try direct access approach
+                try:
+                    model_engine.optimizer.eval()
+                    print("Successfully set ScheduleFree optimizer to eval mode via direct access.")
+                except:
+                    print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree after training.")
         
         # Close progress bar
         pbar.close()
