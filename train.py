@@ -920,8 +920,25 @@ def main():
     # Update local variable for easier access
     local_rank = args.local_rank
     
+    # Get data parallelism world size for token tracking
+    dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
+    if not hasattr(model_engine, 'data_parallel_world_size'):
+        # If attribute not available, try to calculate it
+        tp_world_size = getattr(model_engine, 'tensor_parallel_world_size', args.tp_size)
+        dp_world_size = max(1, args.world_size // tp_world_size)
+    
+    # Calculate batch sizes and tokens per step for accurate tracking
+    micro_batch_per_gpu = batch_size  # Already parsed from args.batch_size
+    grad_accum_steps = args.grad_accum
+    effective_samples_per_gpu_update = micro_batch_per_gpu * grad_accum_steps
+    effective_samples_per_node_update = effective_samples_per_gpu_update  # In this setup (TP within node)
+    global_effective_samples_per_update = effective_samples_per_node_update * dp_world_size
+    tokens_per_system_step = global_effective_samples_per_update * seq_len
+    
     print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
           f"local_rank={args.local_rank}, world_size={args.world_size}")
+    print(f"Parallelism: TP={args.tp_size}, DP={dp_world_size}, "
+          f"Tokens per system step={tokens_per_system_step:,}")
     
     # Print updated debug info after DeepSpeed initialization
     if local_rank == 0:
@@ -1046,8 +1063,8 @@ def main():
         metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
         with open(metrics_log_path, 'w') as f:
             header = [
-                "step", "time", "train_loss", "val_loss", 
-                "tokens_processed", "tokens_per_sec", "learning_rate", "batch_size"
+                "step", "time_elapsed_s", "train_loss", "val_loss", 
+                "total_tokens_processed_system", "tokens_per_sec_system", "learning_rate", "global_effective_batch_size_samples"
             ]
             f.write('\t'.join(header) + '\n')
     
@@ -1280,27 +1297,27 @@ def main():
     def log_metrics(step, train_loss, val_loss=None):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
-            
+        
         metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
         elapsed = time.time() - start_time
-        
-        # Calculate tokens processed and tokens per second
-        tokens_processed = step * batch_size * seq_len
-        tokens_per_sec = tokens_processed / elapsed if elapsed > 0 else 0
-        
+    
+        # Calculate system-wide tokens processed and tokens per second
+        total_tokens_processed_system = step * tokens_per_system_step
+        tokens_per_sec_system = total_tokens_processed_system / elapsed if elapsed > 0 else 0
+    
         current_lr = model_engine.optimizer.param_groups[0]['lr']
-        
+    
         values = [
             str(step),
             f"{elapsed:.2f}",
             f"{train_loss:.6f}",
             str(val_loss if val_loss is not None else "NA"),
-            str(tokens_processed),
-            f"{tokens_per_sec:.2f}",
+            str(total_tokens_processed_system),
+            f"{tokens_per_sec_system:.2f}",
             f"{current_lr:.8f}",
-            str(batch_size)
+            str(global_effective_samples_per_update)
         ]
-        
+    
         with open(metrics_log_path, 'a') as f:
             f.write('\t'.join(values) + '\n')
     
@@ -1308,8 +1325,13 @@ def main():
     start_time = time.time()
     best_val_loss = float('inf')
     current_val_loss = None  # Track most recent validation loss
-    total_tokens_processed = 0
+    total_tokens_processed = 0  # Single-GPU tracking (legacy)
+    total_tokens_processed_system = 0  # System-wide token tracking
     val_loss_for_checkpoint = None  # Initialize to None at start
+
+    # If resuming, calculate tokens already processed
+    if resuming:
+        total_tokens_processed_system = resume_step * tokens_per_system_step
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
@@ -1323,9 +1345,13 @@ def main():
         print(f"- Model dimension: {model_config['dim']}")
         print(f"- Model depth: {model_config['depth']}")
         print(f"- Tensor parallelism: {args.tp_size} GPUs")
+        print(f"- Data parallelism: {dp_world_size} nodes")
         print(f"- Keeping {args.keep_checkpoints} most recent checkpoints")
         print(f"- Gradient accumulation steps: {args.grad_accum}")
-        print(f"- Effective batch size: {batch_size * args.grad_accum} (micro-batch: {batch_size})")
+        print(f"- Micro-batch size: {batch_size} per GPU")
+        print(f"- Effective batch size per GPU: {effective_samples_per_gpu_update}")
+        print(f"- Effective batch size per node: {effective_samples_per_node_update}")
+        print(f"- Global batch size: {global_effective_samples_per_update} samples ({tokens_per_system_step:,} tokens)")
         
         # Log the configuration summary
         if checkpoint_dir:
@@ -1333,11 +1359,16 @@ def main():
                 f.write(f"Training command: {' '.join(sys.argv)}\n")
                 f.write(f"Model parameters: {actual_params:,}\n")
                 f.write(f"Configuration: {json.dumps(model_config, indent=2)}\n")
-                f.write(f"Distributed setup: {args.tp_size} GPUs with tensor parallelism\n")
-                f.write(f"Sequence length: {seq_len}\n")
-                f.write(f"Batch size: {batch_size} per GPU (micro-batch)\n")
-                f.write(f"Gradient accumulation steps: {args.grad_accum}\n")
-                f.write(f"Effective batch size: {batch_size * args.grad_accum} per GPU\n")
+                f.write(f"Distributed setup:\n")
+                f.write(f"  Tensor parallelism size (per node): {args.tp_size} GPUs\n")
+                f.write(f"  Number of nodes (data parallel replicas): {dp_world_size}\n")
+                f.write(f"  Sequence length: {seq_len}\n")
+                f.write(f"  Micro-batch size per GPU: {micro_batch_per_gpu}\n")
+                f.write(f"  Gradient accumulation steps: {grad_accum_steps}\n")
+                f.write(f"  Effective batch size per GPU (after grad_accum): {effective_samples_per_gpu_update}\n")
+                f.write(f"  Effective batch size per node (data parallel replica): {effective_samples_per_node_update}\n")
+                f.write(f"  Global batch size (across all nodes, samples): {global_effective_samples_per_update}\n")
+                f.write(f"  Global batch size (across all nodes, tokens): {tokens_per_system_step:,}\n")
     
     # Synchronize all processes before starting training loop
     synchronize_processes()
@@ -1401,24 +1432,18 @@ def main():
             
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
-                # Calculate total node count from environment variable
-                slurm_nnodes = int(os.environ.get('SLURM_NNODES', '1'))
-                
-                # When using full-node tensor parallelism (tp_size = GPUs per node),
-                # each node acts as one data parallel worker
-                # Update tokens processed considering all nodes working in data parallelism
-                tokens_this_step = batch_size * seq_len * slurm_nnodes
-                total_tokens_processed += tokens_this_step
+                # Update system-wide token tracking using our pre-calculated values
+                total_tokens_processed_system += tokens_per_system_step
                 
                 # Calculate tokens per second across the whole system
                 elapsed = time.time() - start_time
-                tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
+                tokens_per_sec_system = total_tokens_processed_system / elapsed if elapsed > 0 else 0
                 
                 # Update progress bar with stats in the format key=value
                 formatted_stats = [
                     f"loss={loss.detach().item():.4f}",
                     f"lr={model_engine.optimizer.param_groups[0]['lr']:.6f}",
-                    f"tok/s={tokens_per_sec:.2f}"
+                    f"tok/s={tokens_per_sec_system:.2f}"
                 ]
                 
                 # Add validation info and epoch if available
@@ -1503,13 +1528,23 @@ def main():
         
         # Calculate final statistics
         total_time = time.time() - start_time
-        tokens_per_sec = total_tokens_processed / total_time if total_time > 0 else 0
+        tokens_per_sec_system = total_tokens_processed_system / total_time if total_time > 0 else 0
         
         # Print training summary
         print(f"\nTraining completed in {total_time:.2f}s")
         print(f"Final validation loss: {final_val_loss:.4f}")
-        print(f"Processed {total_tokens_processed:,} tokens at {tokens_per_sec:.2f} tokens/sec")
+        print(f"Processed {total_tokens_processed_system:,} system-wide tokens")
+        print(f"System throughput: {tokens_per_sec_system:.2f} tokens/sec")
         print(f"Final model saved to: {final_path}")
+        
+        # Append final statistics to model summary
+        if checkpoint_dir:
+            with open(os.path.join(checkpoint_dir, "model_summary.txt"), "a") as f:
+                f.write("\n----- Final Training Statistics -----\n")
+                f.write(f"Total training time: {total_time:.2f} seconds\n")
+                f.write(f"Total system tokens processed: {total_tokens_processed_system:,}\n")
+                f.write(f"Average system tokens per second: {tokens_per_sec_system:.2f}\n")
+                f.write(f"Final validation loss: {final_val_loss:.4f}\n")
 
 if __name__ == "__main__":
     main()
