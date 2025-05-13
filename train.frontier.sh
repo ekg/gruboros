@@ -4,9 +4,10 @@
 #SBATCH -J minLM_frontier
 #SBATCH -o logs/minLM_frontier-%j.out
 #SBATCH -e logs/minLM_frontier-%j.err
-#SBATCH -t 06:00:00
+#SBATCH -t 01:00:00
 #SBATCH -p batch
 #SBATCH -N 128
+#SBATCH -q debug
 
 # Enable command echoing for better debugging
 set -x
@@ -83,7 +84,8 @@ export TORCH_DISTRIBUTED_DEBUG=INFO # Valid values are OFF, INFO, or DETAIL
 
 # --- Generate Timestamped Output Directory ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}" # Place timestamped runs inside ./outputs
+NAME="1b_ga64_128x1hr_debug"
+OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}" # Place timestamped runs inside ./outputs
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 # Note: Rank 0 in train.py will create this directory
 
@@ -106,11 +108,11 @@ deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
    --data "$DATA" \
    --output "$OUTPUT_DIR" \
    --train_steps 100000 \
-   --validate_every 100 \
-   --save_every 100 \
+   --validate_every 256 \
+   --save_every 256 \
    --lr 1e-3 \
    --batch_size 3 \
-   --grad_accum 1 \
+   --grad_accum 64 \
    --seq_len 2048 \
    --params 1g \
    --tp_size 8 \
