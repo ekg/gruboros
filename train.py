@@ -1334,7 +1334,7 @@ def main():
 
     # If resuming, calculate tokens already processed
     if resuming:
-        total_tokens_processed_system = resume_step * tokens_per_system_step
+        total_tokens_processed_system = resume_step * tokens_per_micro_batch_step
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
@@ -1354,7 +1354,7 @@ def main():
         print(f"- Micro-batch size: {batch_size} per GPU")
         print(f"- Effective batch size per GPU: {effective_samples_per_gpu_update}")
         print(f"- Effective batch size per node: {effective_samples_per_node_update}")
-        print(f"- Global batch size: {global_effective_samples_per_update} samples ({tokens_per_system_step:,} tokens)")
+        print(f"- Global batch size: {global_effective_samples_per_update} samples ({tokens_per_micro_batch_step:,} tokens)")
         
         # Log the configuration summary
         if checkpoint_dir:
