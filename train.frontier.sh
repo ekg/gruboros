@@ -110,7 +110,7 @@ deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
    --train_steps 100000 \
    --validate_every 256 \
    --save_every 256 \
-   --lr 1e-3 \
+   --lr 1e-2 \
    --batch_size 16 \
    --grad_accum 8 \
    --seq_len 2048 \
