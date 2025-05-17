@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_frontier-%j.err
 #SBATCH -t 00:20:00
 #SBATCH -p batch
-#SBATCH -N 128
+#SBATCH -N 256
 #SBATCH -q debug
 
 # Enable command echoing for better debugging
@@ -84,7 +84,7 @@ export TORCH_DISTRIBUTED_DEBUG=INFO # Valid values are OFF, INFO, or DETAIL
 
 # --- Generate Timestamped Output Directory ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1b_bs16_ga8_128x20min_debug"
+NAME="1b_bs16_ga1_256x20min"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}" # Place timestamped runs inside ./outputs
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 # Note: Rank 0 in train.py will create this directory
