@@ -84,7 +84,7 @@ export TORCH_DISTRIBUTED_DEBUG=INFO # Valid values are OFF, INFO, or DETAIL
 
 # --- Generate Timestamped Output Directory ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1b_128x20min"
+NAME="1b_128x20min_tweak1"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}" # Place timestamped runs inside ./outputs
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 # Note: Rank 0 in train.py will create this directory
@@ -110,9 +110,12 @@ deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
    --train_steps 100000 \
    --validate_every 256 \
    --save_every 256 \
-   --lr 1e-3 \
+   --lr 0.008 \
+   --sf_beta 0.88 \
+   --weight_decay 0.0005 \
    --batch_size 16 \
    --grad_accum 1 \
+   --gradient_clipping 1.0 \
    --seq_len 2048 \
    --params 1g \
    --tp_size 8 \
