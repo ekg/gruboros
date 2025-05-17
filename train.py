@@ -919,6 +919,10 @@ def main():
     
     # Update local variable for easier access
     local_rank = args.local_rank
+
+    # Create worker-specific seeds for better data distribution across nodes
+    worker_seed = SEED + model_engine.global_rank
+    print(f"Worker {model_engine.global_rank} using seed {worker_seed}")
     
     # Get data parallelism world size for token tracking
     dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
@@ -996,7 +1000,7 @@ def main():
     train_dataset = ContinuousIIDDataset(
         filepath=args.data,
         seq_len=seq_len,
-        seed=SEED,
+        seed=worker_seed,  # Use unique seed per worker
         samples_per_epoch=samples_per_epoch,
         batch_size=batch_size,
         log_sample_hashes=args.log_sample_hashes,
@@ -1008,7 +1012,7 @@ def main():
     val_dataset = ContinuousIIDDataset(
         filepath=args.data,
         seq_len=seq_len,
-        seed=SEED + 100,  # Different seed for validation
+        seed=worker_seed + 100,  # Worker-specific validation seed
         samples_per_epoch=val_batches * batch_size,
         batch_size=batch_size,
         log_sample_hashes=False  # Don't log validation samples
