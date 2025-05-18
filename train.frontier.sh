@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_frontier-%j.err
 #SBATCH -t 00:20:00
 #SBATCH -p batch
-#SBATCH -N 16
+#SBATCH -N 8
 #SBATCH -q debug
 
 # Enable command echoing for better debugging
