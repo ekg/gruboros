@@ -99,7 +99,8 @@ def process_directory(directory):
     
     # Read training metrics
     try:
-        metrics_df = pd.read_csv(metrics_file, sep='\t')
+        # Use keep_default_na=False to prevent pandas from converting "NA" strings to NaN values
+        metrics_df = pd.read_csv(metrics_file, sep='\t', keep_default_na=False)
     except Exception as e:
         print(f"Error reading {metrics_file}: {e}", file=sys.stderr)
         return None
