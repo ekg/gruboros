@@ -379,6 +379,8 @@ def get_args():
                        help='Enable DeepSpeed')
     parser.add_argument('--deepspeed_config', type=str, default=None,
                        help='Path to DeepSpeed configuration file')
+    parser.add_argument('--gradient_clipping', type=float, default=None,
+                       help='Gradient clipping value for DeepSpeed')
     
     # Training arguments
     parser.add_argument('--train_steps', type=str, default="100",
@@ -879,7 +881,11 @@ def main():
             ds_config['train_micro_batch_size_per_gpu'] = args.batch_size
         if 'gradient_accumulation_steps' in ds_config:
             ds_config['gradient_accumulation_steps'] = args.grad_accum
-            
+    
+        # Set gradient clipping if provided as an argument
+        if args.gradient_clipping is not None:
+            ds_config['gradient_clipping'] = args.gradient_clipping
+        
         # Print the config for debugging
         print(f"DeepSpeed config with batch sizes: {json.dumps(ds_config, indent=2)}")
         
