@@ -64,8 +64,8 @@ def extract_model_info(summary_file):
                 if lr_match:
                     info['learning_rate'] = float(lr_match.group(1))
                     
-                # Extract weight decay
-                wd_match = re.search(r'--weight_decay (\d+\.\d+)', command)
+                # Extract weight decay (supports both decimal and scientific notation)
+                wd_match = re.search(r'--weight_decay ([0-9]+\.?[0-9]*(?:[eE][-+]?[0-9]+)?)', command)
                 if wd_match:
                     info['weight_decay'] = float(wd_match.group(1))
                     
