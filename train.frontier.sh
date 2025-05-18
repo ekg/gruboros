@@ -84,7 +84,7 @@ export TORCH_DISTRIBUTED_DEBUG=INFO # Valid values are OFF, INFO, or DETAIL
 
 # --- Generate Timestamped Output Directory ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1b_128x20min_tweak1"
+NAME="1b_tweak"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}" # Place timestamped runs inside ./outputs
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 # Note: Rank 0 in train.py will create this directory
