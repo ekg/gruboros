@@ -61,6 +61,22 @@ export NCCL_P2P_PCI_RELAXED_ORDERING=1
 export MIOPEN_USER_DB_PATH="/tmp/${USER:-user}-miopen-cache-${SLURM_NODEID}"
 export MIOPEN_SYSTEM_DB_PATH="$MIOPEN_USER_DB_PATH"
 
+# Create hostfile for DeepSpeed from Slurm allocation
+HOSTFILE="./hostfile-job$SLURM_JOB_ID.txt"
+GPUS_PER_NODE=8
+
+# Get the list of nodes from Slurm
+scontrol show hostnames $SLURM_JOB_NODELIST > ./hosts-job$SLURM_JOB_ID
+
+# Create a proper hostfile with slots information
+rm -f $HOSTFILE  # Remove existing hostfile if present
+while IFS= read -r host; do
+    echo "$host slots=$GPUS_PER_NODE" >> $HOSTFILE
+done < ./hosts-job$SLURM_JOB_ID
+
+echo "Created hostfile with contents:"
+cat $HOSTFILE
+
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1b_tweak"
@@ -83,9 +99,10 @@ mkdir -p ./outputs
 # Print SLURM environment for debugging
 env | grep SLURM
 
-# Launch with DeepSpeed using direct specification with explicit node and GPU counts
-echo "Starting DeepSpeed with direct launcher..."
+# COMBINED APPROACH: Using both hostfile and explicit parameters
+echo "Starting DeepSpeed with combined approach (hostfile + direct parameters)..."
 deepspeed \
+  --hostfile=$HOSTFILE \
   --num_nodes=$SLURM_JOB_NUM_NODES \
   --num_gpus=$ranks_per_node \
   --master_addr=$MASTER_ADDR \
@@ -110,3 +127,6 @@ deepspeed \
   --deepspeed_config ds_config.json
 
 echo "Training finished."
+
+# Clean up temporary files
+rm -f ./hosts-job$SLURM_JOB_ID $HOSTFILE
