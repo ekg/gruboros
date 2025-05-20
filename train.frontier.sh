@@ -30,99 +30,73 @@ export TORCH_EXTENSIONS_DIR=$PWD/deepspeed
 export HF_HOME=$PWD/hfdata
 export OMP_NUM_THREADS=2
 
-# NCCL/ROCm settings
-export NCCL_DEBUG=WARN # Reduce noise now that basic comms seem ok
-export NCCL_SOCKET_IFNAME=hsn0 # Use primary HSN interface
-export NCCL_NET_GDR_LEVEL=3
-export RCCL_DEBUG=WARN # Reduce noise
-export FI_CXI_ATS=0
-export FI_LOG_LEVEL=WARN # Reduce noise
-export PDSH_RCMD_TYPE=ssh  # Required for DeepSpeed launcher with SSH
+# Set up distributed environment using Slurm
+export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
+export MASTER_PORT=3442
+export TORCH_DISTRIBUTED_TIMEOUT=3600s    # 1 hr timeout for initialization
 
-# Setup hostfile for DeepSpeed launcher
-HOSTS_PATH=./hosts-job$SLURM_JOB_ID
-HOSTFILE_PATH=./hostfile-job$SLURM_JOB_ID.txt
-scontrol show hostnames $SLURM_NODELIST > $HOSTS_PATH
-rm -f $HOSTFILE_PATH # Ensure clean hostfile
-# Create hostfile with node names and slots (GPUs per node)
-while IFS= read -r host; do
-  echo "$host slots=8" >> $HOSTFILE_PATH
-done < $HOSTS_PATH
-echo "Hostfile created at $HOSTFILE_PATH"
-cat $HOSTFILE_PATH # Print hostfile content for verification
-
-# ---- CRITICAL: Create .deepspeed_env file ----
-# This ensures necessary environment variables are propagated to all nodes
-echo "Creating .deepspeed_env file..."
-echo "PATH=$PATH" > .deepspeed_env
-echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> .deepspeed_env
-# Add ROCm path - Check which variable is set by module load
-if [ -n "$ROCM_PATH" ]; then
-  echo "ROCM_PATH=$ROCM_PATH" >> .deepspeed_env
-elif [ -n "$ROCM_HOME" ]; then
-  echo "ROCM_HOME=$ROCM_HOME" >> .deepspeed_env
-else
-  # Fallback to typical ROCm path on Frontier if variables not set
-  echo "WARNING: Neither ROCM_PATH nor ROCM_HOME set, using default path"
-  echo "ROCM_PATH=/opt/rocm-6.2.4" >> .deepspeed_env
-fi
-# Add other environment variables needed by DeepSpeed/PyTorch
-echo "TORCH_EXTENSIONS_DIR=$TORCH_EXTENSIONS_DIR" >> .deepspeed_env
-echo "HF_HOME=$HF_HOME" >> .deepspeed_env
-# Only include essential variables to reduce log noise
-# echo "NCCL_DEBUG=$NCCL_DEBUG" >> .deepspeed_env
-# echo "RCCL_DEBUG=$RCCL_DEBUG" >> .deepspeed_env
-# echo "NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME" >> .deepspeed_env
-# echo "NCCL_NET_GDR_LEVEL=$NCCL_NET_GDR_LEVEL" >> .deepspeed_env
-echo ".deepspeed_env created with ROCm paths for op builder"
-cat .deepspeed_env # Show content for debugging
-
-# Ensure MASTER_PORT is propagated to all processes
+# NCCL/RCCL settings optimized for Frontier's Slingshot fabric
 export UCX_TLS=rc,tcp,sm
-export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
-export TORCH_DISTRIBUTED_DEBUG=INFO # Valid values are OFF, INFO, or DETAIL
+export NCCL_DEBUG=WARN                     # Use INFO only for debugging
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_ASYNC_ERROR_HANDLING=1         # Both error flags for redundancy
+export NCCL_TIMEOUT=10000000               # Collective timeout in ms
+export NCCL_IB_TIMEOUT=22
+export NCCL_SOCKET_IFNAME=hsn0             # Primary high-speed network interface
+export NCCL_CROSS_NIC=1                    # Enable multi-rail
+export NCCL_NET_GDR_LEVEL=3                # RDMA via OFI
+export NCCL_MIN_NCHANNELS=32               # MI250X tuning
 
-# --- Generate Timestamped Output Directory ---
+# Performance tuning
+export FI_CXI_ATS=0
+export NCCL_COLLNET_ENABLE=0
+export NCCL_P2P_NET_CHUNKSIZE=1M
+export NCCL_P2P_PCI_RELAXED_ORDERING=1
+
+# MIOPEN cache paths per node to avoid contention
+export MIOPEN_USER_DB_PATH="/tmp/${USER:-user}-miopen-cache-${SLURM_NODEID}"
+export MIOPEN_SYSTEM_DB_PATH="$MIOPEN_USER_DB_PATH"
+
+# Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1b_tweak"
-OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}" # Place timestamped runs inside ./outputs
+OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
-# Note: Rank 0 in train.py will create this directory
 
-# Calculate ranks
+# Calculate total ranks for debugging
 ranks_per_node=8
-ranks_total=$(($ranks_per_node*$SLURM_JOB_NUM_NODES))
+ranks_total=$((ranks_per_node*SLURM_JOB_NUM_NODES))
 echo "Total ranks: $ranks_total"
 
-#DATA=/lustre/orion/scratch/erikgarrison/bif148/enwik8.txt
-DATA=/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt
+# Set data path
+DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt"
 echo "Using data: $DATA"
 
-# Create base log dir (timestamped run dir created by rank 0 in script)
+# Create log directories
 mkdir -p logs
-mkdir -p ./outputs # Ensure the base ./outputs directory exists
+mkdir -p ./outputs
 
-# Launch with DeepSpeed - using .deepspeed_env for environment propagation
-echo "Starting DeepSpeed launcher with ROCm environment..."
-deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
-   --data "$DATA" \
-   --output "$OUTPUT_DIR" \
-   --train_steps 100000 \
-   --validate_every 256 \
-   --save_every 256 \
-   --lr 0.018 \
-   --sf_beta 0.84 \
-   --weight_decay 1e-3 \
-   --batch_size 3 \
-   --grad_accum 1 \
-   --gradient_clipping 1.0 \
-   --seq_len 2048 \
-   --params 1g \
-   --tp_size 8 \
-   --keep_checkpoints 5 \
-   --deepspeed \
-   --deepspeed_config ds_config.json
+# Launch with DeepSpeed using Slurm launcher
+echo "Starting DeepSpeed with Slurm launcher..."
+deepspeed \
+  --launcher=slurm \
+  train.py \
+  --data "$DATA" \
+  --output "$OUTPUT_DIR" \
+  --train_steps 100000 \
+  --validate_every 256 \
+  --save_every 256 \
+  --lr 0.01 \
+  --sf_beta 0.88 \
+  --weight_decay 1e-4 \
+  --batch_size 3 \
+  --grad_accum 1 \
+  --gradient_clipping 1.0 \
+  --seq_len 2048 \
+  --params 1g \
+  --tp_size 8 \
+  --keep_checkpoints 5 \
+  --deepspeed \
+  --deepspeed_config ds_config.json
 
 echo "DeepSpeed launcher finished."
-# Clean up temporary files
-rm -f $HOSTS_PATH $HOSTFILE_PATH .deepspeed_env
