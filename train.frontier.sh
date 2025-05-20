@@ -113,7 +113,7 @@ deepspeed --hostfile=$HOSTFILE_PATH --master_port=3442 train.py \
    --lr 0.018 \
    --sf_beta 0.84 \
    --weight_decay 1e-3 \
-   --batch_size 6 \
+   --batch_size 3 \
    --grad_accum 1 \
    --gradient_clipping 1.0 \
    --seq_len 2048 \
