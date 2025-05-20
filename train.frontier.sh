@@ -6,7 +6,9 @@
 #SBATCH -e logs/minLM_frontier-%j.err
 #SBATCH -t 00:20:00
 #SBATCH -p batch
-#SBATCH -N 4
+#SBATCH -N 4                  # Number of nodes
+#SBATCH --ntasks-per-node=8   # CRITICAL: 8 GPUs per node
+#SBATCH --gpus-per-node=8     # Explicitly request 8 GPUs per node
 #SBATCH -q debug
 
 # Enable command echoing for better debugging
@@ -37,7 +39,7 @@ export TORCH_DISTRIBUTED_TIMEOUT=3600s    # 1 hr timeout for initialization
 
 # NCCL/RCCL settings optimized for Frontier's Slingshot fabric
 export UCX_TLS=rc,tcp,sm
-export NCCL_DEBUG=WARN                     # Use INFO only for debugging
+export NCCL_DEBUG=INFO                     # Set to INFO to diagnose distribution issues
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_ASYNC_ERROR_HANDLING=1         # Both error flags for redundancy
 export NCCL_TIMEOUT=10000000               # Collective timeout in ms
@@ -66,7 +68,7 @@ echo "Generated Output Directory: ${OUTPUT_DIR}"
 # Calculate total ranks for debugging
 ranks_per_node=8
 ranks_total=$((ranks_per_node*SLURM_JOB_NUM_NODES))
-echo "Total ranks: $ranks_total"
+echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with $ranks_per_node ranks per node)"
 
 # Set data path
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt"
@@ -76,27 +78,57 @@ echo "Using data: $DATA"
 mkdir -p logs
 mkdir -p ./outputs
 
-# Launch with DeepSpeed using Slurm launcher
-echo "Starting DeepSpeed with Slurm launcher..."
-deepspeed \
-  --launcher=slurm \
-  train.py \
-  --data "$DATA" \
-  --output "$OUTPUT_DIR" \
-  --train_steps 100000 \
-  --validate_every 256 \
-  --save_every 256 \
-  --lr 0.01 \
-  --sf_beta 0.88 \
-  --weight_decay 1e-4 \
-  --batch_size 3 \
-  --grad_accum 1 \
-  --gradient_clipping 1.0 \
-  --seq_len 2048 \
-  --params 1g \
-  --tp_size 8 \
-  --keep_checkpoints 5 \
-  --deepspeed \
-  --deepspeed_config ds_config.json
+# Print SLURM environment for debugging
+env | grep SLURM
 
-echo "DeepSpeed launcher finished."
+# OPTION 1: Use explicit srun launcher (more reliable for multi-node)
+echo "Starting training with explicit srun launcher..."
+srun --jobid=$SLURM_JOB_ID \
+     --ntasks=$((SLURM_JOB_NUM_NODES * ranks_per_node)) \
+     --ntasks-per-node=$ranks_per_node \
+     python -m deepspeed.launcher.launch \
+     train.py \
+     --data "$DATA" \
+     --output "$OUTPUT_DIR" \
+     --train_steps 100000 \
+     --validate_every 256 \
+     --save_every 256 \
+     --lr 0.01 \
+     --sf_beta 0.88 \
+     --weight_decay 1e-4 \
+     --batch_size 3 \
+     --grad_accum 1 \
+     --gradient_clipping 1.0 \
+     --seq_len 2048 \
+     --params 1g \
+     --tp_size 8 \
+     --keep_checkpoints 5 \
+     --deepspeed \
+     --deepspeed_config ds_config.json
+
+# OPTION 2 (Alternative): If Option 1 fails, try direct DeepSpeed launcher with explicit parameters
+# Uncomment this and comment out OPTION 1 if needed
+# echo "Starting DeepSpeed with direct launcher..."
+# deepspeed \
+#   --num_nodes=$SLURM_JOB_NUM_NODES \
+#   --num_gpus=$ranks_per_node \
+#   train.py \
+#   --data "$DATA" \
+#   --output "$OUTPUT_DIR" \
+#   --train_steps 100000 \
+#   --validate_every 256 \
+#   --save_every 256 \
+#   --lr 0.01 \
+#   --sf_beta 0.88 \
+#   --weight_decay 1e-4 \
+#   --batch_size 3 \
+#   --grad_accum 1 \
+#   --gradient_clipping 1.0 \
+#   --seq_len 2048 \
+#   --params 1g \
+#   --tp_size 8 \
+#   --keep_checkpoints 5 \
+#   --deepspeed \
+#   --deepspeed_config ds_config.json
+
+echo "Training finished."
