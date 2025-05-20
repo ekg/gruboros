@@ -867,9 +867,16 @@ def main():
         args.grad_accum = int(args.grad_accum)
     
     # Let DeepSpeed handle the distributed initialization
+    # This is critical for the direct launcher to work correctly
     deepspeed_dist_init = True
     print(f"DeepSpeed dist_init_required set to: {deepspeed_dist_init} (letting DeepSpeed handle initialization)")
     
+    # Print world_info environment before DeepSpeed init
+    print("\nDebug - environment variables for world_info:")
+    for env_var in ["MASTER_ADDR", "MASTER_PORT", "WORLD_SIZE", "RANK", "LOCAL_RANK", 
+                   "SLURM_JOB_ID", "SLURM_NTASKS", "SLURM_NODEID", "SLURM_PROCID", "SLURM_LOCALID"]:
+        print(f"  {env_var}={os.environ.get(env_var, 'Not set')}")
+        
     # If using a config file, make a direct modification to relevant DeepSpeed fields in-memory
     if args.deepspeed_config:
         # Load the config file to modify it in-memory
