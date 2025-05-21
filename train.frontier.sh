@@ -113,7 +113,7 @@ deepspeed \
   --train_steps 100000 \
   --validate_every 256 \
   --save_every 256 \
-  --lr 0.24 \
+  --lr 0.024 \
   --sf_beta 0.84 \
   --weight_decay 1e-2 \
   --batch_size 3 \
