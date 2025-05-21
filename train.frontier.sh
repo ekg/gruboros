@@ -115,7 +115,7 @@ deepspeed \
   --save_every 256 \
   --lr 0.017 \
   --sf_beta 0.9 \
-  --weight_decay 0.1 \
+  --weight_decay 0.075 \
   --batch_size 6 \
   --grad_accum 8 \
   --gradient_clipping 1.0 \
