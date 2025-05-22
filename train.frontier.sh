@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_frontier-%j.err
 #SBATCH -t 00:20:00
 #SBATCH -p batch
-#SBATCH -N 64                 # Number of nodes
+#SBATCH -N 8                  # Number of nodes
 #SBATCH --ntasks-per-node=8   # CRITICAL: 8 GPUs per node
 #SBATCH --gpus-per-node=8     # Explicitly request 8 GPUs per node
 #SBATCH -q debug
@@ -28,27 +28,45 @@ module load rocm/6.2.4
 module load craype-accel-amd-gfx90a
 
 # Export general settings
-export TORCH_EXTENSIONS_DIR=$PWD/deepspeed
+export TORCH_EXTENSIONS_DIR=$PWD/deepspeed_extensions
 export HF_HOME=$PWD/hfdata
-export OMP_NUM_THREADS=2
+export OMP_NUM_THREADS=1
 
-# Set up distributed environment using Slurm
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
+# Get the first node of the allocation
+export MASTER_NODE_HOSTNAME=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+
+# Get the IP address of the hsn0 interface on the MASTER_NODE_HOSTNAME
+# This command is run ON THE MASTER_NODE_HOSTNAME via srun
+export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 addr show hsn0 | grep -oP 'inet \K[\d.]+')
+if [ -z "$MASTER_ADDR" ]; then
+  echo "Failed to get MASTER_ADDR for hsn0. Trying hsn1..."
+  export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 addr show hsn1 | grep -oP 'inet \K[\d.]+')
+fi
+if [ -z "$MASTER_ADDR" ]; then
+  echo "CRITICAL: Failed to determine MASTER_ADDR. Exiting."
+  exit 1
+fi
+echo "Using MASTER_NODE_HOSTNAME: $MASTER_NODE_HOSTNAME"
+echo "Determined MASTER_ADDR (IP of hsn0/hsn1 on master): $MASTER_ADDR"
+
 export MASTER_PORT=3442
 export TORCH_DISTRIBUTED_TIMEOUT=3600s    # 1 hr timeout for initialization
 
 # NCCL/RCCL settings optimized for Frontier's Slingshot fabric
-export UCX_TLS=rc,tcp,sm
+export UCX_TLS=rc,sm
 export NCCL_DEBUG=INFO                     # Set to INFO to diagnose distribution issues
 export RCCL_DEBUG=INFO                     # ROCm-specific debug info
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_ASYNC_ERROR_HANDLING=1         # Both error flags for redundancy
-export NCCL_TIMEOUT=10000000               # Collective timeout in ms
+export NCCL_TIMEOUT=1800000                # 30 min timeout in ms (was 10000000)
 export NCCL_IB_TIMEOUT=22
 export NCCL_SOCKET_IFNAME=hsn0             # Primary high-speed network interface
 export NCCL_CROSS_NIC=1                    # Enable multi-rail
 export NCCL_NET_GDR_LEVEL=3                # RDMA via OFI
 export NCCL_MIN_NCHANNELS=32               # MI250X tuning
+export NCCL_NTHREADS=4                     # Thread tuning for NCCL
+export NCCL_NSOCKS_PERTHREAD=4             # Socket tuning for NCCL
+export NCCL_BUFFSIZE=2097152               # 2MB buffer size
 export NCCL_CUMEM_ENABLE=0                 # Disable CUDA unified memory
 
 # Performance tuning
@@ -60,22 +78,24 @@ export NCCL_P2P_PCI_RELAXED_ORDERING=1
 # MIOPEN cache paths per node to avoid contention
 export MIOPEN_USER_DB_PATH="/tmp/${USER:-user}-miopen-cache-${SLURM_NODEID}"
 export MIOPEN_SYSTEM_DB_PATH="$MIOPEN_USER_DB_PATH"
+mkdir -p "$MIOPEN_USER_DB_PATH" # Ensure the directory exists
 
 # Create hostfile for DeepSpeed from Slurm allocation
-HOSTFILE="./hostfile-job$SLURM_JOB_ID.txt"
+HOSTFILE_NAME="hostfile-job$SLURM_JOB_ID.txt"
+HOSTFILE_PATH="$PWD/$HOSTFILE_NAME" # Use full path
 GPUS_PER_NODE=8
 
 # Get the list of nodes from Slurm
-scontrol show hostnames $SLURM_JOB_NODELIST > ./hosts-job$SLURM_JOB_ID
+scontrol show hostnames $SLURM_JOB_NODELIST > "$PWD/slurm_hosts-job$SLURM_JOB_ID.txt"
 
 # Create a proper hostfile with slots information
-rm -f $HOSTFILE  # Remove existing hostfile if present
+rm -f "$HOSTFILE_PATH"  # Remove existing hostfile if present
 while IFS= read -r host; do
-    echo "$host slots=$GPUS_PER_NODE" >> $HOSTFILE
-done < ./hosts-job$SLURM_JOB_ID
+    echo "$host slots=$GPUS_PER_NODE" >> "$HOSTFILE_PATH"
+done < "$PWD/slurm_hosts-job$SLURM_JOB_ID.txt"
 
 echo "Created hostfile with contents:"
-cat $HOSTFILE
+cat "$HOSTFILE_PATH"
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -102,11 +122,9 @@ env | grep SLURM
 # COMBINED APPROACH: Using both hostfile and explicit parameters
 echo "Starting DeepSpeed with combined approach (hostfile + direct parameters)..."
 deepspeed \
-  --hostfile=$HOSTFILE \
-  --num_nodes=$SLURM_JOB_NUM_NODES \
-  --num_gpus=$ranks_per_node \
-  --master_addr=$MASTER_ADDR \
-  --master_port=$MASTER_PORT \
+  --hostfile="$HOSTFILE_PATH" \
+  --master_addr="$MASTER_ADDR" \
+  --master_port="$MASTER_PORT" \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
@@ -116,7 +134,7 @@ deepspeed \
   --lr 0.025 \
   --sf_beta 0.9 \
   --weight_decay 0.075 \
-  --batch_size 6 \
+  --batch_size 1 \
   --grad_accum 8 \
   --gradient_clipping 1.0 \
   --seq_len 2048 \
@@ -129,4 +147,4 @@ deepspeed \
 echo "Training finished."
 
 # Clean up temporary files
-rm -f ./hosts-job$SLURM_JOB_ID $HOSTFILE
+rm -f "$PWD/slurm_hosts-job$SLURM_JOB_ID.txt" "$HOSTFILE_PATH"
