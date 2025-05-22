@@ -147,7 +147,8 @@ srun torchrun \
   --nproc_per_node=8 \
   --nnodes=$SLURM_JOB_NUM_NODES \
   --rdzv_backend=c10d \
-  --rdzv_endpoint="file://$RENDEZVOUS_DIR" \
+  --rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" \
+  --rdzv_conf="file_init=${RENDEZVOUS_DIR}" \
   --rdzv_id=$SLURM_JOB_ID \
   --max_restarts=3 \
   --monitor_interval=5 \
