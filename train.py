@@ -1500,6 +1500,7 @@ def main():
                 f.write(f"Distributed setup:\n")
                 f.write(f"  Tensor parallelism size (per node): {args.tp_size} GPUs\n")
                 f.write(f"  Number of nodes (data parallel replicas): {dp_world_size}\n")
+                f.write(f"  IMPORTANT: All GPUs within a node (TP group) receive identical data\n")
                 f.write(f"  Sequence length: {seq_len}\n")
                 f.write(f"  Micro-batch size per GPU: {micro_batch_per_gpu}\n")
                 f.write(f"  Gradient accumulation steps: {grad_accum_steps}\n")
