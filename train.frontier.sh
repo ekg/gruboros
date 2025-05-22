@@ -34,7 +34,8 @@ export OMP_NUM_THREADS=2
 
 # Set up distributed environment using Slurm
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
-export MASTER_PORT=3442
+export MASTER_PORT=3442          # DeepSpeed's communication port
+export RENDEZVOUS_PORT=29500     # Separate port for rendezvous
 export TORCH_DISTRIBUTED_TIMEOUT=3600s    # 1 hr timeout for initialization
 
 # NCCL/RCCL settings optimized for Frontier's Slingshot fabric
@@ -127,13 +128,20 @@ echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with
 # Print SLURM environment for debugging
 env | grep SLURM
 
+# Add staggered startup to prevent port conflicts
+if [ -n "$SLURM_LOCALID" ]; then
+    sleep_time=$(echo "scale=3; $SLURM_LOCALID * 0.5" | bc)
+    echo "Local rank $SLURM_LOCALID sleeping for $sleep_time seconds"
+    sleep $sleep_time
+fi
+
 # Launch with torchrun using static rendezvous backend
 echo "Starting training with torchrun elastic launcher using static rendezvous..."
 srun torchrun \
   --nproc_per_node=8 \
   --nnodes=$SLURM_JOB_NUM_NODES \
   --rdzv_backend=static \
-  --rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" \
+  --rdzv_endpoint="$MASTER_ADDR:$RENDEZVOUS_PORT" \
   --rdzv_id=$SLURM_JOB_ID \
   --max_restarts=3 \
   --monitor_interval=5 \
