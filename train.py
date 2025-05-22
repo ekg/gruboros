@@ -435,7 +435,7 @@ def get_args():
                         help='expansion factor for minGRU')
     
     # Optimizer configuration
-    parser.add_argument('--lr', type=float, default=1e-3,
+    parser.add_argument('--lr', type=float, default=3e-3,
                         help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
                         help='weight decay')
