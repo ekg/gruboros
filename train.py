@@ -509,7 +509,7 @@ def synchronize_processes():
         print(f"ERROR in synchronize_processes: {e}")
         # Try to proceed anyway
 
-def verify_gpu_health():
+def verify_gpu_health(use_rocm):
     """Verify that all GPUs are working properly"""
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
@@ -585,7 +585,7 @@ def main():
     
     # Verify GPU health before proceeding (only on rank 0)
     if local_rank == 0:
-        verify_gpu_health()
+        verify_gpu_health(use_rocm)
     
     # Print memory usage monitoring message
     if local_rank <= 0:  # Use local_rank before DeepSpeed initialization
@@ -877,7 +877,7 @@ def main():
             print(f"Using standard AdamW optimizer with lr={args.lr} (ScheduleFree disabled)")
     
     # Initialize DeepSpeed engine - let DeepSpeed handle distributed initialization
-    print(f"Initializing DeepSpeed with {'ROCM' if USE_ROCM else 'CUDA'}")
+    print(f"Initializing DeepSpeed with {'ROCM' if use_rocm else 'CUDA'}")
     
     # Explicitly verify and fix batch size and grad_accum types right before DeepSpeed init
     if not isinstance(args.batch_size, int):
