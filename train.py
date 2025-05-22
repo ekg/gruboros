@@ -1040,9 +1040,10 @@ def main():
     # Update local variable for easier access
     local_rank = args.local_rank
 
-    # Create worker-specific seeds for better data distribution across nodes
-    worker_seed = SEED + model_engine.global_rank
-    print(f"Worker {model_engine.global_rank} using seed {worker_seed}")
+    # Create worker-specific seeds based on data parallel rank
+    # This ensures all GPUs in the same TP group (node) get the same data
+    worker_seed = SEED + data_parallel_rank
+    print(f"Worker {model_engine.global_rank} (DP rank {data_parallel_rank}) using seed {worker_seed}")
     
     # Get data parallelism world size for token tracking
     dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
@@ -1050,6 +1051,14 @@ def main():
         # If attribute not available, try to calculate it
         tp_world_size = getattr(model_engine, 'tensor_parallel_world_size', args.tp_size)
         dp_world_size = max(1, args.world_size // tp_world_size)
+    
+    # Calculate data parallel rank (critical for correct TP+DP data loading)
+    # With TP within node, this is effectively the node ID
+    data_parallel_rank = model_engine.global_rank // args.tp_size
+    
+    if model_engine.local_rank == 0:
+        print(f"Data Parallel Rank: {data_parallel_rank}, DP World Size: {dp_world_size}")
+        print(f"Tensor Parallel Size: {args.tp_size}")
     
     # Calculate batch sizes and tokens per step for accurate tracking
     micro_batch_per_gpu = batch_size  # Already parsed from args.batch_size
@@ -1134,7 +1143,7 @@ def main():
     val_dataset = ContinuousIIDDataset(
         filepath=args.data,
         seq_len=seq_len,
-        seed=worker_seed + 100,  # Worker-specific validation seed
+        seed=worker_seed + 100,  # Validation seed still based on DP rank
         samples_per_epoch=val_batches * batch_size,
         batch_size=batch_size,
         log_sample_hashes=False  # Don't log validation samples
@@ -1143,19 +1152,19 @@ def main():
     if args.local_rank == 0:
         print(f"Dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
     
-    # Create samplers for both datasets
+    # Create samplers for both datasets using DP rank/world size
     train_sampler = DistributedSampler(
         train_dataset,
-        num_replicas=model_engine.world_size,
-        rank=model_engine.global_rank,
+        num_replicas=dp_world_size,  # Data parallel world size
+        rank=data_parallel_rank,     # Data parallel rank
         shuffle=True,
         seed=SEED
     )
     
     val_sampler = DistributedSampler(
         val_dataset,
-        num_replicas=model_engine.world_size,
-        rank=model_engine.global_rank,
+        num_replicas=dp_world_size,  # Data parallel world size
+        rank=data_parallel_rank,     # Data parallel rank
         shuffle=False,
         seed=SEED
     )
