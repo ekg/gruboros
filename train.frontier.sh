@@ -97,6 +97,7 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1b_tweak"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
+mkdir -p "$OUTPUT_DIR"
 
 # Calculate total ranks for debugging
 ranks_per_node=8
@@ -111,92 +112,22 @@ echo "Using data: $DATA"
 mkdir -p logs
 mkdir -p ./outputs
 
-# === FILE-BASED RENDEZVOUS SETUP ===
-# Create a shared directory for rendezvous on Lustre
-RENDEZVOUS_DIR="/lustre/orion/bif148/scratch/$USER/rendezvous_$SLURM_JOB_ID"
-echo "Setting up file-based rendezvous at: $RENDEZVOUS_DIR"
+# === SIMPLE FILE-BASED RENDEZVOUS SETUP ===
+# Create rendezvous directory with generous permissions
+export RENDEZVOUS_DIR="/lustre/orion/bif148/scratch/$USER/rendezvous_$SLURM_JOB_ID"
+echo "Using rendezvous directory: $RENDEZVOUS_DIR"
 
-# Create the directory and ensure it exists
+# Only rank 0 creates the directory
 if [ "$SLURM_PROCID" -eq 0 ]; then
-    # Only the master process creates the directory
     mkdir -p $RENDEZVOUS_DIR
     chmod 777 $RENDEZVOUS_DIR
-    
-    # Create a sentinel file to verify directory exists and is writable
-    echo "Rendezvous directory created by $HOSTNAME at $(date)" > $RENDEZVOUS_DIR/master_ready
-    
-    # Wait for the file to be visible (filesystem sync)
-    sleep 5
-    
-    # Verify the file is visible
-    if [ ! -f "$RENDEZVOUS_DIR/master_ready" ]; then
-        echo "ERROR: Could not create or verify rendezvous directory"
-        exit 1
-    else
-        echo "Rendezvous directory successfully created and verified"
-    fi
+    echo "Created rendezvous directory: $RENDEZVOUS_DIR"
 fi
 
-# Synchronize all nodes using srun barrier
-srun --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "echo Node \$SLURMD_NODENAME is ready"
-
-# All nodes wait for the directory to be available
-sleep 5
-max_attempts=30
-attempt=1
-while [ $attempt -le $max_attempts ]; do
-    if [ -d "$RENDEZVOUS_DIR" ] && [ -f "$RENDEZVOUS_DIR/master_ready" ]; then
-        echo "Node $(hostname) can see the rendezvous directory on attempt $attempt"
-        break
-    else
-        echo "Node $(hostname) waiting for rendezvous directory to be visible (attempt $attempt/$max_attempts)..."
-        sleep 5
-        attempt=$((attempt+1))
-    fi
-done
-
-# Report error if directory still not visible
-if [ $attempt -gt $max_attempts ]; then
-    echo "ERROR: Rendezvous directory not visible after $max_attempts attempts on $(hostname)"
-    exit 1
-fi
-
-# Each node adds a ready file to confirm visibility
-if [ "$SLURM_LOCALID" -eq 0 ]; then
-    touch "$RENDEZVOUS_DIR/node_$(hostname)_ready"
-    echo "Node $(hostname) marked as ready"
-fi
-
-# Master node verifies all nodes are ready
-if [ "$SLURM_PROCID" -eq 0 ]; then
-    expected_nodes=$SLURM_JOB_NUM_NODES
-    max_attempts=30
-    attempt=1
-    
-    while [ $attempt -le $max_attempts ]; do
-        ready_nodes=$(ls $RENDEZVOUS_DIR/node_*_ready 2>/dev/null | wc -l)
-        
-        echo "Checking node readiness: $ready_nodes/$expected_nodes nodes reported ready"
-        
-        if [ "$ready_nodes" -ge "$expected_nodes" ]; then
-            echo "All $expected_nodes nodes successfully reported ready!"
-            break
-        else
-            echo "Waiting for all nodes to report ready ($ready_nodes/$expected_nodes)..."
-            sleep 5
-            attempt=$((attempt+1))
-        fi
-    done
-    
-    if [ $attempt -gt $max_attempts ]; then
-        echo "WARNING: Not all nodes reported ready after $max_attempts attempts"
-        echo "Continuing anyway, but there might be issues with file visibility"
-    fi
-fi
-
-# Final synchronization point
-srun --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "echo Node \$SLURMD_NODENAME ready for training"
-# === END FILE-BASED RENDEZVOUS SETUP ===
+# Simple barrier to ensure directory exists before proceeding
+srun --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 true
+echo "All nodes synchronized after directory creation"
+# === END SIMPLE FILE-BASED RENDEZVOUS SETUP ===
 
 # Set data path
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt"
