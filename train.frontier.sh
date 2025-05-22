@@ -142,7 +142,8 @@ deepspeed \
   --tp_size 8 \
   --keep_checkpoints 5 \
   --deepspeed \
-  --deepspeed_config ds_config.json
+  --deepspeed_config ds_config.json \
+  --rocm
 
 echo "Training finished."
 
