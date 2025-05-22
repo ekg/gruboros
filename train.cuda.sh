@@ -11,7 +11,7 @@ mkdir -p logs
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="512m_model"
+NAME="1g_model"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
@@ -65,13 +65,13 @@ deepspeed --num_gpus=$NUM_GPUS \
   --train_steps 100000 \
   --validate_every 1000 \
   --save_every 2000 \
-  --lr 0.005 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --weight_decay 0.01 \
-  --batch_size 4 \
-  --grad_accum 64 \
+  --batch_size 1 \
+  --grad_accum 128 \
   --seq_len 2k \
-  --params 512m \
+  --params 1g \
   --tp_size $NUM_GPUS \
   --keep_checkpoints 5 \
   --deepspeed \
