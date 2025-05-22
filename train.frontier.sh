@@ -134,7 +134,7 @@ deepspeed \
   --lr 0.025 \
   --sf_beta 0.9 \
   --weight_decay 0.075 \
-  --batch_size 4 \
+  --batch_size 1 \
   --grad_accum 16 \
   --gradient_clipping 1.0 \
   --seq_len 2048 \
