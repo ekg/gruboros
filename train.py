@@ -30,6 +30,9 @@ def debug_distributed_info():
     print(f"SLURM_JOB_ID: {os.environ.get('SLURM_JOB_ID', 'Not set')}")
     print(f"SLURM_PROCID: {os.environ.get('SLURM_PROCID', 'Not set')}")
     print(f"SLURM_LOCALID: {os.environ.get('SLURM_LOCALID', 'Not set')}")
+    print(f"RANK: {os.environ.get('RANK', 'Not set')}")
+    print(f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'Not set')}")
+    print(f"LOCAL_RANK: {os.environ.get('LOCAL_RANK', 'Not set')}")
     
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
@@ -42,6 +45,13 @@ def debug_distributed_info():
         print(f"  - World size: {torch.distributed.get_world_size()}")
         print(f"  - Rank: {torch.distributed.get_rank()}")
         print(f"  - Backend: {torch.distributed.get_backend()}")
+        # Test communication 
+        try:
+            dummy_tensor = torch.ones(1, device="cuda" if torch.cuda.is_available() else "cpu")
+            torch.distributed.all_reduce(dummy_tensor)
+            print(f"  - Test all_reduce successful")
+        except Exception as e:
+            print(f"  - Test all_reduce FAILED: {e}")
     else:
         print(f"Distributed is NOT initialized")
         
@@ -962,7 +972,9 @@ def main():
     
     # Print updated debug info after DeepSpeed initialization
     if local_rank == 0:
+        print("--- Distributed Info AFTER DeepSpeed Init ---")
         debug_distributed_info()
+        print("---------------------------------------------")
     
     # 3.1) Load optimizer state if resuming
     if resuming and 'optimizer_state_dict' in checkpoint:

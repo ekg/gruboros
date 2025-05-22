@@ -22,5 +22,10 @@
     "thread_count": 1,
     "single_submit": false,
     "overlap_events": true
-  }
+  },
+  "communication_options": {
+    "reduce_scatter": true,
+    "allreduce_always_fp32": true
+  },
+  "distributed_backend": "nccl"
 }
