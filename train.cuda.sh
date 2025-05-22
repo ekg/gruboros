@@ -69,7 +69,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --sf_beta 0.9 \
   --weight_decay 0.01 \
   --batch_size 4 \
-  --grad_accum 16 \
+  --grad_accum 64 \
   --seq_len 2k \
   --params 512m \
   --tp_size $NUM_GPUS \
