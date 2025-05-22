@@ -35,7 +35,7 @@ export OMP_NUM_THREADS=2
 # Set up distributed environment using Slurm
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
 export MASTER_PORT=3442          # DeepSpeed's communication port
-export RENDEZVOUS_PORT=29500     # Separate port for rendezvous
+export RENDEZVOUS_PORT=29501     # Separate port for rendezvous (changed from 29500)
 export TORCH_DISTRIBUTED_TIMEOUT=3600s    # 1 hr timeout for initialization
 
 # NCCL/RCCL settings optimized for Frontier's Slingshot fabric
@@ -128,15 +128,27 @@ echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with
 # Print SLURM environment for debugging
 env | grep SLURM
 
-# Add staggered startup to prevent port conflicts
+# Add more aggressive staggered startup to prevent port conflicts
 if [ -n "$SLURM_LOCALID" ]; then
-    sleep_time=$(echo "scale=3; $SLURM_LOCALID * 0.5" | bc)
+    # Increase delay and add randomization to better distribute startup times
+    sleep_time=$(echo "scale=3; $SLURM_LOCALID * 1.0 + 0.$(( RANDOM % 10 ))" | bc)
     echo "Local rank $SLURM_LOCALID sleeping for $sleep_time seconds"
     sleep $sleep_time
 fi
 
 # Launch with torchrun using static rendezvous backend
 echo "Starting training with torchrun elastic launcher using static rendezvous..."
+
+# Add rank-specific arguments to handle port binding issues
+if [ "$SLURM_PROCID" -eq 0 ]; then
+    echo "Rank 0 will initialize the TCP store"
+    export TORCH_DISTRIBUTED_STATIC_TCP_STORE_MASTER=1
+else
+    echo "Rank $SLURM_PROCID will join existing TCP store"
+    # Small delay for non-master ranks to ensure master has time to set up
+    sleep 2
+fi
+
 srun torchrun \
   --nproc_per_node=8 \
   --nnodes=$SLURM_JOB_NUM_NODES \
