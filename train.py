@@ -1040,11 +1040,6 @@ def main():
     # Update local variable for easier access
     local_rank = args.local_rank
 
-    # Create worker-specific seeds based on data parallel rank
-    # This ensures all GPUs in the same TP group (node) get the same data
-    worker_seed = SEED + data_parallel_rank
-    print(f"Worker {model_engine.global_rank} (DP rank {data_parallel_rank}) using seed {worker_seed}")
-    
     # Get data parallelism world size for token tracking
     dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
     if not hasattr(model_engine, 'data_parallel_world_size'):
@@ -1055,6 +1050,11 @@ def main():
     # Calculate data parallel rank (critical for correct TP+DP data loading)
     # With TP within node, this is effectively the node ID
     data_parallel_rank = model_engine.global_rank // args.tp_size
+    
+    # Create worker-specific seeds based on data parallel rank
+    # This ensures all GPUs in the same TP group (node) get the same data
+    worker_seed = SEED + data_parallel_rank
+    print(f"Worker {model_engine.global_rank} (DP rank {data_parallel_rank}) using seed {worker_seed}")
     
     if model_engine.local_rank == 0:
         print(f"Data Parallel Rank: {data_parallel_rank}, DP World Size: {dp_world_size}")
