@@ -61,21 +61,36 @@ export NCCL_P2P_PCI_RELAXED_ORDERING=1
 export MIOPEN_USER_DB_PATH="/tmp/${USER:-user}-miopen-cache-${SLURM_NODEID}"
 export MIOPEN_SYSTEM_DB_PATH="$MIOPEN_USER_DB_PATH"
 
-# Create hostfile for DeepSpeed from Slurm allocation
-HOSTFILE="./hostfile-job$SLURM_JOB_ID.txt"
-GPUS_PER_NODE=8
+# === ELASTICITY SETTINGS (NEW) ===
+export TORCH_DISTRIBUTED_AUTO_RESTART=1
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_TIMEOUT=3600000        # 1 hour timeout in milliseconds
+export TORCH_DISTRIBUTED_TIMEOUT=3600  # 1 hour timeout in seconds
+# === END ELASTICITY SETTINGS ===
 
-# Get the list of nodes from Slurm
-scontrol show hostnames $SLURM_JOB_NODELIST > ./hosts-job$SLURM_JOB_ID
+# === SLINGSHOT OPTIMIZATION SETTINGS (NEW) ===
+# Multi-rail Slingshot configuration
+export UCX_NET_DEVICES=hsn0,hsn1,hsn2,hsn3
+export UCX_TLS=rc,ud,sm,self
+export UCX_RNDV_SCHEME=get_zcopy
 
-# Create a proper hostfile with slots information
-rm -f $HOSTFILE  # Remove existing hostfile if present
-while IFS= read -r host; do
-    echo "$host slots=$GPUS_PER_NODE" >> $HOSTFILE
-done < ./hosts-job$SLURM_JOB_ID
+# RCCL/NCCL multi-rail and buffer optimization
+export NCCL_IB_HCA=hsn0,hsn1,hsn2,hsn3
+export NCCL_CROSS_NIC=1
+export NCCL_P2P_NET_CHUNKSIZE=8M
+export NCCL_BUFFSIZE=16777216
 
-echo "Created hostfile with contents:"
-cat $HOSTFILE
+# ROCm-specific optimizations for Frontier's AMD GPUs
+export HSA_ENABLE_SDMA=0
+export GPU_MAX_HW_QUEUES=8
+export NCCL_NVLS_ENABLE=0
+# === END SLINGSHOT OPTIMIZATION SETTINGS ===
+
+# Tell DeepSpeed to use Slurm launcher
+export DEEPSPEED_USE_SRUN=1
+
+# Setup torchrun port for rendezvous
+export TORCHRUN_PORT=29500
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -99,14 +114,16 @@ mkdir -p ./outputs
 # Print SLURM environment for debugging
 env | grep SLURM
 
-# COMBINED APPROACH: Using both hostfile and explicit parameters
-echo "Starting DeepSpeed with combined approach (hostfile + direct parameters)..."
-deepspeed \
-  --hostfile=$HOSTFILE \
-  --num_nodes=$SLURM_JOB_NUM_NODES \
-  --num_gpus=$ranks_per_node \
-  --master_addr=$MASTER_ADDR \
-  --master_port=$MASTER_PORT \
+# Launch with torchrun for elastic training
+echo "Starting training with torchrun elastic launcher..."
+srun torchrun \
+  --nproc_per_node=8 \
+  --nnodes=$SLURM_JOB_NUM_NODES \
+  --rdzv_backend=c10d \
+  --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
+  --rdzv_id=$SLURM_JOB_ID \
+  --max_restarts=3 \
+  --monitor_interval=5 \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
@@ -128,5 +145,5 @@ deepspeed \
 
 echo "Training finished."
 
-# Clean up temporary files
-rm -f ./hosts-job$SLURM_JOB_ID $HOSTFILE
+# No temporary files to clean up with torchrun approach
+echo "Training completed with elastic launcher"

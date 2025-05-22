@@ -20,6 +20,7 @@ import asyncio
 import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
+from torch.distributed.elastic.multiprocessing.errors import record
 
 def debug_distributed_info():
     """Print debug information about the distributed environment"""
@@ -527,6 +528,7 @@ def verify_gpu_health():
 
 # Environment setup is now handled by the batch script
 
+@record
 def main():
     args = get_args()
     
