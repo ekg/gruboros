@@ -893,6 +893,21 @@ def main():
     deepspeed_dist_init = True
     print(f"DeepSpeed dist_init_required set to: {deepspeed_dist_init} (letting DeepSpeed handle initialization)")
     
+    # Explicitly set the distributed backend to gloo if NCCL isn't working
+    # This is safer on systems without proper NCCL support
+    if os.environ.get('TORCH_DISTRIBUTED_BACKEND', '').lower() == 'gloo':
+        print("Using gloo backend for distributed training (NCCL disabled)")
+        # Initialize distributed with gloo backend before DeepSpeed
+        if not torch.distributed.is_initialized():
+            try:
+                torch.distributed.init_process_group(backend='gloo')
+                print("Successfully initialized torch.distributed with gloo backend")
+                # If we manually initialized, don't let DeepSpeed re-initialize
+                deepspeed_dist_init = False
+            except Exception as e:
+                print(f"Warning: Failed to initialize gloo backend: {e}")
+                print("Continuing with DeepSpeed default initialization")
+    
     # Print world_info environment before DeepSpeed init
     print("\nDebug - environment variables for world_info:")
     for env_var in ["MASTER_ADDR", "MASTER_PORT", "WORLD_SIZE", "RANK", "LOCAL_RANK", 
@@ -919,33 +934,100 @@ def main():
         print(f"DeepSpeed config with batch sizes: {json.dumps(ds_config, indent=2)}")
         
         try:
+            # Set the communication backend to gloo in the config if NCCL is disabled
+            if os.environ.get('TORCH_DISTRIBUTED_BACKEND', '').lower() == 'gloo':
+                ds_config['communication_backend'] = 'gloo'
+                print("Setting DeepSpeed communication_backend to gloo")
+
             # ONLY use the config file approach - don't pass args for DeepSpeed config
             model_engine, optimizer, _, _ = deepspeed.initialize(
                 model=model,
                 optimizer=optimizer,
                 config=ds_config,
                 model_parameters=model.parameters(),
-                dist_init_required=deepspeed_dist_init  # Always True now
+                dist_init_required=deepspeed_dist_init
             )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with config (rank {local_rank}): {e}")
-            # No recovery possible if init failed
-            raise
+            # Try single-GPU fallback if distributed fails
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                print(f"Attempting fallback to single GPU training on device 0")
+                try:
+                    # Move model to first GPU
+                    device = torch.device('cuda:0')
+                    model = model.to(device)
+                    
+                    # Create a dummy model_engine object with minimal required attributes
+                    class DummyModelEngine:
+                        def __init__(self, model, optimizer, device):
+                            self.module = model
+                            self.optimizer = optimizer
+                            self.device = device
+                            self.local_rank = 0
+                            self.global_rank = 0
+                            self.world_size = 1
+                    
+                    model_engine = DummyModelEngine(model, optimizer, device)
+                    print("Created fallback single-GPU engine")
+                except Exception as fallback_error:
+                    print(f"Single-GPU fallback also failed: {fallback_error}")
+                    raise e
+            else:
+                raise
     else:
         # No config file, use args-only approach
         try:
-            model_engine, optimizer, _, _ = deepspeed.initialize(
-                model=model,
-                optimizer=optimizer,
-                args=args,
-                model_parameters=model.parameters(),
-                config=None,
-                dist_init_required=deepspeed_dist_init  # Always True now
-            )
+            # Create a minimal config for gloo backend if needed
+            if os.environ.get('TORCH_DISTRIBUTED_BACKEND', '').lower() == 'gloo':
+                config_dict = {
+                    "train_micro_batch_size_per_gpu": args.batch_size,
+                    "gradient_accumulation_steps": args.grad_accum,
+                    "communication_backend": "gloo"
+                }
+                model_engine, optimizer, _, _ = deepspeed.initialize(
+                    model=model,
+                    optimizer=optimizer,
+                    args=args,
+                    model_parameters=model.parameters(),
+                    config=config_dict,
+                    dist_init_required=deepspeed_dist_init
+                )
+            else:
+                model_engine, optimizer, _, _ = deepspeed.initialize(
+                    model=model,
+                    optimizer=optimizer,
+                    args=args,
+                    model_parameters=model.parameters(),
+                    config=None,
+                    dist_init_required=deepspeed_dist_init
+                )
         except Exception as e:
             print(f"ERROR in DeepSpeed initialization with args (rank {local_rank}): {e}")
-            # No recovery possible if init failed
-            raise
+            # Try single-GPU fallback if distributed fails
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                print(f"Attempting fallback to single GPU training on device 0")
+                try:
+                    # Move model to first GPU
+                    device = torch.device('cuda:0')
+                    model = model.to(device)
+                    
+                    # Create a dummy model_engine object with minimal required attributes
+                    class DummyModelEngine:
+                        def __init__(self, model, optimizer, device):
+                            self.module = model
+                            self.optimizer = optimizer
+                            self.device = device
+                            self.local_rank = 0
+                            self.global_rank = 0
+                            self.world_size = 1
+                    
+                    model_engine = DummyModelEngine(model, optimizer, device)
+                    print("Created fallback single-GPU engine")
+                except Exception as fallback_error:
+                    print(f"Single-GPU fallback also failed: {fallback_error}")
+                    raise e
+            else:
+                raise
         
     # Update args with ranks from model_engine after successful DeepSpeed initialization
     args.world_size = model_engine.world_size

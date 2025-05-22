@@ -16,20 +16,22 @@ OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
 
-# ====================== CUDA & NCCL CONFIGURATION ======================
+# ====================== CUDA & DISTRIBUTED CONFIGURATION ======================
 
 # NVIDIA/CUDA specific settings
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-# NCCL settings optimized for single-node multi-GPU setup
-export NCCL_DEBUG=INFO                     # Set to INFO for diagnosing issues, WARN for production
-export NCCL_SOCKET_IFNAME=lo               # Use loopback for single-node communication
-export NCCL_IB_DISABLE=1                   # Disable InfiniBand since we're on a single node
-export NCCL_P2P_DISABLE=0                  # Enable P2P for GPU-to-GPU communication 
-export NCCL_P2P_LEVEL=5                    # Maximum P2P level
+# Force using gloo backend instead of NCCL
+export TORCH_DISTRIBUTED_DEBUG=INFO
 export TORCH_DISTRIBUTED_DETAIL=1          # Detailed distributed logging
-export TORCH_NCCL_ASYNC_ERROR_HANDLING=1   # Enable async error handling
 export TORCH_EXTENSIONS_DIR=$PWD/torch_extensions
+
+# Explicitly disable NCCL
+export NCCL_P2P_DISABLE=1
+export USE_NCCL=0
+
+# Set the PyTorch distributed backend to gloo
+export TORCH_DISTRIBUTED_BACKEND="gloo"
 
 # Prevent timeout issues during initialization
 export NCCL_TIMEOUT=3600
