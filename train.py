@@ -1,6 +1,5 @@
 import os, random, numpy as np, hashlib
-# Flag to control ROCm vs CUDA setup
-USE_ROCM = True  # Set to False to revert to CUDA behavior
+# Backend will be selected via command-line arguments (--cuda or --rocm)
 import torch, torch.nn as nn
 import torch.distributed as dist
 from torch.optim import AdamW
@@ -20,6 +19,26 @@ import asyncio
 import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
+
+def configure_backend(args):
+    """Configure environment for the selected backend (CUDA or ROCm)"""
+    use_rocm = args.rocm
+    
+    print(f"Using {'ROCm' if use_rocm else 'CUDA'} backend")
+    
+    # Only handle MIOpen cache setup which is Python-specific (for ROCm)
+    if use_rocm and "SLURM_NODEID" in os.environ:
+        os.environ["MIOPEN_USER_DB_PATH"] = f"/tmp/{os.environ.get('USER', 'user')}-miopen-cache-{os.environ['SLURM_NODEID']}"
+        os.environ["MIOPEN_SYSTEM_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
+        print(f"MIOpen cache path: {os.environ['MIOPEN_USER_DB_PATH']}")
+    
+    # Set higher precision for float32 matrix multiplication (CUDA only) 
+    # This enables TensorFloat32 on supported NVIDIA GPUs
+    if not use_rocm:
+        torch.set_float32_matmul_precision('high')
+        print("Enabled high precision matrix multiplication (TensorFloat32)")
+    
+    return use_rocm
 
 def debug_distributed_info():
     """Print debug information about the distributed environment"""
@@ -59,16 +78,9 @@ print(f"Using MASTER_PORT={os.environ['MASTER_PORT']}")
 # Disable torch.distributed direct initialization to allow DeepSpeed to handle it
 os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'  # Enable detailed distributed logging
 
-# Only handle MIOpen cache setup which is Python-specific
-if USE_ROCM and "SLURM_NODEID" in os.environ:
-    os.environ["MIOPEN_USER_DB_PATH"] = f"/tmp/{os.environ.get('USER', 'user')}-miopen-cache-{os.environ['SLURM_NODEID']}"
-    os.environ["MIOPEN_SYSTEM_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
-    print(f"MIOpen cache path: {os.environ['MIOPEN_USER_DB_PATH']}")
+# MIOpen cache setup is now handled in configure_backend()
 
-# Set higher precision for float32 matrix multiplication 
-# This enables TensorFloat32 on supported NVIDIA GPUs (not available on AMD/ROCm)
-if not USE_ROCM:
-    torch.set_float32_matmul_precision('high')
+# TensorFloat32 precision is now handled in configure_backend()
 
 # Import the minLM model
 from mingru.minLM import minLM
@@ -443,6 +455,13 @@ def get_args():
     parser.add_argument('--log_sample_hashes', action='store_true',
                         help='log SHA256 hashes of samples for uniqueness validation')
     
+    # Add a mutually exclusive group for backend selection
+    backend_group = parser.add_mutually_exclusive_group(required=True)
+    backend_group.add_argument('--cuda', action='store_true', 
+                        help='Use CUDA backend (for NVIDIA GPUs)')
+    backend_group.add_argument('--rocm', action='store_true',
+                        help='Use ROCm backend (for AMD GPUs)')
+    
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
     
@@ -494,7 +513,7 @@ def verify_gpu_health():
     """Verify that all GPUs are working properly"""
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
-        if USE_ROCM:
+        if use_rocm:
             print(f"Found {device_count} AMD GPUs with ROCm/HIP")
         else:
             print(f"Found {device_count} CUDA devices")
@@ -529,6 +548,9 @@ def verify_gpu_health():
 
 def main():
     args = get_args()
+    
+    # Configure backend based on command-line arguments
+    use_rocm = configure_backend(args)
     
     # Let local_rank come from DeepSpeed launcher via args
     local_rank = args.local_rank
