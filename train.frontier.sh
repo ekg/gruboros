@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_frontier-%j.err
 #SBATCH -t 00:20:00
 #SBATCH -p batch
-#SBATCH -N 8                  # Number of nodes
+#SBATCH -N 128                # Number of nodes
 #SBATCH --ntasks-per-node=8   # CRITICAL: 8 GPUs per node
 #SBATCH --gpus-per-node=8     # Explicitly request 8 GPUs per node
 #SBATCH -q debug
@@ -34,8 +34,7 @@ export OMP_NUM_THREADS=2
 
 # Set up distributed environment using Slurm
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
-export MASTER_PORT=3442          # DeepSpeed's communication port
-export RENDEZVOUS_PORT=29501     # Separate port for rendezvous (changed from 29500)
+export MASTER_PORT=3442
 export TORCH_DISTRIBUTED_TIMEOUT=3600s    # 1 hr timeout for initialization
 
 # NCCL/RCCL settings optimized for Frontier's Slingshot fabric
@@ -62,43 +61,27 @@ export NCCL_P2P_PCI_RELAXED_ORDERING=1
 export MIOPEN_USER_DB_PATH="/tmp/${USER:-user}-miopen-cache-${SLURM_NODEID}"
 export MIOPEN_SYSTEM_DB_PATH="$MIOPEN_USER_DB_PATH"
 
-# === ELASTICITY SETTINGS ===
-export TORCH_DISTRIBUTED_AUTO_RESTART=1
-export NCCL_ASYNC_ERROR_HANDLING=1
-export TORCH_DISTRIBUTED_TIMEOUT=3600       # 1 hour timeout in seconds
-export NCCL_TIMEOUT=3600000                 # 1 hour timeout in milliseconds
-# === END ELASTICITY SETTINGS ===
+# Create hostfile for DeepSpeed from Slurm allocation
+HOSTFILE="./hostfile-job$SLURM_JOB_ID.txt"
+GPUS_PER_NODE=8
 
-# === SLINGSHOT OPTIMIZATION SETTINGS (NEW) ===
-# Multi-rail Slingshot configuration
-export UCX_NET_DEVICES=hsn0,hsn1,hsn2,hsn3
-export UCX_TLS=rc,ud,sm,self
-export UCX_RNDV_SCHEME=get_zcopy
+# Get the list of nodes from Slurm
+scontrol show hostnames $SLURM_JOB_NODELIST > ./hosts-job$SLURM_JOB_ID
 
-# RCCL/NCCL multi-rail and buffer optimization
-export NCCL_IB_HCA=hsn0,hsn1,hsn2,hsn3
-export NCCL_CROSS_NIC=1
-export NCCL_P2P_NET_CHUNKSIZE=8M
-export NCCL_BUFFSIZE=16777216
+# Create a proper hostfile with slots information
+rm -f $HOSTFILE  # Remove existing hostfile if present
+while IFS= read -r host; do
+    echo "$host slots=$GPUS_PER_NODE" >> $HOSTFILE
+done < ./hosts-job$SLURM_JOB_ID
 
-# ROCm-specific optimizations for Frontier's AMD GPUs
-export HSA_ENABLE_SDMA=0
-export GPU_MAX_HW_QUEUES=8
-export NCCL_NVLS_ENABLE=0
-# === END SLINGSHOT OPTIMIZATION SETTINGS ===
-
-# Tell DeepSpeed to use Slurm launcher
-export DEEPSPEED_USE_SRUN=1
-
-# Setup torchrun port for rendezvous
-export TORCHRUN_PORT=29500
+echo "Created hostfile with contents:"
+cat $HOSTFILE
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1b_tweak"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
-mkdir -p "$OUTPUT_DIR"
 
 # Calculate total ranks for debugging
 ranks_per_node=8
@@ -113,59 +96,26 @@ echo "Using data: $DATA"
 mkdir -p logs
 mkdir -p ./outputs
 
-# No file-based rendezvous needed for static backend
-echo "Using static rendezvous backend with master at $MASTER_ADDR:$MASTER_PORT"
-
-# Set data path
-DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt"
-echo "Using data: $DATA"
-
-# Calculate total ranks for debugging
-ranks_per_node=8
-ranks_total=$((ranks_per_node*SLURM_JOB_NUM_NODES))
-echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with $ranks_per_node ranks per node)"
-
 # Print SLURM environment for debugging
 env | grep SLURM
 
-# Add more aggressive staggered startup to prevent port conflicts
-if [ -n "$SLURM_LOCALID" ]; then
-    # Increase delay and add randomization to better distribute startup times
-    sleep_time=$(echo "scale=3; $SLURM_LOCALID * 1.0 + 0.$(( RANDOM % 10 ))" | bc)
-    echo "Local rank $SLURM_LOCALID sleeping for $sleep_time seconds"
-    sleep $sleep_time
-fi
-
-# Launch with torchrun using static rendezvous backend
-echo "Starting training with torchrun elastic launcher using static rendezvous..."
-
-# Add rank-specific arguments to handle port binding issues
-if [ "$SLURM_PROCID" -eq 0 ]; then
-    echo "Rank 0 will initialize the TCP store"
-    export TORCH_DISTRIBUTED_STATIC_TCP_STORE_MASTER=1
-else
-    echo "Rank $SLURM_PROCID will join existing TCP store"
-    # Small delay for non-master ranks to ensure master has time to set up
-    sleep 2
-fi
-
-srun torchrun \
-  --nproc_per_node=8 \
-  --nnodes=$SLURM_JOB_NUM_NODES \
-  --rdzv_backend=static \
-  --rdzv_endpoint="$MASTER_ADDR:$RENDEZVOUS_PORT" \
-  --rdzv_id=$SLURM_JOB_ID \
-  --max_restarts=3 \
-  --monitor_interval=5 \
+# COMBINED APPROACH: Using both hostfile and explicit parameters
+echo "Starting DeepSpeed with combined approach (hostfile + direct parameters)..."
+deepspeed \
+  --hostfile=$HOSTFILE \
+  --num_nodes=$SLURM_JOB_NUM_NODES \
+  --num_gpus=$ranks_per_node \
+  --master_addr=$MASTER_ADDR \
+  --master_port=$MASTER_PORT \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
   --validate_every 256 \
   --save_every 256 \
-  --lr 0.02 \
-  --sf_beta 0.84 \
-  --weight_decay 5e-4 \
+  --lr 0.025 \
+  --sf_beta 0.9 \
+  --weight_decay 0.075 \
   --batch_size 6 \
   --grad_accum 8 \
   --gradient_clipping 1.0 \
@@ -178,6 +128,5 @@ srun torchrun \
 
 echo "Training finished."
 
-# No rendezvous directory to clean up with static backend
-
-echo "Training completed with elastic launcher"
+# Clean up temporary files
+rm -f ./hosts-job$SLURM_JOB_ID $HOSTFILE
