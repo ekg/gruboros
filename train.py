@@ -45,13 +45,6 @@ def debug_distributed_info():
         print(f"  - World size: {torch.distributed.get_world_size()}")
         print(f"  - Rank: {torch.distributed.get_rank()}")
         print(f"  - Backend: {torch.distributed.get_backend()}")
-        # Test communication 
-        try:
-            dummy_tensor = torch.ones(1, device="cuda" if torch.cuda.is_available() else "cpu")
-            torch.distributed.all_reduce(dummy_tensor)
-            print(f"  - Test all_reduce successful")
-        except Exception as e:
-            print(f"  - Test all_reduce FAILED: {e}")
     else:
         print(f"Distributed is NOT initialized")
         
