@@ -1530,7 +1530,6 @@ def main():
                     # Try direct access approach
                     try:
                         model_engine.optimizer.train()
-                        print("Successfully set ScheduleFree optimizer to train mode via direct access during epoch transition.")
                     except:
                         print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree during epoch transition.")
         
