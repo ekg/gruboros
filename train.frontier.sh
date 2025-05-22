@@ -112,22 +112,8 @@ echo "Using data: $DATA"
 mkdir -p logs
 mkdir -p ./outputs
 
-# === SIMPLE FILE-BASED RENDEZVOUS SETUP ===
-# Create rendezvous directory with generous permissions
-export RENDEZVOUS_DIR="/lustre/orion/bif148/scratch/$USER/rendezvous_$SLURM_JOB_ID"
-echo "Using rendezvous directory: $RENDEZVOUS_DIR"
-
-# Only rank 0 creates the directory
-if [ "$SLURM_PROCID" -eq 0 ]; then
-    mkdir -p $RENDEZVOUS_DIR
-    chmod 777 $RENDEZVOUS_DIR
-    echo "Created rendezvous directory: $RENDEZVOUS_DIR"
-fi
-
-# Simple barrier to ensure directory exists before proceeding
-srun --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 true
-echo "All nodes synchronized after directory creation"
-# === END SIMPLE FILE-BASED RENDEZVOUS SETUP ===
+# No file-based rendezvous needed for static backend
+echo "Using static rendezvous backend with master at $MASTER_ADDR:$MASTER_PORT"
 
 # Set data path
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt"
@@ -141,14 +127,13 @@ echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with
 # Print SLURM environment for debugging
 env | grep SLURM
 
-# Launch with torchrun using file-based rendezvous
-echo "Starting training with torchrun elastic launcher using file-based rendezvous..."
+# Launch with torchrun using static rendezvous backend
+echo "Starting training with torchrun elastic launcher using static rendezvous..."
 srun torchrun \
   --nproc_per_node=8 \
   --nnodes=$SLURM_JOB_NUM_NODES \
-  --rdzv_backend=c10d \
+  --rdzv_backend=static \
   --rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" \
-  --rdzv_conf="file_init=${RENDEZVOUS_DIR}" \
   --rdzv_id=$SLURM_JOB_ID \
   --max_restarts=3 \
   --monitor_interval=5 \
@@ -173,10 +158,6 @@ srun torchrun \
 
 echo "Training finished."
 
-# Clean up the rendezvous directory after completion
-if [ "$SLURM_PROCID" -eq 0 ]; then
-    echo "Cleaning up rendezvous directory"
-    rm -rf $RENDEZVOUS_DIR
-fi
+# No rendezvous directory to clean up with static backend
 
 echo "Training completed with elastic launcher"
