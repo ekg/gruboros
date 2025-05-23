@@ -465,6 +465,10 @@ def get_args():
     backend_group.add_argument('--rocm', action='store_true',
                         help='Use ROCm backend (for AMD GPUs)')
     
+    # Add sf_beta2 parameter
+    parser.add_argument('--sf_beta2', type=float, default=0.999,
+                        help='ScheduleFree/Adam beta2 parameter (second moment decay)')
+    
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
     
@@ -864,20 +868,21 @@ def main():
         optimizer = AdamWScheduleFree(
             model.parameters(),
             lr=args.lr,
-            betas=(args.sf_beta, 0.999),
+            betas=(args.sf_beta, args.sf_beta2),
             weight_decay=args.weight_decay
         )
         if args.local_rank == 0:
-            print(f"Using ScheduleFree optimizer with lr={args.lr}, beta={args.sf_beta}")
+            print(f"Using ScheduleFree optimizer with lr={args.lr}, beta1={args.sf_beta}, beta2={args.sf_beta2}")
     else:
         # Use standard AdamW (only when explicitly disabled)
         optimizer = AdamW(
             model.parameters(),
             lr=args.lr,
+            betas=(args.sf_beta, args.sf_beta2),
             weight_decay=args.weight_decay
         )
         if args.local_rank == 0:
-            print(f"Using standard AdamW optimizer with lr={args.lr} (ScheduleFree disabled)")
+            print(f"Using standard AdamW optimizer with lr={args.lr}, beta1={args.sf_beta}, beta2={args.sf_beta2} (ScheduleFree disabled)")
     
     # Initialize DeepSpeed engine - let DeepSpeed handle distributed initialization
     print(f"Initializing DeepSpeed with {'ROCM' if use_rocm else 'CUDA'}")
@@ -1119,7 +1124,6 @@ def main():
             # Try direct access approach
             try:
                 model_engine.optimizer.train()
-                print("Successfully set ScheduleFree optimizer to train mode via direct access.")
             except:
                 print("Warning: Cannot access underlying optimizer for initial train mode in ScheduleFree.")
     
@@ -1425,7 +1429,6 @@ def main():
                 # Try direct access approach
                 try:
                     model_engine.optimizer.train()
-                    print("Successfully set ScheduleFree optimizer to train mode via direct access.")
                 except:
                     print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree.")
         
@@ -1497,6 +1500,12 @@ def main():
                 f.write(f"Training command: {' '.join(sys.argv)}\n")
                 f.write(f"Model parameters: {actual_params:,}\n")
                 f.write(f"Configuration: {json.dumps(model_config, indent=2)}\n")
+                f.write(f"Optimizer settings:\n")
+                f.write(f"  Learning rate: {args.lr}\n")
+                f.write(f"  Weight decay: {args.weight_decay}\n")
+                f.write(f"  Beta1 (sf_beta): {args.sf_beta}\n")
+                f.write(f"  Beta2 (sf_beta2): {args.sf_beta2}\n")
+                f.write(f"  ScheduleFree enabled: {args.schedulefree}\n")
                 f.write(f"Distributed setup:\n")
                 f.write(f"  Tensor parallelism size (per node): {args.tp_size} GPUs\n")
                 f.write(f"  Number of nodes (data parallel replicas): {dp_world_size}\n")

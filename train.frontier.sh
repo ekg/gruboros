@@ -4,9 +4,9 @@
 #SBATCH -J minLM_frontier
 #SBATCH -o logs/minLM_frontier-%j.out
 #SBATCH -e logs/minLM_frontier-%j.err
-#SBATCH -t 00:20:00
+#SBATCH -t 00:30:00
 #SBATCH -p batch
-#SBATCH -N 8                  # Number of nodes
+#SBATCH -N 128                # Number of nodes
 #SBATCH --ntasks-per-node=8   # CRITICAL: 8 GPUs per node
 #SBATCH --gpus-per-node=8     # Explicitly request 8 GPUs per node
 #SBATCH -q debug
@@ -131,11 +131,12 @@ deepspeed \
   --train_steps 100000 \
   --validate_every 256 \
   --save_every 256 \
-  --lr 0.025 \
+  --lr 0.01 \
   --sf_beta 0.9 \
-  --weight_decay 0.075 \
+  --sf_beta2 0.95 \
+  --weight_decay 0.01 \
   --batch_size 1 \
-  --grad_accum 8 \
+  --grad_accum 32 \
   --gradient_clipping 1.0 \
   --seq_len 2048 \
   --params 1g \
