@@ -66,8 +66,8 @@ deepspeed --num_gpus=$NUM_GPUS \
   --validate_every 1000 \
   --save_every 2000 \
   --lr 0.0001 \
-  --sf_beta 0.995 \
-  --sf_beta2 0.95 \
+  --sf_beta 0.9 \
+  --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 128 \
