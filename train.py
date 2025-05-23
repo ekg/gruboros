@@ -1119,7 +1119,6 @@ def main():
             # Try direct access approach
             try:
                 model_engine.optimizer.train()
-                print("Successfully set ScheduleFree optimizer to train mode via direct access.")
             except:
                 print("Warning: Cannot access underlying optimizer for initial train mode in ScheduleFree.")
     
@@ -1425,7 +1424,6 @@ def main():
                 # Try direct access approach
                 try:
                     model_engine.optimizer.train()
-                    print("Successfully set ScheduleFree optimizer to train mode via direct access.")
                 except:
                     print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree.")
         
