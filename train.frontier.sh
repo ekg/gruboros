@@ -137,7 +137,6 @@ deepspeed \
   --weight_decay 0.01 \
   --batch_size 1 \
   --grad_accum 32 \
-  --gradient_clipping 1.0 \
   --seq_len 2048 \
   --params 1g \
   --tp_size 8 \
