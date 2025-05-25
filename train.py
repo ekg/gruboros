@@ -1379,7 +1379,6 @@ def main():
                 # Try direct access approach
                 try:
                     model_engine.optimizer.eval()
-                    print("Successfully set ScheduleFree optimizer to eval mode via direct access.")
                 except:
                     print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree.")
         
@@ -1666,7 +1665,6 @@ def main():
                 # Try direct access approach
                 try:
                     model_engine.optimizer.eval()
-                    print("Successfully set ScheduleFree optimizer to eval mode via direct access.")
                 except:
                     print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree after training.")
         
