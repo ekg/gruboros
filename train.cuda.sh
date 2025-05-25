@@ -22,8 +22,9 @@ mkdir -p ./outputs
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 # Force using gloo backend instead of NCCL
-export TORCH_DISTRIBUTED_DEBUG=INFO
-export TORCH_DISTRIBUTED_DETAIL=1          # Detailed distributed logging
+# Set to OFF to disable verbose comm op logs
+export TORCH_DISTRIBUTED_DEBUG=OFF
+export TORCH_DISTRIBUTED_DETAIL=0          # Disable detailed distributed logging
 export TORCH_EXTENSIONS_DIR=$PWD/torch_extensions
 
 # Explicitly disable NCCL
