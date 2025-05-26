@@ -139,7 +139,7 @@ deepspeed \
   --grad_accum 8 \
   --seq_len 2048 \
   --params 1g \
-  --depth 8 \
+  --depth 4 \
   --tp_size 8 \
   --keep_checkpoints 5 \
   --deepspeed \
