@@ -131,7 +131,7 @@ deepspeed \
   --train_steps 100000 \
   --validate_every 256 \
   --save_every 256 \
-  --lr 0.0005 \
+  --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
@@ -139,6 +139,7 @@ deepspeed \
   --grad_accum 8 \
   --seq_len 2048 \
   --params 1g \
+  --depth 4 \
   --tp_size 8 \
   --keep_checkpoints 5 \
   --deepspeed \
