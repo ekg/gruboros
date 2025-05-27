@@ -74,7 +74,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --grad_accum 32 \
   --seq_len 2k \
   --depth 8 \
-  --params 2b \
+  --params 2g \
   --tp_size $NUM_GPUS \
   --keep_checkpoints 5 \
   --deepspeed \
