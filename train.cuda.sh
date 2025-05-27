@@ -66,15 +66,15 @@ deepspeed --num_gpus=$NUM_GPUS \
   --train_steps 100000 \
   --validate_every 1000 \
   --save_every 2000 \
-  --lr 0.005 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 32 \
   --seq_len 2k \
-  --depth 16 \
-  --params 1g \
+  --depth 8 \
+  --params 2b \
   --tp_size $NUM_GPUS \
   --keep_checkpoints 5 \
   --deepspeed \
