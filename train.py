@@ -1049,6 +1049,17 @@ async def main():
     # Update local variable for easier access
     local_rank = args.local_rank
 
+    # Get data parallelism world size for token tracking
+    dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
+    if not hasattr(model_engine, 'data_parallel_world_size'):
+        # If attribute not available, try to calculate it
+        tp_world_size = getattr(model_engine, 'tensor_parallel_world_size', args.tp_size)
+        dp_world_size = max(1, args.world_size // tp_world_size)
+    
+    # Calculate data parallel rank (critical for correct TP+DP data loading)
+    # With TP within node, this is effectively the node ID
+    data_parallel_rank = model_engine.global_rank // args.tp_size
+
     # ===== EVOLUTIONARY GOSSIP INTEGRATION =====
     # Setup logging for gossip protocol
     logging.basicConfig(
@@ -1081,17 +1092,6 @@ async def main():
     # Allow gossip protocol to initialize
     await asyncio.sleep(2)
     # ============================================
-
-    # Get data parallelism world size for token tracking
-    dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
-    if not hasattr(model_engine, 'data_parallel_world_size'):
-        # If attribute not available, try to calculate it
-        tp_world_size = getattr(model_engine, 'tensor_parallel_world_size', args.tp_size)
-        dp_world_size = max(1, args.world_size // tp_world_size)
-    
-    # Calculate data parallel rank (critical for correct TP+DP data loading)
-    # With TP within node, this is effectively the node ID
-    data_parallel_rank = model_engine.global_rank // args.tp_size
     
     # Create worker-specific seeds based on data parallel rank
     # This ensures all GPUs in the same TP group (node) get the same data
