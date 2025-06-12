@@ -1079,7 +1079,7 @@ async def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,  # ADD THIS
-        mixing_interval=500  # Mix every 500 steps
+        mixing_interval=50  # CHANGED: Mix every 50 steps instead of 500
     )
     
     # Start gossip protocol

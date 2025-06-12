@@ -31,7 +31,7 @@ class EvolutionaryTrainingNode:
         
         # Peer management
         self.peer_list: Dict[str, dict] = {}
-        self.mixing_probability = 0.1
+        self.mixing_probability = 0.3  # CHANGED: From 0.1 to 0.3 (30% base chance)
         
         # Network setup - SMART PORT ASSIGNMENT
         master_addr = os.environ.get('MASTER_ADDR', 'localhost')
@@ -63,7 +63,15 @@ class EvolutionaryTrainingNode:
     
     def should_mix_this_round(self) -> bool:
         """Erdős–Rényi random graph connectivity check"""
+        
+        # Debug: Log when we're checking
+        if self.step_count % 100 == 0:  # Log every 100 steps
+            self.logger.info(f"Step {self.step_count}: Checking mixing eligibility")
+        
         if self.step_count % self.mixing_interval != 0:
+            if self.step_count % 100 == 0:
+                next_check = ((self.step_count // self.mixing_interval) + 1) * self.mixing_interval
+                self.logger.info(f"  Not mixing step. Next check at step {next_check}")
             return False
             
         n_peers = max(1, len(self.peer_list))
@@ -71,7 +79,12 @@ class EvolutionaryTrainingNode:
         critical_prob = np.log(n_peers) / n_peers if n_peers > 1 else 0.1
         adaptive_prob = max(self.mixing_probability, critical_prob * 1.5)
         
-        return random.random() < adaptive_prob
+        will_mix = random.random() < adaptive_prob
+        
+        self.logger.info(f"Step {self.step_count}: MIXING CHECK")
+        self.logger.info(f"  Peers: {n_peers}, Probability: {adaptive_prob:.3f}, Will mix: {will_mix}")
+        
+        return will_mix
     
     def select_mixing_partner(self) -> Optional[str]:
         """Fitness-based partner selection (snail sex algorithm)"""
