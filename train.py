@@ -1628,17 +1628,14 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # STAGGERED mixing attempts to prevent synchronous connections
-            mixing_check_step = step + model_engine.global_rank  # Offset by rank
-            if mixing_check_step % 10 == 0:  # Check every 10 steps, but staggered
-                try:
-                    mixing_success = await evolutionary_node.attempt_weight_mixing(training_step=step)
-                    if mixing_success and model_engine.global_rank == 0:
-                        status = evolutionary_node.get_status()
-                        print(f"Step {step}: 🎯 MIXING SUCCESS - {status}")
-                except Exception as e:
-                    if model_engine.global_rank == 0:
-                        print(f"Mixing error (non-fatal): {e}")
+            # Check for scheduled mixing (non-blocking)
+            try:
+                mixing_occurred = await evolutionary_node.check_scheduled_mixing(step)
+                if mixing_occurred and model_engine.global_rank == 0:
+                    print(f"Step {step}: 🎯 MIXING COMPLETED")
+            except Exception as e:
+                if model_engine.global_rank == 0:
+                    print(f"Mixing error: {e}")
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:
