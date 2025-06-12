@@ -88,6 +88,10 @@ os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'  # Enable detailed distributed 
 # Import the minLM model
 from mingru.minLM import minLM
 
+# Add imports for evolutionary gossip protocol
+import logging
+from gossip import EvolutionaryTrainingNode
+
 # 1) Deterministic seeding
 SEED = 42
 random.seed(SEED); np.random.seed(SEED)
@@ -553,7 +557,7 @@ def verify_gpu_health(use_rocm):
 
 # Environment setup is now handled by the batch script
 
-def main():
+async def main():
     args = get_args()
     
     # Configure backend based on command-line arguments
@@ -1044,6 +1048,39 @@ def main():
     
     # Update local variable for easier access
     local_rank = args.local_rank
+
+    # ===== EVOLUTIONARY GOSSIP INTEGRATION =====
+    # Setup logging for gossip protocol
+    logging.basicConfig(
+        level=logging.INFO, 
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(os.path.join(checkpoint_dir or ".", "gossip.log")),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Create evolutionary node
+    evolutionary_node = EvolutionaryTrainingNode(
+        node_id=f"node_{model_engine.global_rank}",
+        model=model_engine.module,
+        global_rank=model_engine.global_rank,
+        world_size=model_engine.world_size,
+        data_parallel_rank=data_parallel_rank,
+        mixing_interval=500  # Mix every 500 steps
+    )
+    
+    # Start gossip protocol
+    await evolutionary_node.start_gossip_protocol()
+    
+    if model_engine.global_rank == 0:
+        print("Evolutionary gossip protocol initialized")
+        print(f"Node count: {model_engine.world_size}")
+        print(f"Mixing interval: 500 steps")
+    
+    # Allow gossip protocol to initialize
+    await asyncio.sleep(2)
+    # ============================================
 
     # Get data parallelism world size for token tracking
     dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
@@ -1682,6 +1719,10 @@ def main():
         print(f"System throughput: {tokens_per_sec_system:.2f} tokens/sec")
         print(f"Final model saved to: {final_path}")
         
+        # Cleanup evolutionary node
+        evolutionary_node.stop_gossip_protocol()
+        print("Evolutionary gossip protocol stopped")
+        
         # Append final statistics to model summary
         if checkpoint_dir:
             with open(os.path.join(checkpoint_dir, "model_summary.txt"), "a") as f:
@@ -1690,6 +1731,14 @@ def main():
                 f.write(f"Total system tokens processed: {total_tokens_processed_system:,}\n")
                 f.write(f"Average system tokens per second: {tokens_per_sec_system:.2f}\n")
                 f.write(f"Final validation loss: {final_val_loss:.4f}\n")
+                
+                # Add evolutionary statistics
+                final_status = evolutionary_node.get_status()
+                f.write(f"\n----- Evolutionary Gossip Statistics -----\n")
+                f.write(f"Final fitness: {final_status['fitness']:.4f}\n")
+                f.write(f"Total mixing attempts: {final_status['mixing_attempts']}\n")
+                f.write(f"Successful mixes: {final_status['successful_mixes']}\n")
+                f.write(f"Mixing success rate: {final_status['successful_mixes']/max(1,final_status['mixing_attempts'])*100:.1f}%\n")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
