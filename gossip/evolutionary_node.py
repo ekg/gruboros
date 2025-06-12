@@ -15,12 +15,13 @@ from .network_utils import NetworkUtils
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, 
                  global_rank: int, world_size: int, data_parallel_rank: int,
-                 mixing_interval: int = 500):
+                 tp_size: int, mixing_interval: int = 500):
         self.node_id = node_id
         self.model = model
         self.global_rank = global_rank
         self.world_size = world_size
         self.data_parallel_rank = data_parallel_rank
+        self.tp_size = tp_size
         self.mixing_interval = mixing_interval
         
         # Fitness tracking
@@ -31,8 +32,9 @@ class EvolutionaryTrainingNode:
         self.peer_list: Dict[str, dict] = {}
         self.mixing_probability = 0.1
         
-        # Network setup
-        self.gossip_port = 29501 + (global_rank % 100)  # Unique port per rank
+        # Network setup - SMART PORT ASSIGNMENT
+        master_addr = os.environ.get('MASTER_ADDR', 'localhost')
+        self.gossip_port = NetworkUtils.get_gossip_port(data_parallel_rank, master_addr)
         self.server = None
         self.gossip_running = False
         self.gossip_task = None
@@ -40,8 +42,10 @@ class EvolutionaryTrainingNode:
         # Logging
         self.logger = logging.getLogger(f'evolutionary_node_{node_id}')
         
-        # Bootstrap nodes
-        self.bootstrap_nodes = NetworkUtils.get_bootstrap_nodes(global_rank, self.logger)
+        # Bootstrap nodes - NOW INCLUDES TP_SIZE
+        self.bootstrap_nodes = NetworkUtils.get_bootstrap_nodes(
+            global_rank, world_size, data_parallel_rank, tp_size, self.logger
+        )
         
         # Statistics
         self.mixing_attempts = 0

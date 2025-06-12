@@ -1078,6 +1078,7 @@ async def main():
         global_rank=model_engine.global_rank,
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
+        tp_size=args.tp_size,  # ADD THIS
         mixing_interval=500  # Mix every 500 steps
     )
     
