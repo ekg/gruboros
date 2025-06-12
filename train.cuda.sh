@@ -84,6 +84,7 @@ echo "Data Parallel Size: 4 (4 separate models with different data)"
 echo "Data path: $DATA_PATH"
 echo "Output directory: $OUTPUT_DIR"
 echo "Hostfile created: hostfile-job-local.txt"
+# Launch training with DeepSpeed - DATA PARALLEL CONFIGURATION
 deepspeed --num_gpus=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
@@ -91,19 +92,18 @@ deepspeed --num_gpus=$NUM_GPUS \
   --cuda \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --train_steps 10000 \
-  --validate_every 500 \
-  --save_every 1000 \
-  --lr 0.001 \
+  --train_steps 20000 \
+  --validate_every 1000 \
+  --save_every 2000 \
+  --lr 0.003 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 1 \
-  --grad_accum 16 \
-  --seq_len 1024 \
-  --depth 8 \
-  --params 1g \
-  --tp_size $NUM_GPUS \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --seq_len 512 \
+  --params 10m \
+  --tp_size 1 \
   --keep_checkpoints 3 \
   --deepspeed \
   --deepspeed_config ds_config.json
