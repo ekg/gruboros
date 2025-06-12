@@ -1200,9 +1200,12 @@ async def main():
         for rank in range(dp_world_size):
             rank_seed = SEED + rank
             temp_rng = random.Random(rank_seed)
-            sample_vals = [temp_rng.random() for _ in range(5)]
-            print(f"Rank {rank} seed {rank_seed}: {sample_vals}")
-        print("============================")
+            samples = [temp_rng.random() for _ in range(10)]
+            print(f"DP Rank {rank} seed {rank_seed}: first 10 randoms: {samples[:5]}")
+        print("========================")
+
+    # Also verify the actual seeds being used:
+    print(f"RANK {model_engine.global_rank}: worker_seed={worker_seed}, train_sampler seed used")
     
     # Create samplers for both datasets using UNIQUE SEEDS PER RANK
     train_sampler = DistributedSampler(
@@ -1625,15 +1628,17 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # Attempt weight mixing EVERY STEP (frequency-controlled internally)
-            try:
-                mixing_success = await evolutionary_node.attempt_weight_mixing(training_step=step)
-                if mixing_success and model_engine.global_rank == 0:
-                    status = evolutionary_node.get_status()
-                    print(f"Step {step}: 🎯 MIXING SUCCESS - {status}")
-            except Exception as e:
-                if model_engine.global_rank == 0:
-                    print(f"Mixing error (non-fatal): {e}")
+            # STAGGERED mixing attempts to prevent synchronous connections
+            mixing_check_step = step + model_engine.global_rank  # Offset by rank
+            if mixing_check_step % 10 == 0:  # Check every 10 steps, but staggered
+                try:
+                    mixing_success = await evolutionary_node.attempt_weight_mixing(training_step=step)
+                    if mixing_success and model_engine.global_rank == 0:
+                        status = evolutionary_node.get_status()
+                        print(f"Step {step}: 🎯 MIXING SUCCESS - {status}")
+                except Exception as e:
+                    if model_engine.global_rank == 0:
+                        print(f"Mixing error (non-fatal): {e}")
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:

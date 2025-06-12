@@ -277,118 +277,91 @@ class EvolutionaryTrainingNode:
         return hashlib.md5(model_str.encode()).hexdigest()[:16]
     
     async def _handle_peer_connection(self, reader, writer):
-        """Handle incoming peer connections with robust error handling"""
+        """Handle incoming peer connections with better concurrency"""
         client_addr = "unknown"
+        connection_id = f"{time.time():.6f}"  # Unique connection ID
+        
         try:
-            # Get client address for debugging
             client_addr = writer.get_extra_info('peername', 'unknown')
-            self.logger.info(f"📞 Incoming connection from {client_addr}")
+            self.logger.info(f"📞 [{connection_id}] Connection from {client_addr}")
             
-            # Receive request with timeout
-            request = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
+            # Shorter timeout to prevent blocking
+            request = await NetworkUtils.safe_recv_json(reader, timeout=3.0)
             if not request:
-                self.logger.warning(f"No request received from {client_addr}")
+                self.logger.warning(f"[{connection_id}] No request from {client_addr}")
                 return
             
-            self.logger.info(f"📨 Received {request.get('type', 'unknown')} from {client_addr}")
+            self.logger.info(f"📨 [{connection_id}] {request.get('type', 'unknown')} from {client_addr}")
             
             if request['type'] == 'mixing_proposal':
-                await self._handle_mixing_proposal(reader, writer, request)
-            elif request['type'] == 'peer_exchange':
-                # We don't actually implement peer exchange yet, just acknowledge
-                self.logger.info(f"Peer exchange not implemented, ignoring")
+                # Handle proposal with connection ID for tracking
+                await self._handle_mixing_proposal(reader, writer, request, connection_id)
             else:
-                self.logger.warning(f"Unknown request type: {request.get('type')}")
+                self.logger.warning(f"[{connection_id}] Unknown request type: {request.get('type')}")
                 
-        except KeyError as e:
-            self.logger.error(f"Missing key in request from {client_addr}: {e}")
-        except asyncio.TimeoutError:
-            self.logger.error(f"Timeout handling connection from {client_addr}")
-        except ConnectionResetError:
-            self.logger.info(f"Connection reset by {client_addr}")
         except Exception as e:
-            self.logger.error(f"Error handling peer connection from {client_addr}: {e}")
-            import traceback
-            self.logger.error(f"Full traceback: {traceback.format_exc()}")
+            self.logger.error(f"[{connection_id}] Error handling {client_addr}: {e}")
         finally:
-            # Robust cleanup
+            # Robust cleanup with connection ID
             try:
                 if not writer.is_closing():
                     writer.close()
                     await writer.wait_closed()
-                self.logger.info(f"✅ Connection to {client_addr} closed cleanly")
+                self.logger.info(f"✅ [{connection_id}] Connection to {client_addr} closed")
             except Exception as cleanup_error:
-                self.logger.error(f"Error during cleanup for {client_addr}: {cleanup_error}")
+                self.logger.error(f"[{connection_id}] Cleanup error for {client_addr}: {cleanup_error}")
     
-    async def _handle_mixing_proposal(self, reader, writer, proposal):
-        """Handle incoming mixing proposal with robust error handling"""
+    async def _handle_mixing_proposal(self, reader, writer, proposal, connection_id):
+        """Handle mixing proposal with connection tracking"""
         partner_id = proposal.get('sender', 'unknown')
         
         try:
             partner_fitness = proposal['fitness']
             current_fitness = self.get_current_fitness()
             
-            # Log incoming proposal
-            self.logger.info(f"📨 MIXING PROPOSAL: {partner_id} -> Node {self.node_id}")
-            self.logger.info(f"   Partner fitness: {partner_fitness:.6f}, My fitness: {current_fitness:.6f}")
-            
             # Update peer fitness
             self.update_peer_fitness(partner_id, partner_fitness)
             
-            # SIMPLIFIED DECISION: Accept unless we're already busy
+            # Quick decision without complex logic
             accept = not self.currently_mixing
             
             if accept:
-                reason = "Accepting incoming proposal"
-                self.currently_mixing = True  # Set busy flag
+                self.currently_mixing = True
+                self.logger.info(f"[{connection_id}] ACCEPTING proposal from {partner_id}")
             else:
-                reason = "Rejecting - already mixing"
-            
-            self.logger.info(f"   Decision: {'ACCEPT' if accept else 'REJECT'} - {reason}")
+                self.logger.info(f"[{connection_id}] REJECTING proposal from {partner_id} - busy")
             
             response = {
                 'accept': accept,
                 'fitness': current_fitness,
-                'sender': self.node_id  # Include our node_id
+                'sender': self.node_id
             }
             
-            # Send response with error checking
-            if not await NetworkUtils.safe_send_json(writer, response, timeout=5.0):
-                self.logger.error(f"Failed to send response to {partner_id}")
+            # Send response immediately
+            if await NetworkUtils.safe_send_json(writer, response, timeout=2.0):
+                self.logger.info(f"[{connection_id}] Response sent to {partner_id}")
+            else:
+                self.logger.error(f"[{connection_id}] Failed to send response to {partner_id}")
                 return
             
+            # Handle accepted proposals
             if accept:
                 try:
-                    # Handle weight exchange
-                    self.logger.info(f"Waiting for weight request from {partner_id}")
-                    weight_request = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
-                    
+                    # Simple weight exchange
+                    weight_request = await NetworkUtils.safe_recv_json(reader, timeout=5.0)
                     if weight_request and weight_request.get('type') == 'weight_request':
-                        # Send simplified weight data
                         weight_response = {
                             'type': 'weight_data',
                             'fitness': current_fitness,
                             'hash': self._get_model_hash()
                         }
-                        
-                        if await NetworkUtils.safe_send_json(writer, weight_response, timeout=5.0):
-                            self.logger.info(f"✅ Completed weight exchange with {partner_id}")
-                        else:
-                            self.logger.error(f"Failed to send weight data to {partner_id}")
-                    else:
-                        self.logger.warning(f"Invalid or missing weight request from {partner_id}")
-                        
-                except Exception as exchange_error:
-                    self.logger.error(f"Error during weight exchange with {partner_id}: {exchange_error}")
+                        await NetworkUtils.safe_send_json(writer, weight_response, timeout=2.0)
+                        self.logger.info(f"[{connection_id}] Weight exchange completed with {partner_id}")
                 finally:
-                    # Always clear busy flag
                     self.currently_mixing = False
                     
-        except KeyError as e:
-            self.logger.error(f"Missing required field in proposal from {partner_id}: {e}")
         except Exception as e:
-            self.logger.error(f"Error handling mixing proposal from {partner_id}: {e}")
-            # Make sure to clear busy flag on any error
+            self.logger.error(f"[{connection_id}] Error in proposal handling: {e}")
             self.currently_mixing = False
     
     async def start_gossip_protocol(self):
