@@ -64,25 +64,39 @@ class EvolutionaryTrainingNode:
     def should_mix_this_round(self) -> bool:
         """Erdős–Rényi random graph connectivity check"""
         
-        # Debug: Log when we're checking
-        if self.step_count % 100 == 0:  # Log every 100 steps
-            self.logger.info(f"Step {self.step_count}: Checking mixing eligibility")
+        # ALWAYS log the check for debugging
+        self.logger.info(f"=== MIXING CHECK: Step {self.step_count} ===")
+        self.logger.info(f"Mixing interval: {self.mixing_interval}")
+        self.logger.info(f"Step check: {self.step_count} % {self.mixing_interval} = {self.step_count % self.mixing_interval}")
         
         if self.step_count % self.mixing_interval != 0:
-            if self.step_count % 100 == 0:
-                next_check = ((self.step_count // self.mixing_interval) + 1) * self.mixing_interval
-                self.logger.info(f"  Not mixing step. Next check at step {next_check}")
+            next_check = ((self.step_count // self.mixing_interval) + 1) * self.mixing_interval
+            self.logger.info(f"❌ Not a mixing step. Next check at step {next_check}")
             return False
             
-        n_peers = max(1, len(self.peer_list))
-        # Ensure giant component formation: p > ln(n)/n
+        self.logger.info(f"✅ This IS a mixing step!")
+        
+        n_peers = len(self.peer_list)
+        self.logger.info(f"Available peers: {n_peers}")
+        self.logger.info(f"Peer list: {list(self.peer_list.keys())}")
+        
+        if n_peers == 0:
+            self.logger.info(f"❌ No peers available for mixing")
+            return False
+        
+        # Probability calculation
         critical_prob = np.log(n_peers) / n_peers if n_peers > 1 else 0.1
         adaptive_prob = max(self.mixing_probability, critical_prob * 1.5)
         
-        will_mix = random.random() < adaptive_prob
+        random_roll = random.random()
+        will_mix = random_roll < adaptive_prob
         
-        self.logger.info(f"Step {self.step_count}: MIXING CHECK")
-        self.logger.info(f"  Peers: {n_peers}, Probability: {adaptive_prob:.3f}, Will mix: {will_mix}")
+        self.logger.info(f"Probability check: {random_roll:.3f} < {adaptive_prob:.3f} = {will_mix}")
+        
+        if will_mix:
+            self.logger.info(f"🎯 WILL ATTEMPT MIXING!")
+        else:
+            self.logger.info(f"🎲 Random check failed, no mixing this round")
         
         return will_mix
     
@@ -121,21 +135,34 @@ class EvolutionaryTrainingNode:
         return np.random.choice(peer_ids, p=probs)
     
     async def attempt_weight_mixing(self):
-        """Attempt to mix weights with a peer"""
+        """Enhanced attempt_weight_mixing with detailed logging"""
+        self.logger.info(f">>> attempt_weight_mixing() called at step {self.step_count}")
+        
         if not self.should_mix_this_round():
+            self.logger.info(f">>> should_mix_this_round() returned False")
             return False
             
+        self.logger.info(f">>> should_mix_this_round() returned True, selecting partner...")
+        
         partner_id = self.select_mixing_partner()
         if not partner_id:
-            # No peers available - log status
+            self.logger.info(f">>> No suitable mixing partner found")
+            self.logger.info(f">>> Available peers: {list(self.peer_list.keys())}")
             fitness = self.get_current_fitness()
             self.logger.info(f"Node {self.node_id}: fitness={fitness:.4f}, no peers for mixing")
             return False
             
+        self.logger.info(f">>> Selected partner: {partner_id}")
+        
         self.mixing_attempts += 1
+        self.logger.info(f">>> Starting negotiation with {partner_id} (attempt #{self.mixing_attempts})")
+        
         success = await self._negotiate_weight_mixing(partner_id)
         if success:
             self.successful_mixes += 1
+            self.logger.info(f">>> Mixing SUCCESS! Total successful: {self.successful_mixes}")
+        else:
+            self.logger.info(f">>> Mixing FAILED with {partner_id}")
             
         return success
     
@@ -345,6 +372,7 @@ class EvolutionaryTrainingNode:
                 # Don't add self
                 host, port = bootstrap_addr.split(':')
                 if host == 'localhost' and int(port) == self.gossip_port:
+                    self.logger.info(f"Skipping self address: {bootstrap_addr} (my port: {self.gossip_port})")
                     continue
                     
                 self.peer_list[bootstrap_addr] = {
@@ -352,6 +380,13 @@ class EvolutionaryTrainingNode:
                     'last_seen': time.time(),
                     'address': bootstrap_addr
                 }
+                self.logger.info(f"Added peer: {bootstrap_addr}")
+        
+        # Log current peer status
+        if len(self.peer_list) > 0:
+            self.logger.info(f"Current peer list: {list(self.peer_list.keys())}")
+        else:
+            self.logger.warning(f"No peers discovered! Bootstrap nodes: {self.bootstrap_nodes}, My port: {self.gossip_port}")
     
     async def _cleanup_dead_peers(self):
         """Remove peers that haven't been seen recently"""

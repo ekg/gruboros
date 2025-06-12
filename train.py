@@ -1615,16 +1615,27 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
+            # Debug step count tracking
+            if model_engine.global_rank == 0 and step % 50 == 0:
+                print(f"DEBUG: Training step {step}, evolutionary step_count: {evolutionary_node.step_count}")
+            
             # Attempt weight mixing (non-blocking)
             if step % 50 == 0:  # Check every 50 steps
+                if model_engine.global_rank == 0:
+                    print(f"DEBUG: Step {step} - About to attempt mixing. Step count: {evolutionary_node.step_count}")
+                
                 try:
                     mixing_success = await evolutionary_node.attempt_weight_mixing()
-                    if mixing_success and model_engine.global_rank == 0:
-                        status = evolutionary_node.get_status()
-                        print(f"Step {step}: Mixing successful - {status}")
+                    if model_engine.global_rank == 0:
+                        print(f"DEBUG: Step {step} - Mixing attempt returned: {mixing_success}")
+                        if mixing_success:
+                            status = evolutionary_node.get_status()
+                            print(f"Step {step}: Mixing successful - {status}")
                 except Exception as e:
                     if model_engine.global_rank == 0:
                         print(f"Mixing failed (non-fatal): {e}")
+                        import traceback
+                        traceback.print_exc()
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:
