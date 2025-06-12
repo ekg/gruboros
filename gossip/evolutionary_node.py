@@ -61,16 +61,19 @@ class EvolutionaryTrainingNode:
         """Get current fitness score"""
         return self.fitness_tracker.get_fitness()
     
-    def should_mix_this_round(self) -> bool:
+    def should_mix_this_round(self, check_step: Optional[int] = None) -> bool:
         """Erdős–Rényi random graph connectivity check"""
         
-        # ALWAYS log the check for debugging
-        self.logger.info(f"=== MIXING CHECK: Step {self.step_count} ===")
-        self.logger.info(f"Mixing interval: {self.mixing_interval}")
-        self.logger.info(f"Step check: {self.step_count} % {self.mixing_interval} = {self.step_count % self.mixing_interval}")
+        # Use provided step or internal step_count
+        step_to_check = check_step if check_step is not None else self.step_count
         
-        if self.step_count % self.mixing_interval != 0:
-            next_check = ((self.step_count // self.mixing_interval) + 1) * self.mixing_interval
+        # ALWAYS log the check for debugging
+        self.logger.info(f"=== MIXING CHECK: Step {step_to_check} (internal: {self.step_count}) ===")
+        self.logger.info(f"Mixing interval: {self.mixing_interval}")
+        self.logger.info(f"Step check: {step_to_check} % {self.mixing_interval} = {step_to_check % self.mixing_interval}")
+        
+        if step_to_check % self.mixing_interval != 0:
+            next_check = ((step_to_check // self.mixing_interval) + 1) * self.mixing_interval
             self.logger.info(f"❌ Not a mixing step. Next check at step {next_check}")
             return False
             
@@ -134,11 +137,14 @@ class EvolutionaryTrainingNode:
         
         return np.random.choice(peer_ids, p=probs)
     
-    async def attempt_weight_mixing(self):
+    async def attempt_weight_mixing(self, training_step: Optional[int] = None):
         """Enhanced attempt_weight_mixing with detailed logging"""
-        self.logger.info(f">>> attempt_weight_mixing() called at step {self.step_count}")
+        # Use training step if provided, otherwise use internal step_count
+        check_step = training_step if training_step is not None else self.step_count
         
-        if not self.should_mix_this_round():
+        self.logger.info(f">>> attempt_weight_mixing() called at training step {training_step}, internal step {self.step_count}")
+        
+        if not self.should_mix_this_round(check_step):
             self.logger.info(f">>> should_mix_this_round() returned False")
             return False
             

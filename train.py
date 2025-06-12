@@ -1625,7 +1625,8 @@ async def main():
                     print(f"DEBUG: Step {step} - About to attempt mixing. Step count: {evolutionary_node.step_count}")
                 
                 try:
-                    mixing_success = await evolutionary_node.attempt_weight_mixing()
+                    # PASS THE TRAINING STEP to fix off-by-one error
+                    mixing_success = await evolutionary_node.attempt_weight_mixing(training_step=step)
                     if model_engine.global_rank == 0:
                         print(f"DEBUG: Step {step} - Mixing attempt returned: {mixing_success}")
                         if mixing_success:
