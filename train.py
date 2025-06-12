@@ -1610,6 +1610,27 @@ async def main():
             # Get the loss value for logging/checkpointing before the optimizer step
             loss_value = loss.detach().item()
             
+            # ===== EVOLUTIONARY MIXING =====
+            # Update evolutionary fitness
+            evolutionary_node.update_fitness(loss_value)
+            
+            # Attempt weight mixing (non-blocking)
+            if step % 50 == 0:  # Check every 50 steps
+                try:
+                    mixing_success = await evolutionary_node.attempt_weight_mixing()
+                    if mixing_success and model_engine.global_rank == 0:
+                        status = evolutionary_node.get_status()
+                        print(f"Step {step}: Mixing successful - {status}")
+                except Exception as e:
+                    if model_engine.global_rank == 0:
+                        print(f"Mixing failed (non-fatal): {e}")
+            
+            # Log status periodically
+            if step % 500 == 0 and model_engine.global_rank == 0:
+                status = evolutionary_node.get_status()
+                print(f"Evolutionary Status: {status}")
+            # ===============================
+            
             # Optimizer step
             model_engine.step()
             
