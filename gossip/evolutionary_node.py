@@ -16,14 +16,19 @@ from .network_utils import NetworkUtils
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, 
                  global_rank: int, world_size: int, data_parallel_rank: int,
-                 tp_size: int, mixing_interval: int = 500):
+                 tp_size: int, mixing_frequency: float = 0.02):  # 2% chance per step
         self.node_id = node_id
         self.model = model
         self.global_rank = global_rank
         self.world_size = world_size
         self.data_parallel_rank = data_parallel_rank
         self.tp_size = tp_size
-        self.mixing_interval = mixing_interval
+        
+        # FIXED: Per-process random state
+        self.mixing_rng = random.Random(42 + global_rank * 1000)  # Unique seed per rank
+        
+        # CHANGED: Frequency-based mixing instead of interval
+        self.mixing_frequency = mixing_frequency  # Probability per step
         
         # Fitness tracking
         self.fitness_tracker = FitnessTracker()
@@ -31,7 +36,9 @@ class EvolutionaryTrainingNode:
         
         # Peer management
         self.peer_list: Dict[str, dict] = {}
-        self.mixing_probability = 0.3  # CHANGED: From 0.1 to 0.3 (30% base chance)
+        
+        # Track if we're currently mixing (prevent concurrent mixing)
+        self.currently_mixing = False
         
         # Network setup - SMART PORT ASSIGNMENT
         master_addr = os.environ.get('MASTER_ADDR', 'localhost')
@@ -61,116 +68,73 @@ class EvolutionaryTrainingNode:
         """Get current fitness score"""
         return self.fitness_tracker.get_fitness()
     
-    def should_mix_this_round(self, check_step: Optional[int] = None) -> bool:
-        """Erdős–Rényi random graph connectivity check"""
-        
-        # Use provided step or internal step_count
-        step_to_check = check_step if check_step is not None else self.step_count
-        
-        # ALWAYS log the check for debugging
-        self.logger.info(f"=== MIXING CHECK: Step {step_to_check} (internal: {self.step_count}) ===")
-        self.logger.info(f"Mixing interval: {self.mixing_interval}")
-        self.logger.info(f"Step check: {step_to_check} % {self.mixing_interval} = {step_to_check % self.mixing_interval}")
-        
-        if step_to_check % self.mixing_interval != 0:
-            next_check = ((step_to_check // self.mixing_interval) + 1) * self.mixing_interval
-            self.logger.info(f"❌ Not a mixing step. Next check at step {next_check}")
+    def should_attempt_mixing(self) -> bool:
+        """Frequency-based mixing decision - check every step"""
+        if self.currently_mixing:
+            self.logger.info(f"Already mixing, skipping attempt")
             return False
             
-        self.logger.info(f"✅ This IS a mixing step!")
-        
-        n_peers = len(self.peer_list)
-        self.logger.info(f"Available peers: {n_peers}")
-        self.logger.info(f"Peer list: {list(self.peer_list.keys())}")
-        
-        if n_peers == 0:
-            self.logger.info(f"❌ No peers available for mixing")
+        if len(self.peer_list) == 0:
             return False
-        
-        # Probability calculation
-        critical_prob = np.log(n_peers) / n_peers if n_peers > 1 else 0.1
-        adaptive_prob = max(self.mixing_probability, critical_prob * 1.5)
-        
-        random_roll = random.random()
-        will_mix = random_roll < adaptive_prob
-        
-        self.logger.info(f"Probability check: {random_roll:.3f} < {adaptive_prob:.3f} = {will_mix}")
+            
+        # Simple frequency check with per-process randomness
+        will_mix = self.mixing_rng.random() < self.mixing_frequency
         
         if will_mix:
-            self.logger.info(f"🎯 WILL ATTEMPT MIXING!")
-        else:
-            self.logger.info(f"🎲 Random check failed, no mixing this round")
+            self.logger.info(f"🎲 Random mixing trigger! (freq={self.mixing_frequency}, peers={len(self.peer_list)})")
         
         return will_mix
     
     def select_mixing_partner(self) -> Optional[str]:
-        """Fitness-based partner selection (snail sex algorithm)"""
+        """Simplified partner selection - just pick randomly from available peers"""
         if not self.peer_list:
             return None
-            
-        current_fitness = self.get_current_fitness()
         
-        # Weight selection by fitness similarity + randomness
-        weights = []
-        peer_ids = []
+        # Simple random selection from peers
+        peer_ids = list(self.peer_list.keys())
+        selected = self.mixing_rng.choice(peer_ids)
         
-        for peer_id, peer_data in self.peer_list.items():
-            peer_fitness = peer_data.get('fitness', 1.0)
-            
-            # Fitness differential - prefer similar fitness for exploration
-            fitness_diff = abs(current_fitness - peer_fitness)
-            similarity_weight = np.exp(-fitness_diff / 0.1)  # Temperature parameter
-            
-            # Add randomness to avoid local optima
-            random_weight = random.random() * 0.3
-            
-            total_weight = similarity_weight + random_weight
-            weights.append(total_weight)
-            peer_ids.append(peer_id)
-        
-        if not weights:
-            return None
-            
-        # Weighted random selection
-        weights = np.array(weights)
-        probs = weights / weights.sum()
-        
-        return np.random.choice(peer_ids, p=probs)
+        self.logger.info(f"Randomly selected {selected} from {len(peer_ids)} peers")
+        return selected
+    
+    def update_peer_fitness(self, peer_id: str, fitness: float):
+        """Update fitness information for a peer"""
+        if peer_id in self.peer_list:
+            self.peer_list[peer_id]['fitness'] = fitness
+            self.peer_list[peer_id]['last_seen'] = time.time()
     
     async def attempt_weight_mixing(self, training_step: Optional[int] = None):
-        """Enhanced attempt_weight_mixing with detailed logging"""
-        # Use training step if provided, otherwise use internal step_count
-        check_step = training_step if training_step is not None else self.step_count
+        """Simplified mixing attempt - frequency based"""
+        self.logger.info(f">>> attempt_weight_mixing() called at training step {training_step}")
         
-        self.logger.info(f">>> attempt_weight_mixing() called at training step {training_step}, internal step {self.step_count}")
-        
-        if not self.should_mix_this_round(check_step):
-            self.logger.info(f">>> should_mix_this_round() returned False")
+        if not self.should_attempt_mixing():
             return False
             
-        self.logger.info(f">>> should_mix_this_round() returned True, selecting partner...")
-        
         partner_id = self.select_mixing_partner()
         if not partner_id:
-            self.logger.info(f">>> No suitable mixing partner found")
-            self.logger.info(f">>> Available peers: {list(self.peer_list.keys())}")
-            fitness = self.get_current_fitness()
-            self.logger.info(f"Node {self.node_id}: fitness={fitness:.4f}, no peers for mixing")
+            self.logger.info(f">>> No mixing partner selected")
             return False
-            
+        
         self.logger.info(f">>> Selected partner: {partner_id}")
         
-        self.mixing_attempts += 1
-        self.logger.info(f">>> Starting negotiation with {partner_id} (attempt #{self.mixing_attempts})")
+        # Set mixing flag
+        self.currently_mixing = True
         
-        success = await self._negotiate_weight_mixing(partner_id)
-        if success:
-            self.successful_mixes += 1
-            self.logger.info(f">>> Mixing SUCCESS! Total successful: {self.successful_mixes}")
-        else:
-            self.logger.info(f">>> Mixing FAILED with {partner_id}")
+        try:
+            self.mixing_attempts += 1
+            success = await self._negotiate_weight_mixing(partner_id)
             
-        return success
+            if success:
+                self.successful_mixes += 1
+                self.logger.info(f"✅ Mixing successful with {partner_id}")
+            else:
+                self.logger.info(f"❌ Mixing failed with {partner_id}")
+                
+            return success
+            
+        finally:
+            # Always clear mixing flag
+            self.currently_mixing = False
     
     async def _negotiate_weight_mixing(self, partner_id: str) -> bool:
         """Negotiate weight mixing with a peer"""
@@ -304,35 +268,53 @@ class EvolutionaryTrainingNode:
             await writer.wait_closed()
     
     async def _handle_mixing_proposal(self, reader, writer, proposal):
-        """Handle incoming mixing proposal"""
+        """ALWAYS ACCEPT incoming proposals (unless busy)"""
+        partner_id = proposal.get('sender', 'unknown')
         partner_fitness = proposal['fitness']
         current_fitness = self.get_current_fitness()
         
-        # Decision algorithm: mix if beneficial or exploratory
-        fitness_ratio = partner_fitness / max(current_fitness, 1e-8)
-        accept_prob = min(1.0, fitness_ratio + 0.2)  # Always some exploration
+        # Log incoming proposal
+        self.logger.info(f"📨 MIXING PROPOSAL: {partner_id} -> Node {self.node_id}")
+        self.logger.info(f"   Partner fitness: {partner_fitness:.6f}, My fitness: {current_fitness:.6f}")
         
-        accept = random.random() < accept_prob
+        # Update peer fitness
+        self.update_peer_fitness(partner_id, partner_fitness)
+        
+        # SIMPLIFIED DECISION: Accept unless we're already busy
+        accept = not self.currently_mixing
+        
+        if accept:
+            reason = "Accepting incoming proposal"
+            self.currently_mixing = True  # Set busy flag
+        else:
+            reason = "Rejecting - already mixing"
+        
+        self.logger.info(f"   Decision: {'ACCEPT' if accept else 'REJECT'} - {reason}")
         
         response = {
             'accept': accept,
             'fitness': current_fitness,
-            'sender': proposal['sender']
+            'sender': partner_id
         }
         
         await NetworkUtils.safe_send_json(writer, response)
         
         if accept:
-            # Handle weight exchange
-            weight_request = await NetworkUtils.safe_recv_json(reader)
-            if weight_request and weight_request['type'] == 'weight_request':
-                # Send simplified weight data
-                weight_response = {
-                    'type': 'weight_data',
-                    'fitness': current_fitness,
-                    'hash': self._get_model_hash()
-                }
-                await NetworkUtils.safe_send_json(writer, weight_response)
+            try:
+                # Handle weight exchange
+                weight_request = await NetworkUtils.safe_recv_json(reader)
+                if weight_request and weight_request['type'] == 'weight_request':
+                    # Send simplified weight data
+                    weight_response = {
+                        'type': 'weight_data',
+                        'fitness': current_fitness,
+                        'hash': self._get_model_hash()
+                    }
+                    await NetworkUtils.safe_send_json(writer, weight_response)
+                    self.logger.info(f"✅ Completed weight exchange with {partner_id}")
+            finally:
+                # Always clear busy flag
+                self.currently_mixing = False
     
     async def start_gossip_protocol(self):
         """Start the gossip protocol"""

@@ -1071,15 +1071,15 @@ async def main():
         ]
     )
     
-    # Create evolutionary node
+    # Create evolutionary node with FREQUENCY instead of interval
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{model_engine.global_rank}",
         model=model_engine.module,
         global_rank=model_engine.global_rank,
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
-        tp_size=args.tp_size,  # ADD THIS
-        mixing_interval=50  # CHANGED: Mix every 50 steps instead of 500
+        tp_size=args.tp_size,
+        mixing_frequency=0.02  # 2% chance per step
     )
     
     # Start gossip protocol
@@ -1088,7 +1088,7 @@ async def main():
     if model_engine.global_rank == 0:
         print("Evolutionary gossip protocol initialized")
         print(f"Node count: {model_engine.world_size}")
-        print(f"Mixing interval: 500 steps")
+        print(f"Mixing frequency: {evolutionary_node.mixing_frequency * 100:.1f}% per step")
     
     # Allow gossip protocol to initialize
     await asyncio.sleep(2)
@@ -1615,28 +1615,15 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # Debug step count tracking
-            if model_engine.global_rank == 0 and step % 50 == 0:
-                print(f"DEBUG: Training step {step}, evolutionary step_count: {evolutionary_node.step_count}")
-            
-            # Attempt weight mixing (non-blocking)
-            if step % 50 == 0:  # Check every 50 steps
+            # Attempt weight mixing EVERY STEP (frequency-controlled internally)
+            try:
+                mixing_success = await evolutionary_node.attempt_weight_mixing(training_step=step)
+                if mixing_success and model_engine.global_rank == 0:
+                    status = evolutionary_node.get_status()
+                    print(f"Step {step}: 🎯 MIXING SUCCESS - {status}")
+            except Exception as e:
                 if model_engine.global_rank == 0:
-                    print(f"DEBUG: Step {step} - About to attempt mixing. Step count: {evolutionary_node.step_count}")
-                
-                try:
-                    # PASS THE TRAINING STEP to fix off-by-one error
-                    mixing_success = await evolutionary_node.attempt_weight_mixing(training_step=step)
-                    if model_engine.global_rank == 0:
-                        print(f"DEBUG: Step {step} - Mixing attempt returned: {mixing_success}")
-                        if mixing_success:
-                            status = evolutionary_node.get_status()
-                            print(f"Step {step}: Mixing successful - {status}")
-                except Exception as e:
-                    if model_engine.global_rank == 0:
-                        print(f"Mixing failed (non-fatal): {e}")
-                        import traceback
-                        traceback.print_exc()
+                    print(f"Mixing error (non-fatal): {e}")
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:
