@@ -1194,13 +1194,23 @@ async def main():
     if args.local_rank == 0:
         print(f"Dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
     
-    # Create samplers for both datasets using DP rank/world size
+    # Add seeding verification to confirm different data per rank
+    if model_engine.global_rank == 0:
+        print("=== SEEDING VERIFICATION ===")
+        for rank in range(dp_world_size):
+            rank_seed = SEED + rank
+            temp_rng = random.Random(rank_seed)
+            sample_vals = [temp_rng.random() for _ in range(5)]
+            print(f"Rank {rank} seed {rank_seed}: {sample_vals}")
+        print("============================")
+    
+    # Create samplers for both datasets using UNIQUE SEEDS PER RANK
     train_sampler = DistributedSampler(
         train_dataset,
         num_replicas=dp_world_size,  # Data parallel world size
         rank=data_parallel_rank,     # Data parallel rank
         shuffle=True,
-        seed=SEED
+        seed=worker_seed  # ← FIXED: Use unique seed per rank
     )
     
     val_sampler = DistributedSampler(
@@ -1208,21 +1218,21 @@ async def main():
         num_replicas=dp_world_size,  # Data parallel world size
         rank=data_parallel_rank,     # Data parallel rank
         shuffle=False,
-        seed=SEED
+        seed=worker_seed + 1000  # ← FIXED: Unique val seed too
     )
     
     # Initialize datasets with epoch 0
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
     
-    # 6) DataLoaders
+    # 6) DataLoaders with per-rank worker seeds
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         sampler=train_sampler,
         num_workers=2,  # Increase slightly
         pin_memory=True,
-        worker_init_fn=lambda wid: random.seed(SEED + wid + os.getpid()),
+        worker_init_fn=lambda wid: random.seed(worker_seed + wid + os.getpid()),  # ← Use worker_seed
         persistent_workers=True,  # Keep workers alive
         prefetch_factor=2  # Prefetch batches
     )
@@ -1233,7 +1243,7 @@ async def main():
         sampler=val_sampler,
         num_workers=2,
         pin_memory=True,
-        worker_init_fn=lambda wid: random.seed(SEED + 100 + wid + os.getpid()),
+        worker_init_fn=lambda wid: random.seed(worker_seed + 1000 + wid + os.getpid()),  # ← Unique val seed
         persistent_workers=True,
         prefetch_factor=2
     )
