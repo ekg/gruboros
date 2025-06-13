@@ -16,7 +16,7 @@ from .network_utils import NetworkUtils
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, 
                  global_rank: int, world_size: int, data_parallel_rank: int,
-                 tp_size: int, mixing_frequency: float = 0.02, mixing_rate: float = 0.95):
+                 tp_size: int, mixing_frequency: float = 0.02):
         self.node_id = node_id
         self.model = model
         self.global_rank = global_rank
@@ -27,7 +27,6 @@ class EvolutionaryTrainingNode:
         # Per-process random state
         self.mixing_rng = random.Random(42 + global_rank * 1000)
         self.mixing_frequency = mixing_frequency
-        self.mixing_rate = mixing_rate
         
         # Fitness tracking
         self.fitness_tracker = FitnessTracker()
@@ -127,18 +126,23 @@ class EvolutionaryTrainingNode:
                 if not partner_weights or partner_weights.get('type') != 'weights':
                     return False
                 
-                # Send our weights
+                # Send our weights (full state dict)
                 our_weights = {
                     'type': 'weights',
                     'fitness': self.get_current_fitness(),
+                    'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
                     'weights_hash': self._get_model_hash()
                 }
                 
                 if not await NetworkUtils.safe_send_json(writer, our_weights, timeout=5.0):
                     return False
                 
-                # Do the actual mixing
-                self._mix_weights_based_on_fitness(partner_weights['fitness'])
+                # Convert partner's weights back to tensors and do the cloning
+                if 'state_dict' in partner_weights:
+                    partner_state = {k: torch.tensor(v) for k, v in partner_weights['state_dict'].items()}
+                    self._mix_weights_based_on_fitness(partner_weights['fitness'], partner_state)
+                else:
+                    self._mix_weights_based_on_fitness(partner_weights['fitness'])
                 
                 return True
                 
@@ -156,60 +160,36 @@ class EvolutionaryTrainingNode:
         # This is handled in _handle_ready_to_mix
         return True
     
-    def _mix_weights_based_on_fitness(self, partner_fitness: float):
-        """Perform actual weight mixing with evolutionary pressure"""
+    def _mix_weights_based_on_fitness(self, partner_fitness: float, partner_weights: dict = None):
+        """Perform pure evolutionary cloning - loser is completely overwritten by winner"""
         current_fitness = self.get_current_fitness()
         recent_loss = self.fitness_tracker.get_recent_loss()
         
         # Determine if partner is better (higher fitness = lower loss = better model)
         partner_is_better = partner_fitness > current_fitness
         
-        if partner_is_better:
-            # We are the losing model - aggressive overwrite with partner's superior weights
-            mixing_strength = self.mixing_rate  # Use the configured mixing rate
-            mixing_type = "AGGRESSIVE_TAKEOVER"
-            self.logger.info(f"🔥 LOSING MODEL: Aggressive takeover by superior partner")
-        else:
-            # We are the winning model - small exploratory perturbation
-            mixing_strength = 0.05  # Small exploration for the winner
-            mixing_type = "WINNER_EXPLORATION"
-            self.logger.info(f"🏆 WINNING MODEL: Light exploration while maintaining superiority")
-        
-        self.logger.info(f"🧬 EVOLUTIONARY WEIGHT MIXING:")
+        self.logger.info(f"🧬 EVOLUTIONARY CLONING:")
         self.logger.info(f"  Partner fitness: {partner_fitness:.4f}, Our fitness: {current_fitness:.4f}")
         self.logger.info(f"  Our recent loss: {recent_loss:.4f}")
-        self.logger.info(f"  Mixing type: {mixing_type}")
-        self.logger.info(f"  Mixing strength: {mixing_strength:.3f}")
-        
-        # Apply evolutionary mixing
-        params_affected = 0
-        total_params = 0
-        
-        with torch.no_grad():
-            for param in self.model.parameters():
-                total_params += param.numel()
-                
-                if partner_is_better:
-                    # Aggressive overwrite: param = (1-rate)*current + rate*noise_toward_partner
-                    # Since we don't have partner's actual weights, we use strong random perturbation
-                    # that moves us significantly away from our current (inferior) position
-                    perturbation = torch.randn_like(param) * 0.01 * mixing_strength
-                    param.data = (1 - mixing_strength) * param.data + mixing_strength * (param.data + perturbation)
-                    params_affected += param.numel()
-                else:
-                    # Winner exploration: small random perturbation on a subset of parameters
-                    if self.mixing_rng.random() < 0.1:  # Only touch 10% of parameters for winners
-                        noise = torch.randn_like(param) * 0.001 * mixing_strength
-                        param.data += noise
-                        params_affected += param.numel()
-        
-        affected_percentage = (params_affected / max(total_params, 1)) * 100
-        self.logger.info(f"  Parameters affected: {params_affected:,}/{total_params:,} ({affected_percentage:.2f}%)")
         
         if partner_is_better:
-            self.logger.info(f"  🚨 EVOLUTIONARY PRESSURE APPLIED: {affected_percentage:.1f}% of weights aggressively modified")
+            # We are the losing model - complete cloning of partner's weights
+            self.logger.info(f"🔥 LOSING MODEL: Complete takeover by superior partner")
+            
+            if partner_weights is not None:
+                # Load partner's weights directly
+                try:
+                    self.model.load_state_dict(partner_weights)
+                    total_params = sum(p.numel() for p in self.model.parameters())
+                    self.logger.info(f"  🚨 COMPLETE CLONING: All {total_params:,} parameters replaced with winner's weights")
+                except Exception as e:
+                    self.logger.error(f"Failed to clone partner weights: {e}")
+            else:
+                self.logger.warning("No partner weights provided for cloning")
         else:
-            self.logger.info(f"  ✨ WINNER EXPLORATION: {affected_percentage:.1f}% of weights lightly perturbed")
+            # We are the winning model - no changes needed
+            self.logger.info(f"🏆 WINNING MODEL: No changes - maintaining superior weights")
+            self.logger.info(f"  ✨ WINNER PRESERVATION: Keeping all parameters unchanged")
     
     def _get_model_hash(self) -> str:
         """Get hash of model weights"""
@@ -287,10 +267,11 @@ class EvolutionaryTrainingNode:
         partner_id = request.get('sender')
         partner_fitness = request.get('fitness', 0.0)
         
-        # Send our weights
+        # Send our weights (full state dict)
         our_weights = {
             'type': 'weights',
             'fitness': self.get_current_fitness(),
+            'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
             'weights_hash': self._get_model_hash()
         }
         
@@ -298,9 +279,13 @@ class EvolutionaryTrainingNode:
             # Get partner's weights
             partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=5.0)
             if partner_weights and partner_weights.get('type') == 'weights':
-                # Do the mixing
-                self._mix_weights_based_on_fitness(partner_fitness)
-                self.logger.info(f"✅ Completed mixing as acceptor with {partner_id}")
+                # Convert partner's weights back to tensors and do the cloning
+                if 'state_dict' in partner_weights:
+                    partner_state = {k: torch.tensor(v) for k, v in partner_weights['state_dict'].items()}
+                    self._mix_weights_based_on_fitness(partner_fitness, partner_state)
+                else:
+                    self._mix_weights_based_on_fitness(partner_fitness)
+                self.logger.info(f"✅ Completed cloning as acceptor with {partner_id}")
     
     async def start_gossip_protocol(self):
         """Start the gossip protocol"""

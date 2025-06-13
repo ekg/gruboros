@@ -473,10 +473,6 @@ def get_args():
     parser.add_argument('--sf_beta2', type=float, default=0.999,
                         help='ScheduleFree/Adam beta2 parameter (second moment decay)')
     
-    # Add mixing_rate parameter
-    parser.add_argument('--mixing_rate', type=float, default=0.95,
-                        help='Weight for evolutionary mixing. When a mix occurs, the losing model\'s weights are updated as: (1-rate)*loser + rate*winner. A rate of 1.0 means the loser is completely overwritten by the winner.')
-    
     # Parse args first to get all defaults filled in
     args = parser.parse_args()
     
@@ -1081,7 +1077,7 @@ async def main():
         ]
     )
     
-    # Create evolutionary node with FREQUENCY instead of interval
+    # Create evolutionary node with pure cloning strategy
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{model_engine.global_rank}",
         model=model_engine.module,
@@ -1089,8 +1085,7 @@ async def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
-        mixing_frequency=0.02,  # 2% chance per step
-        mixing_rate=args.mixing_rate
+        mixing_frequency=0.02  # 2% chance per step
     )
     
     # Start gossip protocol
@@ -1100,7 +1095,7 @@ async def main():
         print("Evolutionary gossip protocol initialized")
         print(f"Node count: {model_engine.world_size}")
         print(f"Mixing frequency: {evolutionary_node.mixing_frequency * 100:.1f}% per step")
-        print(f"Mixing rate: {args.mixing_rate} (loser's weights will be aggressively overwritten)")
+        print("Evolutionary strategy: Loser's weights are completely overwritten by winner's.")
     
     # Allow gossip protocol to initialize
     await asyncio.sleep(2)
@@ -1797,7 +1792,7 @@ async def main():
                 f.write(f"Total mixing attempts: {final_status['mixing_attempts']}\n")
                 f.write(f"Successful mixes: {final_status['successful_mixes']}\n")
                 f.write(f"Mixing success rate: {final_status['successful_mixes']/max(1,final_status['mixing_attempts'])*100:.1f}%\n")
-                f.write(f"Mixing rate (weight of winner's params): {args.mixing_rate}\n")
+                f.write(f"Evolutionary strategy: Complete weight cloning (winner overwrites loser)\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
