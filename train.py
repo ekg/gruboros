@@ -1630,6 +1630,11 @@ async def main():
             
             # Check for scheduled mixing (non-blocking)
             try:
+                # Force a yield to the asyncio event loop to allow background gossip tasks to run.
+                # This is crucial when the main loop is dominated by synchronous, heavy GPU work,
+                # as it prevents the event loop from being starved.
+                await asyncio.sleep(0)
+
                 mixing_occurred = await evolutionary_node.check_scheduled_mixing(step)
                 if mixing_occurred and model_engine.global_rank == 0:
                     print(f"Step {step}: 🎯 MIXING COMPLETED")
