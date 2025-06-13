@@ -138,6 +138,25 @@ class NetworkUtils:
             return None
     
     @staticmethod
+    async def send_message(writer: asyncio.StreamWriter, message: bytes):
+        try:
+            len_bytes = len(message).to_bytes(4, 'big')
+            writer.write(len_bytes)
+            writer.write(message)
+            await writer.drain()
+        except ConnectionResetError:
+            pass # Fail silently if the other end hangs up
+
+    @staticmethod
+    async def receive_message(reader: asyncio.StreamReader, timeout: float = 5.0) -> Optional[bytes]:
+        try:
+            len_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
+            msg_len = int.from_bytes(len_bytes, 'big')
+            return await asyncio.wait_for(reader.readexactly(msg_len), timeout=timeout)
+        except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.TimeoutError):
+            return None
+
+    @staticmethod
     async def safe_send_json(writer: asyncio.StreamWriter, data: dict, timeout: float = 5.0) -> bool:
         """Safely send JSON data"""
         try:
