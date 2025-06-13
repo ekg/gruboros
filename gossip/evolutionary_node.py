@@ -158,21 +158,39 @@ class EvolutionaryTrainingNode:
     def _mix_weights_based_on_fitness(self, partner_fitness: float):
         """Perform actual weight mixing"""
         current_fitness = self.get_current_fitness()
+        recent_loss = self.fitness_tracker.get_recent_loss()
         
         # Adaptive mixing ratio
         if partner_fitness > current_fitness:
             alpha = 0.3  # Take some from better partner
+            mixing_type = "EXPLORATORY"
         else:
             alpha = 0.1  # Small perturbation
+            mixing_type = "EXPLOITATIVE"
+        
+        param_touch_rate = 0.05  # Touch 5% of parameters
+        noise_scale = 0.001 * alpha
+        
+        self.logger.info(f"🧬 WEIGHT MIXING DETAILS:")
+        self.logger.info(f"  Partner fitness: {partner_fitness:.4f}, Our fitness: {current_fitness:.4f}")
+        self.logger.info(f"  Our recent loss: {recent_loss:.4f}")
+        self.logger.info(f"  Mixing type: {mixing_type}, Alpha: {alpha:.3f}")
+        self.logger.info(f"  Param touch rate: {param_touch_rate:.1%}, Noise scale: {noise_scale:.6f}")
         
         # Apply perturbation
+        params_touched = 0
+        total_params = 0
+        
         with torch.no_grad():
             for param in self.model.parameters():
-                if self.mixing_rng.random() < 0.05:  # Touch 5% of parameters
-                    noise = torch.randn_like(param) * 0.001 * alpha
+                total_params += param.numel()
+                if self.mixing_rng.random() < param_touch_rate:
+                    noise = torch.randn_like(param) * noise_scale
                     param.data += noise
+                    params_touched += param.numel()
         
-        self.logger.info(f"Applied weight mixing with alpha={alpha:.3f}")
+        touch_percentage = (params_touched / max(total_params, 1)) * 100
+        self.logger.info(f"  Actually touched: {params_touched:,}/{total_params:,} params ({touch_percentage:.2f}%)")
     
     def _get_model_hash(self) -> str:
         """Get hash of model weights"""
@@ -217,8 +235,15 @@ class EvolutionaryTrainingNode:
         partner_fitness = proposal.get('fitness', 0.0)
         proposed_step = proposal.get('mix_at_step')
         
+        current_fitness = self.get_current_fitness()
+        recent_loss = self.fitness_tracker.get_recent_loss()
+        
         # Always accept proposals (we're async now!)
         accept = proposed_step not in self.pending_mixes
+        
+        self.logger.info(f"📨 RECEIVED MIXING PROPOSAL: from={partner_id}, step={proposed_step}")
+        self.logger.info(f"  Partner fitness: {partner_fitness:.4f} vs our fitness: {current_fitness:.4f}")
+        self.logger.info(f"  Our recent loss: {recent_loss:.4f}, fitness ratio: {partner_fitness/max(current_fitness, 1e-6):.3f}")
         
         if accept:
             # Schedule the mixing
@@ -227,13 +252,13 @@ class EvolutionaryTrainingNode:
                 'role': 'acceptor',
                 'fitness': partner_fitness
             }
-            self.logger.info(f"📅 Scheduled mixing with {partner_id} at step {proposed_step}")
+            self.logger.info(f"✅ ACCEPTED PROPOSAL: scheduling mix at step {proposed_step}")
         else:
-            self.logger.info(f"❌ Rejected mixing with {partner_id} - step {proposed_step} already busy")
+            self.logger.info(f"❌ REJECTED PROPOSAL: step {proposed_step} already busy")
         
         response = {
             'accept': accept,
-            'fitness': self.get_current_fitness()
+            'fitness': current_fitness
         }
         
         await NetworkUtils.safe_send_json(writer, response, timeout=2.0)
@@ -292,13 +317,28 @@ class EvolutionaryTrainingNode:
     
     async def _discovery_loop(self):
         """Background discovery loop - try to schedule mixing"""
+        loop_counter = 0
         while self.gossip_running:
             try:
+                loop_counter += 1
+                rand_value = self.mixing_rng.random()
+                
+                # Log discovery loop activity every 30 seconds
+                if loop_counter % 30 == 0:
+                    current_fitness = self.get_current_fitness()
+                    recent_loss = self.fitness_tracker.get_recent_loss()
+                    self.logger.info(f"🔍 DISCOVERY LOOP STATUS:")
+                    self.logger.info(f"  Loop #{loop_counter}, Random value: {rand_value:.4f}")
+                    self.logger.info(f"  Mixing frequency threshold: {self.mixing_frequency:.4f}")
+                    self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
+                    self.logger.info(f"  Peers available: {len(self.peer_list)}, Pending mixes: {len(self.pending_mixes)}")
+                
                 # Random chance to propose mixing
-                if (self.mixing_rng.random() < self.mixing_frequency and 
+                if (rand_value < self.mixing_frequency and 
                     len(self.peer_list) > 0 and 
                     len(self.pending_mixes) < 2):  # Limit concurrent mixes
                     
+                    self.logger.info(f"🎲 TRIGGERING MIXING PROPOSAL (rand={rand_value:.4f} < threshold={self.mixing_frequency:.4f})")
                     await self._propose_mixing()
                 
                 await asyncio.sleep(1.0)  # Check every second
@@ -310,6 +350,7 @@ class EvolutionaryTrainingNode:
     async def _propose_mixing(self):
         """Propose mixing with a random peer"""
         if not self.peer_list:
+            self.logger.debug("No peers available for mixing proposal")
             return
         
         partner = self.mixing_rng.choice(list(self.peer_list.keys()))
@@ -319,7 +360,15 @@ class EvolutionaryTrainingNode:
         
         # Skip if we already have something scheduled
         if future_step in self.pending_mixes:
+            self.logger.debug(f"Step {future_step} already has scheduled mixing, skipping proposal")
             return
+        
+        current_fitness = self.get_current_fitness()
+        recent_loss = self.fitness_tracker.get_recent_loss()
+        
+        self.logger.info(f"🎲 PROPOSING MIXING: partner={partner}, future_step={future_step}")
+        self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
+        self.logger.info(f"  Step count: {self.step_count}, Pending mixes: {len(self.pending_mixes)}")
         
         try:
             host, port = partner.split(':')
@@ -343,16 +392,22 @@ class EvolutionaryTrainingNode:
                     response = await NetworkUtils.safe_recv_json(reader, timeout=3.0)
                     
                     if response and response.get('accept'):
+                        partner_fitness = response.get('fitness', 0.0)
                         # Schedule the mixing
                         self.pending_mixes[future_step] = {
                             'partner': partner,
                             'role': 'initiator',
-                            'fitness': response.get('fitness', 0.0)
+                            'fitness': partner_fitness
                         }
                         self.mixing_attempts += 1
-                        self.logger.info(f"🎯 Scheduled mixing with {partner} at step {future_step}")
+                        self.logger.info(f"✅ MIXING PROPOSAL ACCEPTED: partner={partner}, step={future_step}")
+                        self.logger.info(f"  Partner fitness: {partner_fitness:.4f} vs our fitness: {current_fitness:.4f}")
+                        self.logger.info(f"  Fitness ratio: {partner_fitness/max(current_fitness, 1e-6):.3f}")
                     else:
-                        self.logger.info(f"❌ Mixing proposal rejected by {partner}")
+                        rejection_reason = "no response" if not response else "rejected"
+                        self.logger.info(f"❌ MIXING PROPOSAL {rejection_reason.upper()}: partner={partner}")
+                        if response:
+                            self.logger.info(f"  Partner fitness: {response.get('fitness', 'unknown')}")
                         
             finally:
                 writer.close()

@@ -12,6 +12,14 @@ class FitnessTracker:
         self.loss_history.append(loss_value)
         if len(self.loss_history) > self.max_history:
             self.loss_history.pop(0)
+        
+        # Log fitness updates occasionally for debugging
+        if len(self.loss_history) % 10 == 0:  # Every 10 updates
+            current_fitness = self.get_fitness()
+            avg_recent_loss = sum(self.loss_history[-5:]) / min(5, len(self.loss_history))
+            import logging
+            logger = logging.getLogger('fitness_tracker')
+            logger.debug(f"Fitness update: loss={loss_value:.4f}, fitness={current_fitness:.4f}, avg_recent={avg_recent_loss:.4f}")
     
     def get_fitness(self) -> float:
         """Calculate fitness as decaying weighted average of recent losses"""
