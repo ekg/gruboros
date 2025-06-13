@@ -379,6 +379,14 @@ class EvolutionaryTrainingNode:
             reader, writer = connection
             
             try:
+                # --- CRITICAL: Disable Nagle's algorithm ---
+                # This ensures our small probe message is sent immediately without being
+                # buffered by the OS, which prevents the peer from timing out.
+                sock = writer.get_extra_info('socket')
+                if sock is not None:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                # -----------------------------------------
+
                 # 1. Send fitness probe
                 request = f"FITNESS_PROBE|{self.node_id}|{current_fitness}"
                 writer.write(request.encode())
