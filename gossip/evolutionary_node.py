@@ -16,7 +16,7 @@ from .network_utils import NetworkUtils
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, 
                  global_rank: int, world_size: int, data_parallel_rank: int,
-                 tp_size: int, mixing_interval: int = 100):
+                 tp_size: int, mixing_probability: float = 0.01):
         self.node_id = node_id
         self.model = model
         self.global_rank = global_rank
@@ -26,7 +26,7 @@ class EvolutionaryTrainingNode:
         
         # Per-process random state
         self.mixing_rng = random.Random(42 + global_rank * 1000)
-        self.mixing_interval = mixing_interval
+        self.mixing_probability = mixing_probability
         self.is_mixing = False  # State flag to prevent concurrent mixes
         
         # Fitness tracking
@@ -317,8 +317,7 @@ class EvolutionaryTrainingNode:
             
             # Start background tasks
             self.gossip_task = asyncio.create_task(self._gossip_loop())
-            # Start the persistent background task for initiating mixes
-            self.mixer_task = asyncio.create_task(self._mixer_task())
+            # The mixer is no longer a persistent task. It's triggered by the training loop.
             
             self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port}")
             
@@ -336,28 +335,21 @@ class EvolutionaryTrainingNode:
                 self.logger.error(f"Gossip loop error: {e}")
                 await asyncio.sleep(30)
     
-    async def _mixer_task(self):
-        """A persistent background task that initiates mixes on a schedule."""
-        self.logger.info(f"Mixer task started. Will attempt mix every {self.mixing_interval} seconds.")
-        # Start with an initial random delay to de-synchronize the nodes
-        initial_delay = self.mixing_rng.uniform(0, 10)
-        await asyncio.sleep(initial_delay)
-        
-        while self.gossip_running:
-            try:
-                # Time-based interval is more robust than step-based
-                await asyncio.sleep(self.mixing_interval)
+    # The persistent _mixer_task is no longer needed and has been removed.
+    # Mixing is now triggered directly by the training loop.
+    
+    async def trigger_mix(self):
+        """
+        Attempts to start a mixing operation if one is not already in progress.
+        This method is non-blocking and safe to call on every step.
+        """
+        # Gating: If a mix is already underway, do nothing.
+        if self.is_mixing:
+            return
 
-                if not self.is_mixing and len(self.peer_list) > 0:
-                    # No need to create a task, just run the logic directly
-                    await self._initiate_mix()
-
-            except asyncio.CancelledError:
-                self.logger.info("Mixer task cancelled.")
-                break
-            except Exception as e:
-                self.logger.error(f"Error in mixer task: {e}", exc_info=True)
-                await asyncio.sleep(5)  # Wait before retrying after error
+        # The _initiate_mix method is already a self-contained task that handles
+        # setting and unsetting the self.is_mixing flag.
+        await self._initiate_mix()
     
     async def _initiate_mix(self):
         """
@@ -462,8 +454,7 @@ class EvolutionaryTrainingNode:
         
         if self.gossip_task:
             self.gossip_task.cancel()
-        if hasattr(self, 'mixer_task') and self.mixer_task:
-            self.mixer_task.cancel()
+        # No mixer_task to cancel.
         if self.server:
             self.server.close()
         

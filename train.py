@@ -1077,7 +1077,7 @@ async def main():
         ]
     )
     
-    # Create evolutionary node with time-based mixing intervals
+    # Create evolutionary node with probability-based mixing
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{model_engine.global_rank}",
         model=model_engine.module,
@@ -1085,7 +1085,7 @@ async def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
-        mixing_interval=50  # Time in seconds between mix attempts
+        mixing_probability=0.01  # 1% chance to attempt a mix each step
     )
     
     # Start gossip protocol
@@ -1094,7 +1094,7 @@ async def main():
     if model_engine.global_rank == 0:
         print("Evolutionary gossip protocol initialized")
         print(f"Node count: {model_engine.world_size}")
-        print(f"Mixing interval: Every {evolutionary_node.mixing_interval} seconds")
+        print(f"Mixing probability: {evolutionary_node.mixing_probability * 100:.1f}% chance per step")
         print("Evolutionary strategy: Loser's weights are completely overwritten by winner's.")
     
     # Allow gossip protocol to initialize
@@ -1648,9 +1648,16 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # The mixing logic is now handled by a persistent background task
-            # inside the EvolutionaryTrainingNode. We just need to yield to the
-            # event loop to allow it and the server to run.
+            # On every step, stochastically decide whether to trigger a mix attempt.
+            if random.random() < evolutionary_node.mixing_probability:
+                # This launches the trigger_mix method as a non-blocking background
+                # task. The trigger_mix method itself will check if a mix is
+                # already in progress before proceeding.
+                asyncio.create_task(evolutionary_node.trigger_mix())
+
+            # Yield control to the asyncio event loop for a moment. This is CRITICAL.
+            # It allows background tasks (like a triggered mix or the server
+            # handling an incoming request) to run.
             await asyncio.sleep(0)
             
             # Log status periodically
