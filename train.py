@@ -1077,7 +1077,7 @@ async def main():
         ]
     )
     
-    # Create evolutionary node with pure cloning strategy
+    # Create evolutionary node with deterministic interval-based mixing
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{model_engine.global_rank}",
         model=model_engine.module,
@@ -1085,7 +1085,7 @@ async def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
-        mixing_frequency=0.008  # 0.8% chance per step (doubled from 0.4%)
+        mixing_interval=100  # Attempt to mix every 100 steps
     )
     
     # Start gossip protocol
@@ -1094,7 +1094,7 @@ async def main():
     if model_engine.global_rank == 0:
         print("Evolutionary gossip protocol initialized")
         print(f"Node count: {model_engine.world_size}")
-        print(f"Mixing frequency: {evolutionary_node.mixing_frequency * 100:.1f}% per step")
+        print(f"Mixing interval: Every {evolutionary_node.mixing_interval} steps")
         print("Evolutionary strategy: Loser's weights are completely overwritten by winner's.")
     
     # Allow gossip protocol to initialize
@@ -1648,28 +1648,9 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # Check for scheduled mixing (non-blocking)
-            try:
-                # We do NOT synchronize all processes before mixing. Doing so would
-                # force all nodes to attempt mixing at the same time, defeating the
-                # purpose of an independent, stochastic schedule. Instead, we allow
-                # each node to decide on its own. The asyncio gossip protocol is
-                # designed to handle cases where a peer is busy (resulting in a
-                # timeout), which is the correct asynchronous pattern.
-
-                # Force a yield to the asyncio event loop to allow background gossip tasks to run.
-                await asyncio.sleep(0)
-
-                mixing_occurred = await evolutionary_node.check_scheduled_mixing(step)
-                if mixing_occurred: # Log on the specific rank that completed
-                    print(f"Rank {model_engine.global_rank} | Step {step}: 🎯 MIXING COMPLETED")
-            except asyncio.TimeoutError:
-                print(f"Rank {model_engine.global_rank} | Step {step}: ❌ Mixing failed due to a timeout. This is expected occasionally if peers are busy.")
-            except Exception as e:
-                # Log the full exception traceback for detailed debugging
-                import traceback
-                print(f"Rank {model_engine.global_rank} | Step {step}: ❌ An unexpected error occurred during mixing: {e}")
-                traceback.print_exc()
+            # Check if we should attempt a mix and launch it as a background task.
+            # This is non-blocking; the training loop continues immediately.
+            asyncio.create_task(evolutionary_node.attempt_mix_if_scheduled(step))
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:

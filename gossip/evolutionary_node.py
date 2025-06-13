@@ -16,7 +16,7 @@ from .network_utils import NetworkUtils
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, 
                  global_rank: int, world_size: int, data_parallel_rank: int,
-                 tp_size: int, mixing_frequency: float = 0.02):
+                 tp_size: int, mixing_interval: int = 100):
         self.node_id = node_id
         self.model = model
         self.global_rank = global_rank
@@ -26,7 +26,8 @@ class EvolutionaryTrainingNode:
         
         # Per-process random state
         self.mixing_rng = random.Random(42 + global_rank * 1000)
-        self.mixing_frequency = mixing_frequency
+        self.mixing_interval = mixing_interval
+        self.is_mixing = False  # State flag to prevent concurrent mixes
         
         # Fitness tracking
         self.fitness_tracker = FitnessTracker()
@@ -68,34 +69,18 @@ class EvolutionaryTrainingNode:
         """Get current fitness score"""
         return self.fitness_tracker.get_fitness()
     
-    async def check_scheduled_mixing(self, training_step: int) -> bool:
-        """Check if we should mix at this training step"""
-        if training_step not in self.pending_mixes:
-            return False
-        
-        mix_info = self.pending_mixes[training_step]
-        partner = mix_info['partner']
-        role = mix_info['role']  # 'initiator' or 'acceptor'
-        
-        self.logger.info(f"🎯 SCHEDULED MIXING at step {training_step} with {partner} (role: {role})")
-        
-        try:
-            if role == 'initiator':
-                success = await self._execute_mixing_as_initiator(partner)
-            else:
-                success = await self._execute_mixing_as_acceptor(partner)
-            
-            if success:
-                self.successful_mixes += 1
-                self.logger.info(f"✅ Scheduled mixing completed with {partner}")
-            else:
-                self.logger.error(f"❌ Scheduled mixing failed with {partner}")
-            
-            return success
-            
-        finally:
-            # Clean up scheduled mixing
-            del self.pending_mixes[training_step]
+    async def attempt_mix_if_scheduled(self, step: int):
+        """
+        Checks if it's time to mix based on a fixed interval and if a mix is not
+        already in progress. If so, it starts the mixing process.
+        """
+        # 1. Gating: Don't start a new mix if one is already happening.
+        if self.is_mixing:
+            return
+
+        # 2. Scheduling: Only mix on the specified step interval.
+        if step > 0 and step % self.mixing_interval == 0:
+            await self._initiate_mix()
     
     async def _execute_mixing_as_initiator(self, partner: str) -> bool:
         """Execute mixing as the initiator"""
@@ -323,74 +308,84 @@ class EvolutionaryTrainingNode:
     # The logic for initiating mixes is handled by `check_scheduled_mixing`
     # and the logic for receiving mixes is handled by the asyncio server.
     
-    async def _propose_mixing(self):
-        """Propose mixing with a random peer"""
+    async def _initiate_mix(self):
+        """
+        Handles the entire lifecycle of a mixing attempt, including setting
+        the state flag to ensure safe concurrency.
+        """
         if not self.peer_list:
-            self.logger.debug("No peers available for mixing proposal")
             return
-        
-        partner = self.mixing_rng.choice(list(self.peer_list.keys()))
-        
-        # Schedule mixing 10-50 steps in the future
-        future_step = self.step_count + self.mixing_rng.randint(10, 50)
-        
-        # Skip if we already have something scheduled
-        if future_step in self.pending_mixes:
-            self.logger.debug(f"Step {future_step} already has scheduled mixing, skipping proposal")
-            return
-        
-        current_fitness = self.get_current_fitness()
-        recent_loss = self.fitness_tracker.get_recent_loss()
-        
-        self.logger.info(f"🎲 PROPOSING MIXING: partner={partner}, future_step={future_step}")
-        self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
-        self.logger.info(f"  Step count: {self.step_count}, Pending mixes: {len(self.pending_mixes)}")
-        
+
+        self.is_mixing = True  # Set lock: A mix is now in progress.
         try:
+            # Pick a random peer
+            partner = self.mixing_rng.choice(list(self.peer_list.keys()))
+            
+            current_fitness = self.get_current_fitness()
+            recent_loss = self.fitness_tracker.get_recent_loss()
+            
+            self.logger.info(f"🎲 INITIATING MIXING: partner={partner}")
+            self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
+            
             host, port = partner.split(':')
             port = int(port)
             
             connection = await NetworkUtils.safe_connect(host, port, timeout=2.0)
             if not connection:
+                self.logger.info(f"❌ Could not connect to {partner}")
                 return
             
             reader, writer = connection
             
             try:
-                proposal = {
-                    'type': 'mixing_proposal',
+                # Send "ready to mix" signal
+                ready_msg = {
+                    'type': 'ready_to_mix',
                     'sender': self.node_id,
-                    'fitness': self.get_current_fitness(),
-                    'mix_at_step': future_step
+                    'fitness': self.get_current_fitness()
                 }
                 
-                if await NetworkUtils.safe_send_json(writer, proposal, timeout=2.0):
-                    response = await NetworkUtils.safe_recv_json(reader, timeout=3.0)
-                    
-                    if response and response.get('accept'):
-                        partner_fitness = response.get('fitness', 0.0)
-                        # Schedule the mixing
-                        self.pending_mixes[future_step] = {
-                            'partner': partner,
-                            'role': 'initiator',
-                            'fitness': partner_fitness
-                        }
-                        self.mixing_attempts += 1
-                        self.logger.info(f"✅ MIXING PROPOSAL ACCEPTED: partner={partner}, step={future_step}")
-                        self.logger.info(f"  Partner fitness: {partner_fitness:.4f} vs our fitness: {current_fitness:.4f}")
-                        self.logger.info(f"  Fitness ratio: {partner_fitness/max(current_fitness, 1e-6):.3f}")
-                    else:
-                        rejection_reason = "no response" if not response else "rejected"
-                        self.logger.info(f"❌ MIXING PROPOSAL {rejection_reason.upper()}: partner={partner}")
-                        if response:
-                            self.logger.info(f"  Partner fitness: {response.get('fitness', 'unknown')}")
-                        
+                if not await NetworkUtils.safe_send_json(writer, ready_msg, timeout=2.0):
+                    self.logger.info(f"❌ Failed to send ready signal to {partner}")
+                    return
+                
+                # Get partner's weights
+                partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=5.0)
+                if not partner_weights or partner_weights.get('type') != 'weights':
+                    self.logger.info(f"❌ Failed to receive weights from {partner}")
+                    return
+                
+                # Send our weights (full state dict)
+                our_weights = {
+                    'type': 'weights',
+                    'fitness': self.get_current_fitness(),
+                    'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
+                    'weights_hash': self._get_model_hash()
+                }
+                
+                if not await NetworkUtils.safe_send_json(writer, our_weights, timeout=5.0):
+                    self.logger.info(f"❌ Failed to send weights to {partner}")
+                    return
+                
+                # Convert partner's weights back to tensors and do the cloning
+                if 'state_dict' in partner_weights:
+                    partner_state = {k: torch.tensor(v) for k, v in partner_weights['state_dict'].items()}
+                    self._mix_weights_based_on_fitness(partner_weights['fitness'], partner_state)
+                else:
+                    self._mix_weights_based_on_fitness(partner_weights['fitness'])
+                
+                self.mixing_attempts += 1
+                self.successful_mixes += 1
+                self.logger.info(f"✅ Mix with {partner} completed successfully.")
+                
             finally:
                 writer.close()
                 await writer.wait_closed()
                 
         except Exception as e:
-            self.logger.error(f"Failed to propose mixing with {partner}: {e}")
+            self.logger.error(f"Error during mix initiation: {e}")
+        finally:
+            self.is_mixing = False  # Release lock: The mix is done (success or fail).
     
     async def _discover_peers(self):
         """Discover peers from bootstrap nodes"""
