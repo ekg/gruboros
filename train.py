@@ -1650,11 +1650,12 @@ async def main():
             
             # Check for scheduled mixing (non-blocking)
             try:
-                # SYNCHRONIZE all processes BEFORE attempting to mix.
-                # This ensures that when one node is ready to mix, other nodes
-                # are not stuck in a synchronous GPU call.
-                # Run the blocking barrier call in a separate thread.
-                await loop.run_in_executor(executor, synchronize_processes)
+                # We do NOT synchronize all processes before mixing. Doing so would
+                # force all nodes to attempt mixing at the same time, defeating the
+                # purpose of an independent, stochastic schedule. Instead, we allow
+                # each node to decide on its own. The asyncio gossip protocol is
+                # designed to handle cases where a peer is busy (resulting in a
+                # timeout), which is the correct asynchronous pattern.
 
                 # Force a yield to the asyncio event loop to allow background gossip tasks to run.
                 await asyncio.sleep(0)
