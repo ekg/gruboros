@@ -389,72 +389,72 @@ class EvolutionaryTrainingNode:
 
             self.mixing_attempts += 1
             try:
-            # Pick a random peer
-            partner = self.mixing_rng.choice(list(self.peer_list.keys()))
-            
-            current_fitness = self.get_current_fitness()
-            recent_loss = self.fitness_tracker.get_recent_loss()
-            
-            self.logger.info(f"🎲 INITIATING MIXING: partner={partner}")
-            self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
-            
-            host, port = partner.split(':')
-            port = int(port)
-            
-            connection = await NetworkUtils.safe_connect(host, port, timeout=5.0)
-            if not connection:
-                self.logger.info(f"❌ Could not connect to {partner}")
-                return
-            
-            reader, writer = connection
-            
-            try:
-                # --- CRITICAL: Disable Nagle's algorithm ---
-                sock = writer.get_extra_info('socket')
-                if sock is not None:
-                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                # -----------------------------------------
-
-                # 1. Send probe with robust handshake protocol
-                probe = f"PROBE|{self.node_id}|{current_fitness}"
-                writer.write(probe.encode())
-                await writer.drain()
-
-                # 2. Wait for a clear response from the peer
-                response_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
-                if not response_data.startswith("RESPONSE"):
-                    raise ValueError(f"Invalid response from peer: {response_data}")
-
-                response_action = response_data.split('|')[1]
+                # Pick a random peer
+                partner = self.mixing_rng.choice(list(self.peer_list.keys()))
                 
-                # 3. Act on the response
-                if response_action == "LOSER":
-                    self.logger.info(f"🏆 Peer {partner} is loser. Sending our winning weights.")
-                    
-                    # Get model weights as bytes
-                    state_dict = self.model.state_dict()
-                    weights_data = {}
-                    for k, v in state_dict.items():
-                        weights_data[k] = v.cpu().numpy().tolist()
-                    
-                    import pickle
-                    weights_bytes = pickle.dumps(weights_data)
-                    
-                    # Send header then weights
-                    header = f"SENDING_WEIGHTS|{len(weights_bytes)}".encode()
-                    writer.write(header)
-                    writer.write(weights_bytes)
+                current_fitness = self.get_current_fitness()
+                recent_loss = self.fitness_tracker.get_recent_loss()
+                
+                self.logger.info(f"🎲 INITIATING MIXING: partner={partner}")
+                self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
+                
+                host, port = partner.split(':')
+                port = int(port)
+                
+                connection = await NetworkUtils.safe_connect(host, port, timeout=5.0)
+                if not connection:
+                    self.logger.info(f"❌ Could not connect to {partner}")
+                    return
+                
+                reader, writer = connection
+                
+                try:
+                    # --- CRITICAL: Disable Nagle's algorithm ---
+                    sock = writer.get_extra_info('socket')
+                    if sock is not None:
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    # -----------------------------------------
+
+                    # 1. Send probe with robust handshake protocol
+                    probe = f"PROBE|{self.node_id}|{current_fitness}"
+                    writer.write(probe.encode())
                     await writer.drain()
+
+                    # 2. Wait for a clear response from the peer
+                    response_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
+                    if not response_data.startswith("RESPONSE"):
+                        raise ValueError(f"Invalid response from peer: {response_data}")
+
+                    response_action = response_data.split('|')[1]
                     
-                    self.successful_mixes += 1
-                    self.logger.info(f"✅ Successfully sent weights to {partner}.")
-                else: # Response was "WINNER"
-                    self.logger.info(f"🥈 Peer {partner} is winner. Ending mix.")
-                
-            finally:
-                writer.close()
-                await writer.wait_closed()
-                
+                    # 3. Act on the response
+                    if response_action == "LOSER":
+                        self.logger.info(f"🏆 Peer {partner} is loser. Sending our winning weights.")
+                        
+                        # Get model weights as bytes
+                        state_dict = self.model.state_dict()
+                        weights_data = {}
+                        for k, v in state_dict.items():
+                            weights_data[k] = v.cpu().numpy().tolist()
+                        
+                        import pickle
+                        weights_bytes = pickle.dumps(weights_data)
+                        
+                        # Send header then weights
+                        header = f"SENDING_WEIGHTS|{len(weights_bytes)}".encode()
+                        writer.write(header)
+                        writer.write(weights_bytes)
+                        await writer.drain()
+                        
+                        self.successful_mixes += 1
+                        self.logger.info(f"✅ Successfully sent weights to {partner}.")
+                    else: # Response was "WINNER"
+                        self.logger.info(f"🥈 Peer {partner} is winner. Ending mix.")
+                    
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                    
             except asyncio.TimeoutError:
                 self.logger.warning(f"⏳ Mix with {partner} timed out.")
             except Exception as e:
