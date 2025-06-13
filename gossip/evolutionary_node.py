@@ -187,42 +187,7 @@ class EvolutionaryTrainingNode:
         # Use the global lock to ensure we don't handle a request while
         # we are busy initiating our own mix.
         async with self.mixing_lock:
-            client_addr = writer.get_extra_info('peername', 'unknown')
-            self.logger.info(f"📬 Handling incoming connection from {client_addr}")
-            
-            try:
-                # Try to read the first part of the message to determine type
-                data = await reader.read(256)
-                if not data:
-                    return
-                
-                message = data.decode().strip()
-                
-                if message.startswith("PROBE"):
-                    # Handle the new PROBE protocol
-                    await self._handle_fitness_probe(reader, writer)
-                else:
-                    # Try to parse as JSON for backward compatibility
-                    try:
-                        request = json.loads(message)
-                        msg_type = request.get('type')
-                        
-                        if msg_type == 'mixing_proposal':
-                            await self._handle_mixing_proposal(reader, writer, request)
-                        else:
-                            self.logger.warning(f"Unknown message type: {msg_type}")
-                    except json.JSONDecodeError:
-                        self.logger.warning(f"Unknown message format: {message[:50]}")
-                    
-            except Exception as e:
-                self.logger.error(f"Error handling connection: {e}")
-            finally:
-                try:
-                    if not writer.is_closing():
-                        writer.close()
-                        await writer.wait_closed()
-                except:
-                    pass
+            await self._run_gossip_protocol(reader, writer, is_initiator=False)
     
     async def _handle_mixing_proposal(self, reader, writer, proposal):
         """Handle mixing proposal - schedule future mixing"""
@@ -258,58 +223,103 @@ class EvolutionaryTrainingNode:
         
         await NetworkUtils.safe_send_json(writer, response, timeout=2.0)
     
-    async def _handle_fitness_probe(self, reader, writer):
-        """Handles an incoming probe and responds, then acts on the response."""
-        peer_addr = writer.get_extra_info('peername')
+    async def _run_gossip_protocol(self, reader, writer, is_initiator: bool):
+        """
+        Executes the entire gossip protocol. This single method contains the logic
+        for both the initiator and the peer, ensuring they are always in sync.
+        """
+        partner_id = "unknown_peer"
         try:
-            # 1. Receive the probe
-            probe_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
-            if not probe_data.startswith("PROBE"):
-                raise ValueError(f"Invalid probe received: {probe_data}")
-
-            _, peer_id, peer_fitness_str = probe_data.split('|')
-            peer_fitness = float(peer_fitness_str)
-            current_fitness = self.get_current_fitness()
-            
-            self.logger.info(f"📬 Received probe from {peer_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
-
-            # 2. Decide and send response
-            if peer_fitness > current_fitness:
-                # We are the loser
-                self.logger.info(f"🥈 We are loser. Responding and waiting for weights.")
-                response = "RESPONSE|LOSER"
-                writer.write(response.encode())
+            if is_initiator:
+                # 1. INITIATOR: Send the probe
+                partner_id = self.mixing_rng.choice(list(self.peer_list.keys()))
+                current_fitness = self.get_current_fitness()
+                self.logger.info(f"🎲 INITIATING MIXING with {partner_id} (fitness: {current_fitness:.4f})")
+                probe = f"PROBE|{self.node_id}|{current_fitness:.6f}"
+                writer.write(probe.encode())
                 await writer.drain()
+
+                # 2. INITIATOR: Wait for response
+                response_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
+                if not response_data:
+                    return
+
+                if response_data == "RESPONSE|LOSER":
+                    # 3a. INITIATOR: Peer is loser, send weights
+                    self.logger.info(f"🏆 Peer {partner_id} is loser. Sending weights.")
+                    
+                    # Get model weights as bytes
+                    state_dict = self.model.state_dict()
+                    weights_data = {}
+                    for k, v in state_dict.items():
+                        weights_data[k] = v.cpu().numpy().tolist()
+                    
+                    import pickle
+                    weights_bytes = pickle.dumps(weights_data)
+                    
+                    # Send header then weights
+                    header = f"SENDING_WEIGHTS|{len(weights_bytes)}".encode()
+                    writer.write(header)
+                    writer.write(weights_bytes)
+                    await writer.drain()
+                    
+                    self.successful_mixes += 1
+                    self.logger.info(f"✅ Sent weights to {partner_id}.")
+                else:
+                    self.logger.info(f"🥈 Peer {partner_id} is winner. Ending mix.")
+
+            else:  # I am the PEER
+                # 1. PEER: Receive the probe
+                probe_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
+                if not probe_data:
+                    return
                 
-                # 3. Wait for the winner to send weights
-                header_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
-                if not header_data.startswith("SENDING_WEIGHTS"):
-                    raise ValueError(f"Invalid weight header from winner: {header_data}")
+                if not probe_data.startswith("PROBE"):
+                    self.logger.warning(f"Invalid probe received: {probe_data}")
+                    return
                 
-                num_bytes = int(header_data.split('|')[1])
-                self.logger.info(f"Receiving {num_bytes} bytes from winner {peer_id}...")
-                weights_bytes = await asyncio.wait_for(reader.readexactly(num_bytes), timeout=60.0)
-                
-                # Load the weights
-                import pickle
-                weights_data = pickle.loads(weights_bytes)
-                partner_state = {k: torch.tensor(v) for k, v in weights_data.items()}
-                self._mix_weights_based_on_fitness(peer_fitness, partner_state)
-                
-                self.logger.info(f"✅ Successfully loaded weights from winner {peer_id}.")
-            else:
-                # We are the winner
-                self.logger.info(f"🏆 We are winner. Responding and closing.")
-                response = "RESPONSE|WINNER"
-                writer.write(response.encode())
-                await writer.drain()
+                _, partner_id, peer_fitness_str = probe_data.split('|')
+                peer_fitness = float(peer_fitness_str)
+                current_fitness = self.get_current_fitness()
+                self.logger.info(f"📬 Received probe from {partner_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
+
+                # 2. PEER: Decide and send response
+                if peer_fitness > current_fitness:
+                    # 3a. PEER: We are the loser, send LOSER response and wait for weights
+                    self.logger.info(f"🥈 We are loser. Sending LOSER response to {partner_id}.")
+                    response = "RESPONSE|LOSER"
+                    writer.write(response.encode())
+                    await writer.drain()
+
+                    # 4. PEER: Receive weights
+                    header_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
+                    if not header_data.startswith("SENDING_WEIGHTS"):
+                        self.logger.warning(f"Invalid weight header from winner: {header_data}")
+                        return
+                    
+                    num_bytes = int(header_data.split('|')[1])
+                    self.logger.info(f"Receiving {num_bytes} bytes from winner {partner_id}...")
+                    weights_bytes = await asyncio.wait_for(reader.readexactly(num_bytes), timeout=60.0)
+                    
+                    # Load the weights
+                    import pickle
+                    weights_data = pickle.loads(weights_bytes)
+                    partner_state = {k: torch.tensor(v) for k, v in weights_data.items()}
+                    self._mix_weights_based_on_fitness(peer_fitness, partner_state)
+                    
+                    self.logger.info(f"✅ Loaded weights from winner {partner_id}.")
+                else:
+                    # 3b. PEER: We are the winner, send WINNER response
+                    self.logger.info(f"🏆 We are winner. Sending WINNER response to {partner_id}.")
+                    response = "RESPONSE|WINNER"
+                    writer.write(response.encode())
+                    await writer.drain()
 
         except asyncio.TimeoutError:
-            self.logger.warning(f"Connection with {peer_addr} timed out during handling.")
+            self.logger.warning(f"⏳ Connection with {partner_id} timed out.")
         except Exception as e:
-            self.logger.error(f"Error in handle_fitness_probe with {peer_addr}: {e}")
+            self.logger.error(f"Error during gossip with {partner_id}: {e}")
         finally:
-            # Close the connection after handling
             if writer:
                 writer.close()
                 await writer.wait_closed()
@@ -381,84 +391,35 @@ class EvolutionaryTrainingNode:
             pass  # A mix is already scheduled, which is fine.
     
     async def _initiate_mix(self):
-        """Initiates a mix with a peer using a robust handshake protocol."""
-        # Use the global lock to ensure no other gossip activity can happen
-        async with self.mixing_lock:
-            if not self.peer_list:
-                return
+        """Initiates a mix with a peer using the unified gossip protocol."""
+        if not self.peer_list:
+            return
 
-            self.mixing_attempts += 1
-            try:
-                # Pick a random peer
-                partner = self.mixing_rng.choice(list(self.peer_list.keys()))
-                
-                current_fitness = self.get_current_fitness()
-                recent_loss = self.fitness_tracker.get_recent_loss()
-                
-                self.logger.info(f"🎲 INITIATING MIXING: partner={partner}")
-                self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
-                
-                host, port = partner.split(':')
-                port = int(port)
-                
-                connection = await NetworkUtils.safe_connect(host, port, timeout=5.0)
-                if not connection:
-                    self.logger.info(f"❌ Could not connect to {partner}")
-                    return
-                
-                reader, writer = connection
-                
-                try:
-                    # --- CRITICAL: Disable Nagle's algorithm ---
-                    sock = writer.get_extra_info('socket')
-                    if sock is not None:
-                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    # -----------------------------------------
-
-                    # 1. Send probe with robust handshake protocol
-                    probe = f"PROBE|{self.node_id}|{current_fitness}"
-                    writer.write(probe.encode())
-                    await writer.drain()
-
-                    # 2. Wait for a clear response from the peer
-                    response_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
-                    if not response_data.startswith("RESPONSE"):
-                        raise ValueError(f"Invalid response from peer: {response_data}")
-
-                    response_action = response_data.split('|')[1]
-                    
-                    # 3. Act on the response
-                    if response_action == "LOSER":
-                        self.logger.info(f"🏆 Peer {partner} is loser. Sending our winning weights.")
-                        
-                        # Get model weights as bytes
-                        state_dict = self.model.state_dict()
-                        weights_data = {}
-                        for k, v in state_dict.items():
-                            weights_data[k] = v.cpu().numpy().tolist()
-                        
-                        import pickle
-                        weights_bytes = pickle.dumps(weights_data)
-                        
-                        # Send header then weights
-                        header = f"SENDING_WEIGHTS|{len(weights_bytes)}".encode()
-                        writer.write(header)
-                        writer.write(weights_bytes)
-                        await writer.drain()
-                        
-                        self.successful_mixes += 1
-                        self.logger.info(f"✅ Successfully sent weights to {partner}.")
-                    else: # Response was "WINNER"
-                        self.logger.info(f"🥈 Peer {partner} is winner. Ending mix.")
-                    
-                finally:
-                    writer.close()
-                    await writer.wait_closed()
-                    
-            except asyncio.TimeoutError:
-                self.logger.warning(f"⏳ Mix with {partner} timed out.")
-            except Exception as e:
-                self.logger.error(f"Error during mix initiation: {e}")
+        self.mixing_attempts += 1
+        
+        # Pick a random peer
+        partner = self.mixing_rng.choice(list(self.peer_list.keys()))
+        host, port = partner.split(':')
+        port = int(port)
+        
+        connection = await NetworkUtils.safe_connect(host, port, timeout=5.0)
+        if not connection:
+            self.logger.info(f"❌ Could not connect to {partner}")
+            return
+        
+        reader, writer = connection
+        
+        try:
+            # Disable Nagle's algorithm for immediate packet sending
+            sock = writer.get_extra_info('socket')
+            if sock is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            
+            # Use the unified protocol as initiator
+            await self._run_gossip_protocol(reader, writer, is_initiator=True)
+            
+        except Exception as e:
+            self.logger.error(f"Error during mix initiation with {partner}: {e}")
     
     async def _discover_peers(self):
         """Discover peers from bootstrap nodes"""
