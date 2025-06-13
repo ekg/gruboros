@@ -251,26 +251,68 @@ class EvolutionaryTrainingNode:
         """Handle ready-to-mix signal from initiator"""
         partner_id = request.get('sender')
         partner_fitness = request.get('fitness', 0.0)
+        current_fitness = self.get_current_fitness()
         
-        # Send our weights (full state dict)
-        our_weights = {
-            'type': 'weights',
-            'fitness': self.get_current_fitness(),
-            'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
-            'weights_hash': self._get_model_hash()
-        }
+        self.logger.info(f"🤝 READY TO MIX: partner={partner_id}")
+        self.logger.info(f"  Partner fitness: {partner_fitness:.4f}, Our fitness: {current_fitness:.4f}")
         
-        if await NetworkUtils.safe_send_json(writer, our_weights, timeout=5.0):
-            # Get partner's weights
-            partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=5.0)
+        # Determine who is winner/loser
+        we_are_winner = current_fitness > partner_fitness
+        
+        if we_are_winner:
+            self.logger.info(f"🏆 WE ARE WINNER: Waiting to receive loser's weights first")
+            
+            # As winner, we receive the loser's weights first
+            partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
+            if not partner_weights or partner_weights.get('type') != 'weights':
+                self.logger.error(f"❌ Failed to receive loser's weights from {partner_id}")
+                return
+            
+            self.logger.info(f"📦 Received loser's weights, now sending our winning weights")
+            
+            # Then send our weights
+            our_weights = {
+                'type': 'weights',
+                'fitness': current_fitness,
+                'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
+                'weights_hash': self._get_model_hash()
+            }
+            
+            if await NetworkUtils.safe_send_json(writer, our_weights, timeout=10.0):
+                self.logger.info(f"✅ Winner completed: sent our weights to {partner_id}")
+                # As winner, we don't change our weights - no cloning needed
+            else:
+                self.logger.error(f"❌ Failed to send winning weights to {partner_id}")
+                
+        else:
+            self.logger.info(f"🥈 WE ARE LOSER: Sending our weights first, then receiving winner's")
+            
+            # As loser, we send our weights first
+            our_weights = {
+                'type': 'weights',
+                'fitness': current_fitness,
+                'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
+                'weights_hash': self._get_model_hash()
+            }
+            
+            if not await NetworkUtils.safe_send_json(writer, our_weights, timeout=10.0):
+                self.logger.error(f"❌ Failed to send our loser weights to {partner_id}")
+                return
+                
+            self.logger.info(f"📤 Sent our loser weights, now waiting for winner's weights")
+            
+            # Then receive the winner's weights
+            partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
             if partner_weights and partner_weights.get('type') == 'weights':
                 # Convert partner's weights back to tensors and do the cloning
                 if 'state_dict' in partner_weights:
                     partner_state = {k: torch.tensor(v) for k, v in partner_weights['state_dict'].items()}
                     self._mix_weights_based_on_fitness(partner_fitness, partner_state)
+                    self.logger.info(f"✅ Loser completed: cloned winner's weights from {partner_id}")
                 else:
-                    self._mix_weights_based_on_fitness(partner_fitness)
-                self.logger.info(f"✅ Completed cloning as acceptor with {partner_id}")
+                    self.logger.error(f"❌ Received weights without state_dict from {partner_id}")
+            else:
+                self.logger.error(f"❌ Failed to receive winner's weights from {partner_id}")
     
     async def start_gossip_protocol(self):
         """Start the gossip protocol"""
@@ -339,40 +381,50 @@ class EvolutionaryTrainingNode:
             
             try:
                 # Send "ready to mix" signal
+                current_fitness = self.get_current_fitness()
                 ready_msg = {
                     'type': 'ready_to_mix',
                     'sender': self.node_id,
-                    'fitness': self.get_current_fitness()
+                    'fitness': current_fitness
                 }
                 
                 if not await NetworkUtils.safe_send_json(writer, ready_msg, timeout=2.0):
                     self.logger.info(f"❌ Failed to send ready signal to {partner}")
                     return
                 
-                # Get partner's weights
-                partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=5.0)
-                if not partner_weights or partner_weights.get('type') != 'weights':
-                    self.logger.info(f"❌ Failed to receive weights from {partner}")
+                # The partner will now determine who is winner/loser and follow the protocol
+                # We need to determine our role too and act accordingly
+                
+                # Note: We don't know partner's fitness yet, so we need to receive their first message
+                # which will tell us whether we should send first (if we're loser) or receive first (if we're winner)
+                
+                # Try to receive first - if partner is loser, they'll send their weights first
+                try:
+                    first_response = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
+                    if first_response and first_response.get('type') == 'weights':
+                        # Partner sent weights first, so they are the loser and we are the winner
+                        partner_fitness = first_response.get('fitness', 0.0)
+                        self.logger.info(f"🏆 WE ARE WINNER (initiated): Received loser's weights from {partner}")
+                        
+                        # Send our winning weights back
+                        our_weights = {
+                            'type': 'weights',
+                            'fitness': current_fitness,
+                            'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
+                            'weights_hash': self._get_model_hash()
+                        }
+                        
+                        if await NetworkUtils.safe_send_json(writer, our_weights, timeout=10.0):
+                            self.logger.info(f"✅ Winner (initiator) completed: sent weights to loser {partner}")
+                            # As winner, we don't change our weights
+                        else:
+                            self.logger.error(f"❌ Failed to send winning weights to {partner}")
+                            
+                except asyncio.TimeoutError:
+                    # Partner didn't send first, so we might be the loser
+                    # We need to get partner's fitness first to determine this
+                    self.logger.error(f"❌ Protocol error: couldn't determine winner/loser with {partner}")
                     return
-                
-                # Send our weights (full state dict)
-                our_weights = {
-                    'type': 'weights',
-                    'fitness': self.get_current_fitness(),
-                    'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
-                    'weights_hash': self._get_model_hash()
-                }
-                
-                if not await NetworkUtils.safe_send_json(writer, our_weights, timeout=5.0):
-                    self.logger.info(f"❌ Failed to send weights to {partner}")
-                    return
-                
-                # Convert partner's weights back to tensors and do the cloning
-                if 'state_dict' in partner_weights:
-                    partner_state = {k: torch.tensor(v) for k, v in partner_weights['state_dict'].items()}
-                    self._mix_weights_based_on_fitness(partner_weights['fitness'], partner_state)
-                else:
-                    self._mix_weights_based_on_fitness(partner_weights['fitness'])
                 
                 self.mixing_attempts += 1
                 self.successful_mixes += 1
