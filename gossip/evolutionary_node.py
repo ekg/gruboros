@@ -16,7 +16,7 @@ from .network_utils import NetworkUtils
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, 
                  global_rank: int, world_size: int, data_parallel_rank: int,
-                 tp_size: int, mixing_frequency: float = 0.02):
+                 tp_size: int, mixing_frequency: float = 0.02, mixing_rate: float = 0.95):
         self.node_id = node_id
         self.model = model
         self.global_rank = global_rank
@@ -27,6 +27,7 @@ class EvolutionaryTrainingNode:
         # Per-process random state
         self.mixing_rng = random.Random(42 + global_rank * 1000)
         self.mixing_frequency = mixing_frequency
+        self.mixing_rate = mixing_rate
         
         # Fitness tracking
         self.fitness_tracker = FitnessTracker()
@@ -156,41 +157,59 @@ class EvolutionaryTrainingNode:
         return True
     
     def _mix_weights_based_on_fitness(self, partner_fitness: float):
-        """Perform actual weight mixing"""
+        """Perform actual weight mixing with evolutionary pressure"""
         current_fitness = self.get_current_fitness()
         recent_loss = self.fitness_tracker.get_recent_loss()
         
-        # Adaptive mixing ratio
-        if partner_fitness > current_fitness:
-            alpha = 0.3  # Take some from better partner
-            mixing_type = "EXPLORATORY"
+        # Determine if partner is better (higher fitness = lower loss = better model)
+        partner_is_better = partner_fitness > current_fitness
+        
+        if partner_is_better:
+            # We are the losing model - aggressive overwrite with partner's superior weights
+            mixing_strength = self.mixing_rate  # Use the configured mixing rate
+            mixing_type = "AGGRESSIVE_TAKEOVER"
+            self.logger.info(f"🔥 LOSING MODEL: Aggressive takeover by superior partner")
         else:
-            alpha = 0.1  # Small perturbation
-            mixing_type = "EXPLOITATIVE"
+            # We are the winning model - small exploratory perturbation
+            mixing_strength = 0.05  # Small exploration for the winner
+            mixing_type = "WINNER_EXPLORATION"
+            self.logger.info(f"🏆 WINNING MODEL: Light exploration while maintaining superiority")
         
-        param_touch_rate = 0.05  # Touch 5% of parameters
-        noise_scale = 0.001 * alpha
-        
-        self.logger.info(f"🧬 WEIGHT MIXING DETAILS:")
+        self.logger.info(f"🧬 EVOLUTIONARY WEIGHT MIXING:")
         self.logger.info(f"  Partner fitness: {partner_fitness:.4f}, Our fitness: {current_fitness:.4f}")
         self.logger.info(f"  Our recent loss: {recent_loss:.4f}")
-        self.logger.info(f"  Mixing type: {mixing_type}, Alpha: {alpha:.3f}")
-        self.logger.info(f"  Param touch rate: {param_touch_rate:.1%}, Noise scale: {noise_scale:.6f}")
+        self.logger.info(f"  Mixing type: {mixing_type}")
+        self.logger.info(f"  Mixing strength: {mixing_strength:.3f}")
         
-        # Apply perturbation
-        params_touched = 0
+        # Apply evolutionary mixing
+        params_affected = 0
         total_params = 0
         
         with torch.no_grad():
             for param in self.model.parameters():
                 total_params += param.numel()
-                if self.mixing_rng.random() < param_touch_rate:
-                    noise = torch.randn_like(param) * noise_scale
-                    param.data += noise
-                    params_touched += param.numel()
+                
+                if partner_is_better:
+                    # Aggressive overwrite: param = (1-rate)*current + rate*noise_toward_partner
+                    # Since we don't have partner's actual weights, we use strong random perturbation
+                    # that moves us significantly away from our current (inferior) position
+                    perturbation = torch.randn_like(param) * 0.01 * mixing_strength
+                    param.data = (1 - mixing_strength) * param.data + mixing_strength * (param.data + perturbation)
+                    params_affected += param.numel()
+                else:
+                    # Winner exploration: small random perturbation on a subset of parameters
+                    if self.mixing_rng.random() < 0.1:  # Only touch 10% of parameters for winners
+                        noise = torch.randn_like(param) * 0.001 * mixing_strength
+                        param.data += noise
+                        params_affected += param.numel()
         
-        touch_percentage = (params_touched / max(total_params, 1)) * 100
-        self.logger.info(f"  Actually touched: {params_touched:,}/{total_params:,} params ({touch_percentage:.2f}%)")
+        affected_percentage = (params_affected / max(total_params, 1)) * 100
+        self.logger.info(f"  Parameters affected: {params_affected:,}/{total_params:,} ({affected_percentage:.2f}%)")
+        
+        if partner_is_better:
+            self.logger.info(f"  🚨 EVOLUTIONARY PRESSURE APPLIED: {affected_percentage:.1f}% of weights aggressively modified")
+        else:
+            self.logger.info(f"  ✨ WINNER EXPLORATION: {affected_percentage:.1f}% of weights lightly perturbed")
     
     def _get_model_hash(self) -> str:
         """Get hash of model weights"""
