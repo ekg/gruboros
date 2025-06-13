@@ -187,7 +187,11 @@ class EvolutionaryTrainingNode:
         # Use the global lock to ensure we don't handle a request while
         # we are busy initiating our own mix.
         async with self.mixing_lock:
-            await self._run_gossip_protocol(reader, writer, is_initiator=False)
+            try:
+                await self._run_gossip_protocol(reader, writer, is_initiator=False)
+            except Exception as e:
+                self.logger.error(f"Error in _handle_peer_connection: {e}")
+            # The connection is managed by the initiator - we don't close it here
     
     async def _handle_mixing_proposal(self, reader, writer, proposal):
         """Handle mixing proposal - schedule future mixing"""
