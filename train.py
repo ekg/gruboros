@@ -1085,7 +1085,7 @@ async def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
-        mixing_frequency=0.004  # 0.4% chance per step (reduced from 2%)
+        mixing_frequency=0.008  # 0.8% chance per step (doubled from 0.4%)
     )
     
     # Start gossip protocol
