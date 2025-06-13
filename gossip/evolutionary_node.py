@@ -142,36 +142,25 @@ class EvolutionaryTrainingNode:
         # This is handled in _handle_ready_to_mix
         return True
     
-    def _mix_weights_based_on_fitness(self, partner_fitness: float, partner_weights: dict = None):
-        """Perform pure evolutionary cloning - loser is completely overwritten by winner"""
-        current_fitness = self.get_current_fitness()
-        recent_loss = self.fitness_tracker.get_recent_loss()
+    def _perform_losing_clone(self, partner_weights: dict, partner_fitness: float, our_fitness_at_decision_time: float):
+        """
+        This function is only called when this node has been confirmed as the "loser".
+        It performs a complete clone of the winner's weights.
+        """
+        self.logger.info(f"🧬 EVOLUTIONARY CLONING (LOSER):")
+        self.logger.info(f"  Decision: Partner Fitness ({partner_fitness:.4f}) > Our Fitness ({our_fitness_at_decision_time:.4f})")
         
-        # Determine if partner is better (higher fitness = lower loss = better model)
-        partner_is_better = partner_fitness > current_fitness
-        
-        self.logger.info(f"🧬 EVOLUTIONARY CLONING:")
-        self.logger.info(f"  Partner fitness: {partner_fitness:.4f}, Our fitness: {current_fitness:.4f}")
-        self.logger.info(f"  Our recent loss: {recent_loss:.4f}")
-        
-        if partner_is_better:
-            # We are the losing model - complete cloning of partner's weights
-            self.logger.info(f"🔥 LOSING MODEL: Complete takeover by superior partner")
-            
-            if partner_weights is not None:
-                # Load partner's weights directly
-                try:
-                    self.model.load_state_dict(partner_weights)
-                    total_params = sum(p.numel() for p in self.model.parameters())
-                    self.logger.info(f"  🚨 COMPLETE CLONING: All {total_params:,} parameters replaced with winner's weights")
-                except Exception as e:
-                    self.logger.error(f"Failed to clone partner weights: {e}")
-            else:
-                self.logger.warning("No partner weights provided for cloning")
-        else:
-            # We are the winning model - no changes needed
-            self.logger.info(f"🏆 WINNING MODEL: No changes - maintaining superior weights")
-            self.logger.info(f"  ✨ WINNER PRESERVATION: Keeping all parameters unchanged")
+        try:
+            # Create a state_dict on the correct device from the received data
+            # The model is already on the correct device, so new tensors will be moved there
+            device = next(self.model.parameters()).device
+            partner_state_dict = {k: torch.tensor(v, device=device) for k, v in partner_weights.items()}
+
+            self.model.load_state_dict(partner_state_dict)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            self.logger.info(f"  🔥 CLONING COMPLETE: All {total_params:,} parameters overwritten by winner's weights.")
+        except Exception as e:
+            self.logger.error(f"  ❌ FAILED to clone partner weights: {e}")
     
     def _get_model_hash(self) -> str:
         """Get hash of model weights"""
