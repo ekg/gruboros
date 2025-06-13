@@ -1648,16 +1648,13 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # On every step, stochastically decide whether to trigger a mix attempt.
+            # On every step, stochastically decide whether to request a mix.
             if random.random() < evolutionary_node.mixing_probability:
-                # This launches the trigger_mix method as a non-blocking background
-                # task. The trigger_mix method itself will check if a mix is
-                # already in progress before proceeding.
-                asyncio.create_task(evolutionary_node.trigger_mix())
+                # This is a fast, non-blocking call that adds a request to the queue.
+                evolutionary_node.request_mix()
 
             # Yield control to the asyncio event loop for a moment. This is CRITICAL.
-            # It allows background tasks (like a triggered mix or the server
-            # handling an incoming request) to run.
+            # It allows the background _mixer task and the server to run.
             await asyncio.sleep(0)
             
             # Log status periodically

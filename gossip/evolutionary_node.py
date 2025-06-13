@@ -9,6 +9,7 @@ import socket
 import pickle
 import hashlib
 import logging
+from asyncio import Queue
 from typing import Dict, List, Optional, Set
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
@@ -28,6 +29,9 @@ class EvolutionaryTrainingNode:
         self.mixing_rng = random.Random(42 + global_rank * 1000)
         self.mixing_probability = mixing_probability
         self.is_mixing = False  # State flag to prevent concurrent mixes
+        
+        # Queue for mix requests from training loop
+        self.mix_request_queue = Queue(maxsize=1)
         
         # Fitness tracking
         self.fitness_tracker = FitnessTracker()
@@ -317,7 +321,8 @@ class EvolutionaryTrainingNode:
             
             # Start background tasks
             self.gossip_task = asyncio.create_task(self._gossip_loop())
-            # The mixer is no longer a persistent task. It's triggered by the training loop.
+            # Start the persistent mixer task that listens to the queue
+            self.mixer_task = asyncio.create_task(self._mixer())
             
             self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port}")
             
@@ -335,21 +340,40 @@ class EvolutionaryTrainingNode:
                 self.logger.error(f"Gossip loop error: {e}")
                 await asyncio.sleep(30)
     
-    # The persistent _mixer_task is no longer needed and has been removed.
-    # Mixing is now triggered directly by the training loop.
-    
-    async def trigger_mix(self):
-        """
-        Attempts to start a mixing operation if one is not already in progress.
-        This method is non-blocking and safe to call on every step.
-        """
-        # Gating: If a mix is already underway, do nothing.
-        if self.is_mixing:
-            return
+    async def _mixer(self):
+        """A persistent background task that waits for mix requests from the queue."""
+        self.logger.info("Mixer task started, waiting for mix requests...")
+        
+        while self.gossip_running:
+            try:
+                # This call will wait indefinitely until the training loop puts something in the queue.
+                await self.mix_request_queue.get()
+                
+                # Once we get a request, we run the full, self-contained mix initiation.
+                # The is_mixing flag is still used to prevent any theoretical overlap,
+                # though the queue size of 1 already provides a strong guarantee.
+                if not self.is_mixing and len(self.peer_list) > 0:
+                    await self._initiate_mix()
+                
+                self.mix_request_queue.task_done()
 
-        # The _initiate_mix method is already a self-contained task that handles
-        # setting and unsetting the self.is_mixing flag.
-        await self._initiate_mix()
+            except asyncio.CancelledError:
+                self.logger.info("Mixer task cancelled.")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in mixer task: {e}")
+                await asyncio.sleep(1)  # Brief pause before retrying
+    
+    def request_mix(self):
+        """
+        A non-blocking, synchronous method for the training loop to request a mix.
+        """
+        # try_put_nowait is a non-blocking call. If the queue is full (because
+        # a mix is already pending), it does nothing and returns immediately.
+        try:
+            self.mix_request_queue.put_nowait(True)
+        except asyncio.QueueFull:
+            pass  # A mix is already scheduled, which is fine.
     
     async def _initiate_mix(self):
         """Initiates a mix with a peer using a robust handshake protocol."""
@@ -454,7 +478,8 @@ class EvolutionaryTrainingNode:
         
         if self.gossip_task:
             self.gossip_task.cancel()
-        # No mixer_task to cancel.
+        if hasattr(self, 'mixer_task') and self.mixer_task:
+            self.mixer_task.cancel()
         if self.server:
             self.server.close()
         
