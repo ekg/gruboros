@@ -225,26 +225,26 @@ class EvolutionaryTrainingNode:
     
     async def _run_gossip_protocol(self, reader, writer, is_initiator: bool):
         """
-        Executes the entire gossip protocol. This single method contains the logic
-        for both the initiator and the peer, ensuring they are always in sync.
+        Executes the entire gossip protocol using proper length-prefixed messages
+        to avoid mixing text and binary data.
         """
         partner_id = "unknown_peer"
         try:
             if is_initiator:
-                # 1. INITIATOR: Send the probe
+                # 1. INITIATOR: Send the probe using length-prefixed message
                 partner_id = self.mixing_rng.choice(list(self.peer_list.keys()))
                 current_fitness = self.get_current_fitness()
                 self.logger.info(f"🎲 INITIATING MIXING with {partner_id} (fitness: {current_fitness:.4f})")
                 probe = f"PROBE|{self.node_id}|{current_fitness:.6f}"
-                writer.write(probe.encode())
-                await writer.drain()
+                await NetworkUtils.send_message(writer, probe.encode())
 
                 # 2. INITIATOR: Wait for response
-                response_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
+                response_data = await NetworkUtils.receive_message(reader, timeout=15.0)
                 if not response_data:
                     return
 
-                if response_data == "RESPONSE|LOSER":
+                response = response_data.decode()
+                if response == "RESPONSE|LOSER":
                     # 3a. INITIATOR: Peer is loser, send weights
                     self.logger.info(f"🏆 Peer {partner_id} is loser. Sending weights.")
                     
@@ -257,11 +257,8 @@ class EvolutionaryTrainingNode:
                     import pickle
                     weights_bytes = pickle.dumps(weights_data)
                     
-                    # Send header then weights
-                    header = f"SENDING_WEIGHTS|{len(weights_bytes)}".encode()
-                    writer.write(header)
-                    writer.write(weights_bytes)
-                    await writer.drain()
+                    # Send weights using length-prefixed message
+                    await NetworkUtils.send_message(writer, weights_bytes)
                     
                     self.successful_mixes += 1
                     self.logger.info(f"✅ Sent weights to {partner_id}.")
@@ -269,16 +266,17 @@ class EvolutionaryTrainingNode:
                     self.logger.info(f"🥈 Peer {partner_id} is winner. Ending mix.")
 
             else:  # I am the PEER
-                # 1. PEER: Receive the probe
-                probe_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
+                # 1. PEER: Receive the probe using length-prefixed message
+                probe_data = await NetworkUtils.receive_message(reader, timeout=15.0)
                 if not probe_data:
                     return
                 
-                if not probe_data.startswith("PROBE"):
-                    self.logger.warning(f"Invalid probe received: {probe_data}")
+                probe = probe_data.decode()
+                if not probe.startswith("PROBE"):
+                    self.logger.warning(f"Invalid probe received: {probe}")
                     return
                 
-                _, partner_id, peer_fitness_str = probe_data.split('|')
+                _, partner_id, peer_fitness_str = probe.split('|')
                 peer_fitness = float(peer_fitness_str)
                 current_fitness = self.get_current_fitness()
                 self.logger.info(f"📬 Received probe from {partner_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
@@ -287,33 +285,22 @@ class EvolutionaryTrainingNode:
                 if peer_fitness > current_fitness:
                     # 3a. PEER: We are the loser, send LOSER response and wait for weights
                     self.logger.info(f"🥈 We are loser. Sending LOSER response to {partner_id}.")
-                    response = "RESPONSE|LOSER"
-                    writer.write(response.encode())
-                    await writer.drain()
+                    await NetworkUtils.send_message(writer, b"RESPONSE|LOSER")
 
-                    # 4. PEER: Receive weights
-                    header_data = (await asyncio.wait_for(reader.read(100), timeout=15.0)).decode()
-                    if not header_data.startswith("SENDING_WEIGHTS"):
-                        self.logger.warning(f"Invalid weight header from winner: {header_data}")
-                        return
-                    
-                    num_bytes = int(header_data.split('|')[1])
-                    self.logger.info(f"Receiving {num_bytes} bytes from winner {partner_id}...")
-                    weights_bytes = await asyncio.wait_for(reader.readexactly(num_bytes), timeout=60.0)
-                    
-                    # Load the weights
-                    import pickle
-                    weights_data = pickle.loads(weights_bytes)
-                    partner_state = {k: torch.tensor(v) for k, v in weights_data.items()}
-                    self._mix_weights_based_on_fitness(peer_fitness, partner_state)
-                    
-                    self.logger.info(f"✅ Loaded weights from winner {partner_id}.")
+                    # 4. PEER: Receive weights using length-prefixed message
+                    weights_bytes = await NetworkUtils.receive_message(reader, timeout=60.0)
+                    if weights_bytes:
+                        # Load the weights
+                        import pickle
+                        weights_data = pickle.loads(weights_bytes)
+                        partner_state = {k: torch.tensor(v) for k, v in weights_data.items()}
+                        self._mix_weights_based_on_fitness(peer_fitness, partner_state)
+                        
+                        self.logger.info(f"✅ Loaded weights from winner {partner_id}.")
                 else:
                     # 3b. PEER: We are the winner, send WINNER response
                     self.logger.info(f"🏆 We are winner. Sending WINNER response to {partner_id}.")
-                    response = "RESPONSE|WINNER"
-                    writer.write(response.encode())
-                    await writer.drain()
+                    await NetworkUtils.send_message(writer, b"RESPONSE|WINNER")
 
         except asyncio.TimeoutError:
             self.logger.warning(f"⏳ Connection with {partner_id} timed out.")
