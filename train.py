@@ -1625,11 +1625,24 @@ async def main():
             # Forward pass (returns loss directly)
             loss = model_engine(inputs, return_loss=True)
             
-            # Backward pass
-            model_engine.backward(loss)
-            
-            # Get the loss value for logging/checkpointing before the optimizer step
+            # Get the loss value for logging. This is the unscaled loss for the micro-batch.
             loss_value = loss.detach().item()
+
+            # --- DISABLE DEEPSPEED GRADIENT ALL-REDUCE ---
+            # To enable our evolutionary gossip strategy, we must prevent DeepSpeed
+            # from averaging gradients across all data-parallel ranks. We do this by
+            # bypassing `model_engine.backward()` and calling the standard torch
+            # `.backward()` on our own.
+            
+            # We must manually scale the loss for gradient accumulation, a task
+            # that `model_engine.backward()` would normally handle.
+            scaled_loss = loss / model_engine.gradient_accumulation_steps()
+            
+            # This computes gradients locally without any cross-GPU/node communication.
+            # It correctly preserves the necessary all-reduce for Tensor Parallelism
+            # while disabling the unwanted all-reduce for Data Parallelism.
+            scaled_loss.backward()
+            # ---------------------------------------------
             
             # ===== EVOLUTIONARY MIXING =====
             # Update evolutionary fitness
