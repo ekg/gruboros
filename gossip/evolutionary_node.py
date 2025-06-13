@@ -301,7 +301,7 @@ class EvolutionaryTrainingNode:
             
             # Start background tasks
             self.gossip_task = asyncio.create_task(self._gossip_loop())
-            self.discovery_task = asyncio.create_task(self._discovery_loop())
+            # The discovery task has been removed as it is redundant
             
             self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port}")
             
@@ -319,37 +319,9 @@ class EvolutionaryTrainingNode:
                 self.logger.error(f"Gossip loop error: {e}")
                 await asyncio.sleep(30)
     
-    async def _discovery_loop(self):
-        """Background discovery loop - try to schedule mixing"""
-        loop_counter = 0
-        while self.gossip_running:
-            try:
-                loop_counter += 1
-                rand_value = self.mixing_rng.random()
-                
-                # Log discovery loop activity every 30 seconds
-                if loop_counter % 30 == 0:
-                    current_fitness = self.get_current_fitness()
-                    recent_loss = self.fitness_tracker.get_recent_loss()
-                    self.logger.info(f"🔍 DISCOVERY LOOP STATUS:")
-                    self.logger.info(f"  Loop #{loop_counter}, Random value: {rand_value:.4f}")
-                    self.logger.info(f"  Mixing frequency threshold: {self.mixing_frequency:.4f}")
-                    self.logger.info(f"  Current fitness: {current_fitness:.4f}, Recent loss: {recent_loss:.4f}")
-                    self.logger.info(f"  Peers available: {len(self.peer_list)}, Pending mixes: {len(self.pending_mixes)}")
-                
-                # Random chance to propose mixing
-                if (rand_value < self.mixing_frequency and 
-                    len(self.peer_list) > 0 and 
-                    len(self.pending_mixes) < 2):  # Limit concurrent mixes
-                    
-                    self.logger.info(f"🎲 TRIGGERING MIXING PROPOSAL (rand={rand_value:.4f} < threshold={self.mixing_frequency:.4f})")
-                    await self._propose_mixing()
-                
-                await asyncio.sleep(1.0)  # Check every second
-                
-            except Exception as e:
-                self.logger.error(f"Discovery loop error: {e}")
-                await asyncio.sleep(5)
+    # The redundant _discovery_loop background task has been removed.
+    # The logic for initiating mixes is handled by `check_scheduled_mixing`
+    # and the logic for receiving mixes is handled by the asyncio server.
     
     async def _propose_mixing(self):
         """Propose mixing with a random peer"""
@@ -439,8 +411,7 @@ class EvolutionaryTrainingNode:
         
         if self.gossip_task:
             self.gossip_task.cancel()
-        if self.discovery_task:
-            self.discovery_task.cancel()
+        # Discovery task no longer exists
         if self.server:
             self.server.close()
         
