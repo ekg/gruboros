@@ -1077,7 +1077,7 @@ async def main():
         ]
     )
     
-    # Create evolutionary node with deterministic interval-based mixing
+    # Create evolutionary node with time-based mixing intervals
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{model_engine.global_rank}",
         model=model_engine.module,
@@ -1085,7 +1085,7 @@ async def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
-        mixing_interval=100  # Attempt to mix every 100 steps
+        mixing_interval=50  # Time in seconds between mix attempts
     )
     
     # Start gossip protocol
@@ -1094,7 +1094,7 @@ async def main():
     if model_engine.global_rank == 0:
         print("Evolutionary gossip protocol initialized")
         print(f"Node count: {model_engine.world_size}")
-        print(f"Mixing interval: Every {evolutionary_node.mixing_interval} steps")
+        print(f"Mixing interval: Every {evolutionary_node.mixing_interval} seconds")
         print("Evolutionary strategy: Loser's weights are completely overwritten by winner's.")
     
     # Allow gossip protocol to initialize
@@ -1648,13 +1648,9 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # Check if we should attempt a mix and launch it as a background task.
-            # This is non-blocking; the training loop continues immediately.
-            asyncio.create_task(evolutionary_node.attempt_mix_if_scheduled(step))
-
-            # Yield control to the asyncio event loop for a moment. This is CRITICAL.
-            # It allows the background task we just created (and other networking
-            # tasks) to actually run. Without this, the event loop starves.
+            # The mixing logic is now handled by a persistent background task
+            # inside the EvolutionaryTrainingNode. We just need to yield to the
+            # event loop to allow it and the server to run.
             await asyncio.sleep(0)
             
             # Log status periodically

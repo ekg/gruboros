@@ -69,18 +69,8 @@ class EvolutionaryTrainingNode:
         """Get current fitness score"""
         return self.fitness_tracker.get_fitness()
     
-    async def attempt_mix_if_scheduled(self, step: int):
-        """
-        Checks if it's time to mix based on a fixed interval and if a mix is not
-        already in progress. If so, it starts the mixing process.
-        """
-        # 1. Gating: Don't start a new mix if one is already happening.
-        if self.is_mixing:
-            return
-
-        # 2. Scheduling: Only mix on the specified step interval.
-        if step > 0 and step % self.mixing_interval == 0:
-            await self._initiate_mix()
+    # The attempt_mix_if_scheduled method has been removed.
+    # Mixing is now handled by the persistent _mixer_task background thread.
     
     async def _execute_mixing_as_initiator(self, partner: str) -> bool:
         """Execute mixing as the initiator"""
@@ -327,7 +317,8 @@ class EvolutionaryTrainingNode:
             
             # Start background tasks
             self.gossip_task = asyncio.create_task(self._gossip_loop())
-            # The discovery task has been removed as it is redundant
+            # Start the persistent background task for initiating mixes
+            self.mixer_task = asyncio.create_task(self._mixer_task())
             
             self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port}")
             
@@ -345,9 +336,28 @@ class EvolutionaryTrainingNode:
                 self.logger.error(f"Gossip loop error: {e}")
                 await asyncio.sleep(30)
     
-    # The redundant _discovery_loop background task has been removed.
-    # The logic for initiating mixes is handled by `check_scheduled_mixing`
-    # and the logic for receiving mixes is handled by the asyncio server.
+    async def _mixer_task(self):
+        """A persistent background task that initiates mixes on a schedule."""
+        self.logger.info(f"Mixer task started. Will attempt mix every {self.mixing_interval} seconds.")
+        # Start with an initial random delay to de-synchronize the nodes
+        initial_delay = self.mixing_rng.uniform(0, 10)
+        await asyncio.sleep(initial_delay)
+        
+        while self.gossip_running:
+            try:
+                # Time-based interval is more robust than step-based
+                await asyncio.sleep(self.mixing_interval)
+
+                if not self.is_mixing and len(self.peer_list) > 0:
+                    # No need to create a task, just run the logic directly
+                    await self._initiate_mix()
+
+            except asyncio.CancelledError:
+                self.logger.info("Mixer task cancelled.")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in mixer task: {e}", exc_info=True)
+                await asyncio.sleep(5)  # Wait before retrying after error
     
     async def _initiate_mix(self):
         """
@@ -452,7 +462,8 @@ class EvolutionaryTrainingNode:
         
         if self.gossip_task:
             self.gossip_task.cancel()
-        # Discovery task no longer exists
+        if hasattr(self, 'mixer_task') and self.mixer_task:
+            self.mixer_task.cancel()
         if self.server:
             self.server.close()
         
