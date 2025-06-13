@@ -425,16 +425,42 @@ class EvolutionaryTrainingNode:
                     'last_seen': time.time()
                 }
     
-    def stop_gossip_protocol(self):
-        """Stop the gossip protocol"""
-        self.gossip_running = False
+    async def stop_gossip_protocol(self):
+        """Gracefully shuts down the gossip protocol components."""
+        self.logger.info("Stopping gossip protocol...")
         
-        if self.gossip_task:
-            self.gossip_task.cancel()
+        # 1. Signal all background tasks to stop their loops
+        self.gossip_running = False
+
+        # 2. Cancel the mixer task so no new mixes are initiated.
         if hasattr(self, 'mixer_task') and self.mixer_task:
             self.mixer_task.cancel()
+            # Wait for the task to acknowledge cancellation
+            try:
+                await self.mixer_task
+            except asyncio.CancelledError:
+                self.logger.info("Mixer task successfully cancelled.")
+
+        # 3. Cancel other background tasks
+        if self.gossip_task:
+            self.gossip_task.cancel()
+            try:
+                await self.gossip_task
+            except asyncio.CancelledError:
+                self.logger.info("Gossip task successfully cancelled.")
+
+        # 4. Stop accepting new connections
         if self.server:
             self.server.close()
+            await self.server.wait_closed()
+            self.logger.info("Gossip server closed.")
+
+        # 5. Wait briefly for any final in-flight operation protected by the lock
+        try:
+            await asyncio.wait_for(self.mixing_lock.acquire(), timeout=2.0)
+            self.mixing_lock.release()
+        except asyncio.TimeoutError:
+            self.logger.warning("Timed out waiting for final mix to complete.")
         
         success_rate = (self.successful_mixes / max(1, self.mixing_attempts)) * 100
         self.logger.info(f"Gossip stopped. Success rate: {success_rate:.1f}%")

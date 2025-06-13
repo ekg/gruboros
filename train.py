@@ -1773,7 +1773,7 @@ async def main():
         print(f"Final model saved to: {final_path}")
         
         # Cleanup evolutionary node
-        evolutionary_node.stop_gossip_protocol()
+        await evolutionary_node.stop_gossip_protocol()
         print("Evolutionary gossip protocol stopped")
         
         # Append final statistics to model summary
