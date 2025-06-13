@@ -190,18 +190,28 @@ class EvolutionaryTrainingNode:
         try:
             client_addr = writer.get_extra_info('peername', 'unknown')
             
-            request = await NetworkUtils.safe_recv_json(reader, timeout=3.0)
-            if not request:
+            # Try to read the first part of the message to determine type
+            data = await reader.read(256)
+            if not data:
                 return
             
-            msg_type = request.get('type')
+            message = data.decode().strip()
             
-            if msg_type == 'mixing_proposal':
-                await self._handle_mixing_proposal(reader, writer, request)
-            elif msg_type == 'ready_to_mix':
-                await self._handle_ready_to_mix(reader, writer, request)
+            if message.startswith("FITNESS_PROBE"):
+                # Reset reader to beginning and handle fitness probe
+                await self._handle_fitness_probe(reader, writer)
             else:
-                self.logger.warning(f"Unknown message type: {msg_type}")
+                # Try to parse as JSON for backward compatibility
+                try:
+                    request = json.loads(message)
+                    msg_type = request.get('type')
+                    
+                    if msg_type == 'mixing_proposal':
+                        await self._handle_mixing_proposal(reader, writer, request)
+                    else:
+                        self.logger.warning(f"Unknown message type: {msg_type}")
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Unknown message format: {message[:50]}")
                 
         except Exception as e:
             self.logger.error(f"Error handling connection: {e}")
@@ -247,72 +257,61 @@ class EvolutionaryTrainingNode:
         
         await NetworkUtils.safe_send_json(writer, response, timeout=2.0)
     
-    async def _handle_ready_to_mix(self, reader, writer, request):
-        """Handle ready-to-mix signal from initiator"""
-        partner_id = request.get('sender')
-        partner_fitness = request.get('fitness', 0.0)
-        current_fitness = self.get_current_fitness()
-        
-        self.logger.info(f"🤝 READY TO MIX: partner={partner_id}")
-        self.logger.info(f"  Partner fitness: {partner_fitness:.4f}, Our fitness: {current_fitness:.4f}")
-        
-        # Determine who is winner/loser
-        we_are_winner = current_fitness > partner_fitness
-        
-        if we_are_winner:
-            self.logger.info(f"🏆 WE ARE WINNER: Waiting to receive loser's weights first")
-            
-            # As winner, we receive the loser's weights first
-            partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
-            if not partner_weights or partner_weights.get('type') != 'weights':
-                self.logger.error(f"❌ Failed to receive loser's weights from {partner_id}")
+    async def _handle_fitness_probe(self, reader, writer):
+        """
+        Handles an incoming fitness probe from a peer and decides whether to
+        request their weights if they are the winner.
+        """
+        peer_addr = writer.get_extra_info('peername')
+        try:
+            # 1. Receive the fitness probe
+            data = (await reader.read(256)).decode().strip()
+            parts = data.split('|')
+            if not data.startswith("FITNESS_PROBE") or len(parts) != 3:
+                self.logger.error(f"Invalid probe from {peer_addr}: {data}")
                 return
+
+            peer_id, peer_fitness_str = parts[1], parts[2]
+            peer_fitness = float(peer_fitness_str)
+            current_fitness = self.get_current_fitness()
             
-            self.logger.info(f"📦 Received loser's weights, now sending our winning weights")
-            
-            # Then send our weights
-            our_weights = {
-                'type': 'weights',
-                'fitness': current_fitness,
-                'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
-                'weights_hash': self._get_model_hash()
-            }
-            
-            if await NetworkUtils.safe_send_json(writer, our_weights, timeout=10.0):
-                self.logger.info(f"✅ Winner completed: sent our weights to {partner_id}")
-                # As winner, we don't change our weights - no cloning needed
-            else:
-                self.logger.error(f"❌ Failed to send winning weights to {partner_id}")
+            self.logger.info(f"📬 Received fitness probe from {peer_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
+
+            # 2. Compare fitness. If the peer is better, request their weights.
+            if peer_fitness > current_fitness:
+                self.logger.info(f"🥈 We are the loser. Requesting weights from {peer_id}.")
                 
-        else:
-            self.logger.info(f"🥈 WE ARE LOSER: Sending our weights first, then receiving winner's")
-            
-            # As loser, we send our weights first
-            our_weights = {
-                'type': 'weights',
-                'fitness': current_fitness,
-                'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
-                'weights_hash': self._get_model_hash()
-            }
-            
-            if not await NetworkUtils.safe_send_json(writer, our_weights, timeout=10.0):
-                self.logger.error(f"❌ Failed to send our loser weights to {partner_id}")
-                return
+                # a) Send the request
+                writer.write("REQUEST_WEIGHTS".encode())
+                await writer.drain()
+
+                # b) Receive the weights
+                num_bytes_header = await asyncio.wait_for(reader.readexactly(8), timeout=15.0)
+                num_bytes = int.from_bytes(num_bytes_header, 'big')
                 
-            self.logger.info(f"📤 Sent our loser weights, now waiting for winner's weights")
-            
-            # Then receive the winner's weights
-            partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
-            if partner_weights and partner_weights.get('type') == 'weights':
-                # Convert partner's weights back to tensors and do the cloning
-                if 'state_dict' in partner_weights:
-                    partner_state = {k: torch.tensor(v) for k, v in partner_weights['state_dict'].items()}
-                    self._mix_weights_based_on_fitness(partner_fitness, partner_state)
-                    self.logger.info(f"✅ Loser completed: cloned winner's weights from {partner_id}")
-                else:
-                    self.logger.error(f"❌ Received weights without state_dict from {partner_id}")
+                self.logger.info(f"Receiving {num_bytes} bytes from winner {peer_id}...")
+                winner_weights_bytes = await asyncio.wait_for(reader.readexactly(num_bytes), timeout=60.0)
+                
+                # Load the weights
+                import pickle
+                weights_data = pickle.loads(winner_weights_bytes)
+                partner_state = {k: torch.tensor(v) for k, v in weights_data.items()}
+                self._mix_weights_based_on_fitness(peer_fitness, partner_state)
+                
+                self.logger.info(f"✅ Successfully received and loaded weights from {peer_id}.")
             else:
-                self.logger.error(f"❌ Failed to receive winner's weights from {partner_id}")
+                # 3. If we are the winner, do nothing and close the connection.
+                self.logger.info(f"🏆 We are the winner. Closing connection with {peer_id}.")
+                writer.write("NO_THANKS".encode())
+                await writer.drain()
+
+        except Exception as e:
+            self.logger.error(f"Error in handle_fitness_probe with {peer_addr}: {e}")
+        finally:
+            # Close the connection after handling
+            if writer:
+                writer.close()
+                await writer.wait_closed()
     
     async def start_gossip_protocol(self):
         """Start the gossip protocol"""
@@ -352,8 +351,8 @@ class EvolutionaryTrainingNode:
     
     async def _initiate_mix(self):
         """
-        Handles the entire lifecycle of a mixing attempt, including setting
-        the state flag to ensure safe concurrency.
+        Initiates a mix with a peer by sending its fitness and waiting for a
+        potential request to send its weights back.
         """
         if not self.peer_list:
             return
@@ -372,7 +371,7 @@ class EvolutionaryTrainingNode:
             host, port = partner.split(':')
             port = int(port)
             
-            connection = await NetworkUtils.safe_connect(host, port, timeout=2.0)
+            connection = await NetworkUtils.safe_connect(host, port, timeout=5.0)
             if not connection:
                 self.logger.info(f"❌ Could not connect to {partner}")
                 return
@@ -380,62 +379,49 @@ class EvolutionaryTrainingNode:
             reader, writer = connection
             
             try:
-                # Send "ready to mix" signal
-                current_fitness = self.get_current_fitness()
-                ready_msg = {
-                    'type': 'ready_to_mix',
-                    'sender': self.node_id,
-                    'fitness': current_fitness
-                }
+                # 1. Send fitness probe
+                request = f"FITNESS_PROBE|{self.node_id}|{current_fitness}"
+                writer.write(request.encode())
+                await writer.drain()
                 
-                if not await NetworkUtils.safe_send_json(writer, ready_msg, timeout=2.0):
-                    self.logger.info(f"❌ Failed to send ready signal to {partner}")
-                    return
+                # 2. Wait for response from peer
+                response = (await asyncio.wait_for(reader.read(100), timeout=10.0)).decode()
                 
-                # The partner will now determine who is winner/loser and follow the protocol
-                # We need to determine our role too and act accordingly
-                
-                # Note: We don't know partner's fitness yet, so we need to receive their first message
-                # which will tell us whether we should send first (if we're loser) or receive first (if we're winner)
-                
-                # Try to receive first - if partner is loser, they'll send their weights first
-                try:
-                    first_response = await NetworkUtils.safe_recv_json(reader, timeout=10.0)
-                    if first_response and first_response.get('type') == 'weights':
-                        # Partner sent weights first, so they are the loser and we are the winner
-                        partner_fitness = first_response.get('fitness', 0.0)
-                        self.logger.info(f"🏆 WE ARE WINNER (initiated): Received loser's weights from {partner}")
-                        
-                        # Send our winning weights back
-                        our_weights = {
-                            'type': 'weights',
-                            'fitness': current_fitness,
-                            'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
-                            'weights_hash': self._get_model_hash()
-                        }
-                        
-                        if await NetworkUtils.safe_send_json(writer, our_weights, timeout=10.0):
-                            self.logger.info(f"✅ Winner (initiator) completed: sent weights to loser {partner}")
-                            # As winner, we don't change our weights
-                        else:
-                            self.logger.error(f"❌ Failed to send winning weights to {partner}")
-                            
-                except asyncio.TimeoutError:
-                    # Partner didn't send first, so we might be the loser
-                    # We need to get partner's fitness first to determine this
-                    self.logger.error(f"❌ Protocol error: couldn't determine winner/loser with {partner}")
-                    return
+                # 3. If peer requests our weights, send them
+                if response == "REQUEST_WEIGHTS":
+                    self.logger.info(f"🏆 Peer {partner} is loser, sending our weights.")
+                    
+                    # Get model weights as bytes
+                    state_dict = self.model.state_dict()
+                    weights_data = {}
+                    for k, v in state_dict.items():
+                        weights_data[k] = v.cpu().numpy().tolist()
+                    
+                    import pickle
+                    weights_bytes = pickle.dumps(weights_data)
+                    
+                    # Send weights
+                    writer.write(len(weights_bytes).to_bytes(8, 'big'))
+                    writer.write(weights_bytes)
+                    await writer.drain()
+                    
+                    self.successful_mixes += 1
+                    self.logger.info(f"✅ Successfully sent weights to {partner}.")
+                else:
+                    self.logger.info(f"🥈 Peer {partner} is winner, ending mix.")
                 
                 self.mixing_attempts += 1
-                self.successful_mixes += 1
-                self.logger.info(f"✅ Mix with {partner} completed successfully.")
                 
             finally:
                 writer.close()
                 await writer.wait_closed()
                 
+        except asyncio.TimeoutError:
+            self.logger.warning(f"⏳ Mix with {partner} timed out.")
+            self.mixing_attempts += 1
         except Exception as e:
             self.logger.error(f"Error during mix initiation: {e}")
+            self.mixing_attempts += 1
         finally:
             self.is_mixing = False  # Release lock: The mix is done (success or fail).
     
