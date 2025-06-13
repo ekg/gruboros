@@ -1651,6 +1651,11 @@ async def main():
             # Check if we should attempt a mix and launch it as a background task.
             # This is non-blocking; the training loop continues immediately.
             asyncio.create_task(evolutionary_node.attempt_mix_if_scheduled(step))
+
+            # Yield control to the asyncio event loop for a moment. This is CRITICAL.
+            # It allows the background task we just created (and other networking
+            # tasks) to actually run. Without this, the event loop starves.
+            await asyncio.sleep(0)
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:
