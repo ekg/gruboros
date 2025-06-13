@@ -559,6 +559,12 @@ def verify_gpu_health(use_rocm):
 
 async def main():
     args = get_args()
+
+    # Add an executor for running synchronous blocking calls (like barrier)
+    # without blocking the asyncio event loop.
+    import concurrent.futures
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    loop = asyncio.get_running_loop()
     
     # Configure backend based on command-line arguments
     use_rocm = configure_backend(args)
@@ -1630,17 +1636,25 @@ async def main():
             
             # Check for scheduled mixing (non-blocking)
             try:
+                # SYNCHRONIZE all processes BEFORE attempting to mix.
+                # This ensures that when one node is ready to mix, other nodes
+                # are not stuck in a synchronous GPU call.
+                # Run the blocking barrier call in a separate thread.
+                await loop.run_in_executor(executor, synchronize_processes)
+
                 # Force a yield to the asyncio event loop to allow background gossip tasks to run.
-                # This is crucial when the main loop is dominated by synchronous, heavy GPU work,
-                # as it prevents the event loop from being starved.
                 await asyncio.sleep(0)
 
                 mixing_occurred = await evolutionary_node.check_scheduled_mixing(step)
-                if mixing_occurred and model_engine.global_rank == 0:
-                    print(f"Step {step}: 🎯 MIXING COMPLETED")
+                if mixing_occurred: # Log on the specific rank that completed
+                    print(f"Rank {model_engine.global_rank} | Step {step}: 🎯 MIXING COMPLETED")
+            except asyncio.TimeoutError:
+                print(f"Rank {model_engine.global_rank} | Step {step}: ❌ Mixing failed due to a timeout. This is expected occasionally if peers are busy.")
             except Exception as e:
-                if model_engine.global_rank == 0:
-                    print(f"Mixing error: {e}")
+                # Log the full exception traceback for detailed debugging
+                import traceback
+                print(f"Rank {model_engine.global_rank} | Step {step}: ❌ An unexpected error occurred during mixing: {e}")
+                traceback.print_exc()
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:
@@ -1648,7 +1662,7 @@ async def main():
                 print(f"Evolutionary Status: {status}")
             # ===============================
             
-            # Optimizer step
+            # Optimizer step (moved to AFTER mixing)
             model_engine.step()
             
             # Log progress
