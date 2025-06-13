@@ -33,6 +33,9 @@ class EvolutionaryTrainingNode:
         # Queue for mix requests from training loop
         self.mix_request_queue = Queue(maxsize=1)
         
+        # Global lock to prevent concurrent mixing operations
+        self.mixing_lock = asyncio.Lock()
+        
         # Fitness tracking
         self.fitness_tracker = FitnessTracker()
         self.step_count = 0
@@ -180,42 +183,46 @@ class EvolutionaryTrainingNode:
     
     
     async def _handle_peer_connection(self, reader, writer):
-        """Handle incoming connections"""
-        try:
+        """Handle incoming connections with global lock to prevent concurrent mixing"""
+        # Use the global lock to ensure we don't handle a request while
+        # we are busy initiating our own mix.
+        async with self.mixing_lock:
             client_addr = writer.get_extra_info('peername', 'unknown')
+            self.logger.info(f"📬 Handling incoming connection from {client_addr}")
             
-            # Try to read the first part of the message to determine type
-            data = await reader.read(256)
-            if not data:
-                return
-            
-            message = data.decode().strip()
-            
-            if message.startswith("PROBE"):
-                # Handle the new PROBE protocol
-                await self._handle_fitness_probe(reader, writer)
-            else:
-                # Try to parse as JSON for backward compatibility
-                try:
-                    request = json.loads(message)
-                    msg_type = request.get('type')
-                    
-                    if msg_type == 'mixing_proposal':
-                        await self._handle_mixing_proposal(reader, writer, request)
-                    else:
-                        self.logger.warning(f"Unknown message type: {msg_type}")
-                except json.JSONDecodeError:
-                    self.logger.warning(f"Unknown message format: {message[:50]}")
-                
-        except Exception as e:
-            self.logger.error(f"Error handling connection: {e}")
-        finally:
             try:
-                if not writer.is_closing():
-                    writer.close()
-                    await writer.wait_closed()
-            except:
-                pass
+                # Try to read the first part of the message to determine type
+                data = await reader.read(256)
+                if not data:
+                    return
+                
+                message = data.decode().strip()
+                
+                if message.startswith("PROBE"):
+                    # Handle the new PROBE protocol
+                    await self._handle_fitness_probe(reader, writer)
+                else:
+                    # Try to parse as JSON for backward compatibility
+                    try:
+                        request = json.loads(message)
+                        msg_type = request.get('type')
+                        
+                        if msg_type == 'mixing_proposal':
+                            await self._handle_mixing_proposal(reader, writer, request)
+                        else:
+                            self.logger.warning(f"Unknown message type: {msg_type}")
+                    except json.JSONDecodeError:
+                        self.logger.warning(f"Unknown message format: {message[:50]}")
+                    
+            except Exception as e:
+                self.logger.error(f"Error handling connection: {e}")
+            finally:
+                try:
+                    if not writer.is_closing():
+                        writer.close()
+                        await writer.wait_closed()
+                except:
+                    pass
     
     async def _handle_mixing_proposal(self, reader, writer, proposal):
         """Handle mixing proposal - schedule future mixing"""
@@ -349,11 +356,9 @@ class EvolutionaryTrainingNode:
                 # This call will wait indefinitely until the training loop puts something in the queue.
                 await self.mix_request_queue.get()
                 
-                # Once we get a request, we run the full, self-contained mix initiation.
-                # The is_mixing flag is still used to prevent any theoretical overlap,
-                # though the queue size of 1 already provides a strong guarantee.
-                if not self.is_mixing and len(self.peer_list) > 0:
-                    await self._initiate_mix()
+                # Run the mix initiation logic directly.
+                # The lock inside _initiate_mix will prevent overlap with incoming connections.
+                await self._initiate_mix()
                 
                 self.mix_request_queue.task_done()
 
@@ -377,11 +382,13 @@ class EvolutionaryTrainingNode:
     
     async def _initiate_mix(self):
         """Initiates a mix with a peer using a robust handshake protocol."""
-        if not self.peer_list:
-            return
+        # Use the global lock to ensure no other gossip activity can happen
+        async with self.mixing_lock:
+            if not self.peer_list:
+                return
 
-        self.is_mixing = True  # Set lock: A mix is now in progress.
-        try:
+            self.mixing_attempts += 1
+            try:
             # Pick a random peer
             partner = self.mixing_rng.choice(list(self.peer_list.keys()))
             
@@ -444,20 +451,14 @@ class EvolutionaryTrainingNode:
                 else: # Response was "WINNER"
                     self.logger.info(f"🥈 Peer {partner} is winner. Ending mix.")
                 
-                self.mixing_attempts += 1
-                
             finally:
                 writer.close()
                 await writer.wait_closed()
                 
-        except asyncio.TimeoutError:
-            self.logger.warning(f"⏳ Mix with {partner} timed out.")
-            self.mixing_attempts += 1
-        except Exception as e:
-            self.logger.error(f"Error during mix initiation: {e}")
-            self.mixing_attempts += 1
-        finally:
-            self.is_mixing = False  # Release lock: The mix is done (success or fail).
+            except asyncio.TimeoutError:
+                self.logger.warning(f"⏳ Mix with {partner} timed out.")
+            except Exception as e:
+                self.logger.error(f"Error during mix initiation: {e}")
     
     async def _discover_peers(self):
         """Discover peers from bootstrap nodes"""
