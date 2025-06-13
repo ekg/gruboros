@@ -274,10 +274,13 @@ class EvolutionaryTrainingNode:
                 current_fitness = self.get_current_fitness()
                 self.logger.info(f"📬 Received probe from {partner_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
 
-                # 2. PEER: Decide and send response
-                if peer_fitness > current_fitness:
+                # 2. PEER: Make the ONE AND ONLY decision
+                our_fitness_at_decision_time = current_fitness
+                we_are_the_loser = peer_fitness > our_fitness_at_decision_time
+
+                if we_are_the_loser:
                     # 3a. PEER: We are the loser, send LOSER response and wait for weights
-                    self.logger.info(f"🥈 We are loser. Sending LOSER response to {partner_id}.")
+                    self.logger.info(f"🥈 We are the loser. Sending LOSER response to {partner_id}.")
                     await NetworkUtils.send_message(writer, b"RESPONSE|LOSER")
 
                     # 4. PEER: Receive weights using length-prefixed message
@@ -286,13 +289,13 @@ class EvolutionaryTrainingNode:
                         # Load the weights
                         import pickle
                         weights_data = pickle.loads(weights_bytes)
-                        partner_state = {k: torch.tensor(v) for k, v in weights_data.items()}
-                        self._mix_weights_based_on_fitness(peer_fitness, partner_state)
+                        # Use the new _perform_losing_clone method with decision-time fitness
+                        self._perform_losing_clone(weights_data, peer_fitness, our_fitness_at_decision_time)
                         
                         self.logger.info(f"✅ Loaded weights from winner {partner_id}.")
                 else:
                     # 3b. PEER: We are the winner, send WINNER response
-                    self.logger.info(f"🏆 We are winner. Sending WINNER response to {partner_id}.")
+                    self.logger.info(f"🏆 We are the winner. Sending WINNER response to {partner_id}.")
                     await NetworkUtils.send_message(writer, b"RESPONSE|WINNER")
 
         except asyncio.TimeoutError:
