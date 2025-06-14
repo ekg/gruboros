@@ -62,15 +62,8 @@ class EvolutionaryTrainingNode:
     
     
     async def _handle_peer_connection(self, reader, writer):
-        """Handle incoming connections with global lock to prevent concurrent mixing"""
-        # Use the global lock to ensure we don't handle a request while
-        # we are busy initiating our own mix.
         async with self.mixing_lock:
-            try:
-                await self._run_gossip_protocol(reader, writer, is_initiator=False)
-            except Exception as e:
-                self.logger.error(f"Error in _handle_peer_connection: {e}")
-            # The connection is managed by the initiator - we don't close it here
+            await self._run_gossip_protocol(reader, writer, is_initiator=False)
     
     async def _handle_mixing_proposal(self, reader, writer, proposal):
         """Handle mixing proposal - schedule future mixing"""
@@ -107,95 +100,79 @@ class EvolutionaryTrainingNode:
         await NetworkUtils.safe_send_json(writer, response, timeout=2.0)
     
     async def _run_gossip_protocol(self, reader, writer, is_initiator: bool):
-        """
-        Executes the entire gossip protocol using proper length-prefixed messages
-        to avoid mixing text and binary data.
-        """
-        partner_id = "unknown_peer"
+        partner_addr = writer.get_extra_info('peername')
         try:
             if is_initiator:
-                # 1. INITIATOR: Send the probe using length-prefixed message
+                # 1. INITIATOR: Sends probe
                 partner_id = self.mixing_rng.choice(list(self.peer_list.keys()))
                 current_fitness = self.get_current_fitness()
                 self.logger.info(f"🎲 INITIATING MIXING with {partner_id} (fitness: {current_fitness:.4f})")
                 probe = f"PROBE|{self.node_id}|{current_fitness:.6f}"
                 await NetworkUtils.send_message(writer, probe.encode())
 
-                # 2. INITIATOR: Wait for response
+                # 2. INITIATOR: Waits for peer's decision
                 response_data = await NetworkUtils.receive_message(reader, timeout=15.0)
                 if not response_data:
+                    self.logger.warning(f"No response from {partner_id}.")
                     return
 
                 response = response_data.decode()
                 if response == "RESPONSE|LOSER":
-                    # 3a. INITIATOR: Peer is loser, send weights
-                    self.logger.info(f"🏆 Peer {partner_id} is loser. Sending weights.")
+                    # 3a. INITIATOR (we won): The peer is now waiting. We prepare and send the payload.
+                    self.logger.info(f"🏆 Peer {partner_id} is loser. Preparing to send weights...")
                     
-                    # Get model weights as bytes
-                    state_dict = self.model.state_dict()
-                    weights_data = {}
-                    for k, v in state_dict.items():
-                        weights_data[k] = v.cpu().numpy().tolist()
+                    buffer = io.BytesIO()
+                    torch.save(self.model.state_dict(), buffer)
+                    weights_bytes = buffer.getvalue()
                     
-                    import pickle
-                    weights_bytes = pickle.dumps(weights_data)
-                    
-                    # Send weights using length-prefixed message
+                    self.logger.info(f"Sending weights to {partner_id} ({len(weights_bytes)/1e6:.2f} MB).")
                     await NetworkUtils.send_message(writer, weights_bytes)
-                    
+                    self.logger.info(f"✅ Sent weights successfully.")
                     self.successful_mixes += 1
-                    self.logger.info(f"✅ Sent weights to {partner_id}.")
-                else:
+                else: # Response is "WINNER"
+                    # 3b. INITIATOR (we lost): The peer has closed the connection. The mix is over for us.
                     self.logger.info(f"🥈 Peer {partner_id} is winner. Ending mix.")
 
             else:  # I am the PEER
-                # 1. PEER: Receive the probe using length-prefixed message
+                # 1. PEER: Receives probe
                 probe_data = await NetworkUtils.receive_message(reader, timeout=15.0)
-                if not probe_data:
-                    return
+                if not probe_data: return
                 
                 probe = probe_data.decode()
-                if not probe.startswith("PROBE"):
-                    self.logger.warning(f"Invalid probe received: {probe}")
-                    return
+                if not probe.startswith("PROBE"): return
                 
-                _, partner_id, peer_fitness_str = probe.split('|')
+                _, partner_node_id, peer_fitness_str = probe.split('|')
                 peer_fitness = float(peer_fitness_str)
                 current_fitness = self.get_current_fitness()
-                self.logger.info(f"📬 Received probe from {partner_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
+                self.logger.info(f"📬 Received probe from {partner_node_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
 
-                # 2. PEER: Make the ONE AND ONLY decision
-                our_fitness_at_decision_time = current_fitness
-                we_are_the_loser = peer_fitness > our_fitness_at_decision_time
-
-                if we_are_the_loser:
-                    # 3a. PEER: We are the loser, send LOSER response and wait for weights
-                    self.logger.info(f"🥈 We are the loser. Sending LOSER response to {partner_id}.")
+                # 2. PEER: Makes decision
+                if peer_fitness > current_fitness:
+                    # 3a. PEER (we are the loser): We tell the initiator it won, then wait patiently for the payload.
+                    self.logger.info(f"🥈 We are the loser. Sending LOSER response and waiting for weights...")
                     await NetworkUtils.send_message(writer, b"RESPONSE|LOSER")
-
-                    # 4. PEER: Receive weights using length-prefixed message
-                    weights_bytes = await NetworkUtils.receive_message(reader, timeout=60.0)
+                    
+                    # [THE CRITICAL FIX] Increase the timeout significantly here.
+                    # This is the ONLY place a long timeout is needed.
+                    # 5 minutes should be more than enough for any model serialization.
+                    weights_bytes = await NetworkUtils.receive_message(reader, timeout=300.0)
+                    
                     if weights_bytes:
-                        # Load the weights
-                        import pickle
-                        weights_data = pickle.loads(weights_bytes)
-                        # Use the new _perform_losing_clone method with decision-time fitness
-                        self._perform_losing_clone(weights_data, peer_fitness, our_fitness_at_decision_time)
-                        
-                        self.logger.info(f"✅ Loaded weights from winner {partner_id}.")
+                        self.logger.info(f"Received {len(weights_bytes)/1e6:.2f} MB of weights from winner {partner_node_id}.")
+                        self._perform_losing_clone(weights_bytes)
+                    else:
+                        self.logger.warning(f"Connection timed out or was closed while waiting for weights from {partner_node_id}.")
                 else:
-                    # 3b. PEER: We are the winner, send WINNER response
-                    self.logger.info(f"🏆 We are the winner. Sending WINNER response to {partner_id}.")
+                    # 3b. PEER (we are the winner): We tell the initiator it lost. The mix is over for us.
+                    self.logger.info(f"🏆 We are the winner. Sending WINNER response and ending mix.")
                     await NetworkUtils.send_message(writer, b"RESPONSE|WINNER")
 
         except asyncio.TimeoutError:
-            self.logger.warning(f"⏳ Connection with {partner_id} timed out.")
+            self.logger.warning(f"⏳ Connection with {partner_addr} timed out during initial handshake.")
+        except (ConnectionResetError, BrokenPipeError):
+             self.logger.warning(f"Connection with {partner_addr} was closed unexpectedly.")
         except Exception as e:
-            self.logger.error(f"Error during gossip with {partner_id}: {e}")
-        finally:
-            if writer:
-                writer.close()
-                await writer.wait_closed()
+            self.logger.error(f"Error during gossip with {partner_addr}: {type(e).__name__} - {e}")
     
     async def start_gossip_protocol(self):
         """Start the gossip protocol"""
@@ -225,7 +202,7 @@ class EvolutionaryTrainingNode:
         while self.gossip_running:
             try:
                 await self._discover_peers()
-                await asyncio.sleep(random.uniform(10, 30))
+                await asyncio.sleep(self.mixing_rng.uniform(10, 30))
             except Exception as e:
                 self.logger.error(f"Gossip loop error: {e}")
                 await asyncio.sleep(30)
@@ -253,59 +230,38 @@ class EvolutionaryTrainingNode:
                 await asyncio.sleep(1)  # Brief pause before retrying
     
     def request_mix(self):
-        """
-        A non-blocking, synchronous method for the training loop to request a mix.
-        """
-        # try_put_nowait is a non-blocking call. If the queue is full (because
-        # a mix is already pending), it does nothing and returns immediately.
-        try:
-            self.mix_request_queue.put_nowait(True)
-        except asyncio.QueueFull:
-            pass  # A mix is already scheduled, which is fine.
+        if self.mixing_rng.random() < self.mixing_probability:
+            try:
+                self.mix_request_queue.put_nowait(True)
+            except asyncio.QueueFull:
+                pass
     
     async def _initiate_mix(self):
-        """Initiates a mix with a peer using the unified gossip protocol."""
-        if not self.peer_list:
-            return
-
+        if not self.peer_list: return
         self.mixing_attempts += 1
         
-        # Pick a random peer
-        partner = self.mixing_rng.choice(list(self.peer_list.keys()))
-        host, port = partner.split(':')
-        port = int(port)
-        
-        connection = await NetworkUtils.safe_connect(host, port, timeout=5.0)
-        if not connection:
-            self.logger.info(f"❌ Could not connect to {partner}")
-            return
-        
-        reader, writer = connection
-        
-        try:
-            # Disable Nagle's algorithm for immediate packet sending
-            sock = writer.get_extra_info('socket')
-            if sock is not None:
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        async with self.mixing_lock:
+            partner_id = self.mixing_rng.choice(list(self.peer_list.keys()))
+            host, port_str = partner_id.split(':')
+            port = int(port_str)
             
-            # Use the unified protocol as initiator
-            await self._run_gossip_protocol(reader, writer, is_initiator=True)
+            connection = await NetworkUtils.safe_connect(host, port, timeout=5.0)
+            if not connection:
+                self.logger.warning(f"❌ Could not connect to {partner_id}")
+                return
             
-        except Exception as e:
-            self.logger.error(f"Error during mix initiation with {partner}: {e}")
+            reader, writer = connection
+            try:
+                await self._run_gossip_protocol(reader, writer, is_initiator=True)
+            finally:
+                if writer and not writer.is_closing():
+                    writer.close()
+                    await writer.wait_closed()
     
     async def _discover_peers(self):
-        """Discover peers from bootstrap nodes"""
         for bootstrap_addr in self.bootstrap_nodes:
             if bootstrap_addr not in self.peer_list:
-                host, port = bootstrap_addr.split(':')
-                if host in ['localhost', '127.0.0.1'] and int(port) == self.gossip_port:
-                    continue
-                    
-                self.peer_list[bootstrap_addr] = {
-                    'fitness': 1.0,
-                    'last_seen': time.time()
-                }
+                self.peer_list[bootstrap_addr] = {}
     
     async def stop_gossip_protocol(self):
         """Gracefully shuts down the gossip protocol components."""
@@ -348,14 +304,11 @@ class EvolutionaryTrainingNode:
         self.logger.info(f"Gossip stopped. Success rate: {success_rate:.1f}%")
     
     def get_status(self) -> dict:
-        """Get current status"""
         return {
             'node_id': self.node_id,
             'fitness': self.get_current_fitness(),
             'recent_loss': self.fitness_tracker.get_recent_loss(),
             'peer_count': len(self.peer_list),
             'mixing_attempts': self.mixing_attempts,
-            'successful_mixes': self.successful_mixes,
-            'pending_mixes': len(self.pending_mixes),
-            'step_count': self.step_count
+            'successful_mixes': self.successful_mixes
         }

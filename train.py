@@ -1055,6 +1055,13 @@ async def main():
     # Update local variable for easier access
     local_rank = args.local_rank
 
+    # [CRITICAL FIX] Re-seed the Python random module for each process
+    # to prevent synchronized mixing attempts. The other seeds (torch, numpy)
+    # remain the same for deterministic weight initialization.
+    random.seed(SEED + model_engine.global_rank)
+    if model_engine.global_rank == 0:
+        print(f"\nRe-seeded Python's random module per-rank to ensure stochastic mixing.\n")
+
     # Get data parallelism world size for token tracking
     dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
     if not hasattr(model_engine, 'data_parallel_world_size'):
@@ -1648,10 +1655,8 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
-            # On every step, stochastically decide whether to request a mix.
-            if random.random() < evolutionary_node.mixing_probability:
-                # This is a fast, non-blocking call that adds a request to the queue.
-                evolutionary_node.request_mix()
+            # Let the node decide stochastically using its own per-rank RNG
+            evolutionary_node.request_mix()
 
             # Yield control to the asyncio event loop for a moment. This is CRITICAL.
             # It allows the background _mixer task and the server to run.

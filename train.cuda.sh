@@ -101,7 +101,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --weight_decay 0.0001 \
   --batch_size 4 \
   --grad_accum 4 \
-  --seq_len 512 \
+  --seq_len 2048 \
   --params 100m \
   --tp_size 1 \
   --keep_checkpoints 3 \
