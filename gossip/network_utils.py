@@ -130,20 +130,37 @@ class NetworkUtils:
         try:
             host, port_str = partner_id.split(':')
             port = int(port_str)
-            return await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5.0)
+            
+            # CRITICAL: Increase buffer limit for client connections too
+            return await asyncio.wait_for(
+                asyncio.open_connection(
+                    host, 
+                    port, 
+                    limit=500 * 1024 * 1024  # 500MB buffer limit
+                ), 
+                timeout=5.0
+            )
         except Exception:
             return None
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Send binary data with length prefix (proven pattern)"""
+        """Send binary data in chunks to avoid memory issues"""
         try:
-            # Send 4-byte length prefix (network byte order)
+            # Send 4-byte length prefix
             size_bytes = len(data).to_bytes(4, byteorder='big')
             writer.write(size_bytes)
-            writer.write(data)
-            # Critical: ensure all data is sent before returning
             await writer.drain()
+            
+            # Send data in 1MB chunks to avoid blocking
+            chunk_size = 1024 * 1024  # 1MB chunks
+            for i in range(0, len(data), chunk_size):
+                chunk = data[i:i + chunk_size]
+                writer.write(chunk)
+                await writer.drain()  # Ensure each chunk is sent
+                
+            logging.info(f"Successfully sent {len(data)/1e6:.2f} MB in {(len(data) + chunk_size - 1) // chunk_size} chunks")
+                
         except Exception as e:
             logging.error(f"send_message failed: {e}")
             raise

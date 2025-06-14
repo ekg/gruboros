@@ -183,11 +183,15 @@ class EvolutionaryTrainingNode:
     async def start_gossip_protocol(self):
         self.gossip_running = True
         try:
+            # CRITICAL: Increase buffer limit to 500MB for large weight transfers
             self.server = await asyncio.start_server(
-                self._handle_peer_connection, '0.0.0.0', self.gossip_port
+                self._handle_peer_connection, 
+                '0.0.0.0', 
+                self.gossip_port,
+                limit=500 * 1024 * 1024  # 500MB buffer limit (was 64KB!)
             )
             self.mixer_task = asyncio.create_task(self._mixer_loop())
-            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port}")
+            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} with 500MB buffer")
         except Exception as e:
             self.logger.error(f"Failed to start gossip protocol: {e}")
             self.gossip_running = False
