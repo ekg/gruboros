@@ -7,6 +7,7 @@ import glob
 import subprocess
 import torch
 import torch.distributed as dist
+import time
 from typing import List, Optional, Tuple
 
 class NetworkUtils:
@@ -154,11 +155,14 @@ class NetworkUtils:
             prefix = len(data).to_bytes(4, "big")
             writer.write(prefix)
             
-            logging.info(f"🚀 Starting high-speed transfer: {len(data)/1e6:.2f} MB")
+            # ✅ Always log start with timing
+            start_time = time.time()
+            logging.info(f"🚀 Starting transfer: {len(data)/1e6:.2f} MB")
             
-            # Use much larger chunks and minimize drain() calls
-            chunk_size = 32 * 1024 * 1024  # 32MB chunks for maximum throughput
+            # Send data with MINIMAL progress logging
+            chunk_size = 8 * 1024 * 1024  # 8MB chunks for good performance
             bytes_sent = 0
+            next_progress_threshold = 100 * 1024 * 1024  # Only log every 100MB
             drain_interval = 128 * 1024 * 1024  # Only drain every 128MB
             last_drain = 0
             
@@ -170,17 +174,24 @@ class NetworkUtils:
                 writer.write(chunk)
                 bytes_sent = chunk_end
                 
+                # ✅ Only log progress for LARGE transfers (>100MB) and infrequently
+                if len(data) > 100 * 1024 * 1024 and bytes_sent >= next_progress_threshold:
+                    logging.info(f"📤 Progress: {bytes_sent/1e6:.0f}/{len(data)/1e6:.0f} MB")
+                    next_progress_threshold += 100 * 1024 * 1024  # Next 100MB
+                
                 # Only drain periodically or at the end
                 if (bytes_sent - last_drain) >= drain_interval or bytes_sent == len(data):
                     await writer.drain()
                     last_drain = bytes_sent
-                    logging.info(f"🔥 Transferred: {bytes_sent/1e6:.1f}/{len(data)/1e6:.1f} MB")
                 
                 # Brief yield to event loop without blocking
                 if bytes_sent % (64 * 1024 * 1024) == 0:  # Every 64MB
                     await asyncio.sleep(0)
             
-            logging.info(f"✅ Transfer completed: {len(data)/1e6:.2f} MB")
+            # ✅ Always log completion with speed
+            elapsed = time.time() - start_time
+            speed_mbps = (len(data) / 1e6) / elapsed if elapsed > 0 else 0
+            logging.info(f"✅ Transfer complete: {len(data)/1e6:.2f} MB in {elapsed:.2f}s ({speed_mbps:.0f} MB/s)")
             
         except ConnectionResetError:
             # ✅ Handle peer busy gracefully - don't log as error
@@ -200,12 +211,15 @@ class NetworkUtils:
             prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=30.0)
             expected_size = int.from_bytes(prefix_bytes, "big")
             
+            # ✅ Always log start with timing
+            start_time = time.time()
             logging.info(f"🔄 Receiving {expected_size/1e6:.2f} MB...")
             
             # Use large read chunks for better performance
             received_data = bytearray()
             bytes_remaining = expected_size
-            read_chunk_size = 32 * 1024 * 1024  # 32MB read chunks
+            read_chunk_size = 8 * 1024 * 1024  # 8MB read chunks
+            next_progress_threshold = 100 * 1024 * 1024  # Only log every 100MB
             
             while bytes_remaining > 0:
                 read_size = min(read_chunk_size, bytes_remaining)
@@ -215,11 +229,15 @@ class NetworkUtils:
                 received_data.extend(chunk)
                 bytes_remaining -= len(chunk)
                 
-                # Log progress for large transfers
-                if len(received_data) % (50 * 1024 * 1024) == 0 or bytes_remaining == 0:
-                    logging.info(f"📥 Received: {len(received_data)/1e6:.1f}/{expected_size/1e6:.1f} MB")
+                # ✅ Only log progress for LARGE transfers (>100MB) and infrequently
+                if expected_size > 100 * 1024 * 1024 and len(received_data) >= next_progress_threshold:
+                    logging.info(f"📥 Progress: {len(received_data)/1e6:.0f}/{expected_size/1e6:.0f} MB")
+                    next_progress_threshold += 100 * 1024 * 1024  # Next 100MB
             
-            logging.info(f"✅ Receive completed: {len(received_data)/1e6:.2f} MB")
+            # ✅ Always log completion with speed
+            elapsed = time.time() - start_time
+            speed_mbps = (expected_size / 1e6) / elapsed if elapsed > 0 else 0
+            logging.info(f"✅ Receive complete: {len(received_data)/1e6:.2f} MB in {elapsed:.2f}s ({speed_mbps:.0f} MB/s)")
             return bytes(received_data)
             
         except asyncio.TimeoutError:
