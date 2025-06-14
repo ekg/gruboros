@@ -182,6 +182,10 @@ class NetworkUtils:
             
             logging.info(f"✅ Transfer completed: {len(data)/1e6:.2f} MB")
             
+        except ConnectionResetError:
+            # ✅ Handle peer busy gracefully - don't log as error
+            logging.warning("⚠️  Peer connection reset (likely busy) - transfer cancelled")
+            raise ConnectionResetError("Peer busy")  # Re-raise but as expected condition
         except Exception as e:
             logging.error(f"❌ High-speed transfer failed: {e}")
             import traceback
@@ -220,6 +224,9 @@ class NetworkUtils:
             
         except asyncio.TimeoutError:
             logging.error(f"⏰ Receive timeout after {timeout}s")
+            return None
+        except ConnectionResetError:
+            logging.warning("⚠️  Peer connection reset (likely busy) - receive cancelled")
             return None
         except Exception as e:
             logging.error(f"❌ Receive failed: {e}")

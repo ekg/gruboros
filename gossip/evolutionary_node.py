@@ -106,6 +106,9 @@ class EvolutionaryTrainingNode:
         reader, writer = connection
         try:
             await self._run_protocol(reader, writer, is_initiator=True)
+        except ConnectionResetError:
+            # ✅ Expected condition - peer is busy
+            self.logger.warning(f"⚠️  Partner {partner_id} is busy, trying again later")
         except Exception as e:
             self.logger.error(f"Unhandled error in mix initiator: {e}")
         finally:
@@ -157,6 +160,10 @@ class EvolutionaryTrainingNode:
                 self.logger.info("🥈 We are the loser. Waiting for weights...")
                 await self._receive_weights(reader)
                 
+        except ConnectionResetError:
+            # ✅ Handle busy peer gracefully
+            self.logger.warning(f"⚠️  Candidate partner is busy - mix attempt cancelled")
+            return  # Clean exit, no error propagation
         finally:
             # Always clear mixing flag
             self.is_mixing = False
