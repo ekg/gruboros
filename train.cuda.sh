@@ -11,7 +11,7 @@ mkdir -p logs
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="100m_model_4way_dp_gossip"
+NAME="20m_model_4way_dp_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
@@ -77,7 +77,7 @@ if [ ! -f "$DATA_PATH" ]; then
 fi
 
 echo "Starting 4-way DATA PARALLEL training with evolutionary gossip..."
-echo "Model setup: 4 independent 100M parameter models (one per GPU)"
+echo "Model setup: 4 independent 20M parameter models (one per GPU)"
 echo "Using GPUs: 0,1,2,3"
 echo "Tensor Parallel Size: 1 (each GPU has complete model)"
 echo "Data Parallel Size: 4 (4 separate models with different data)"
@@ -102,7 +102,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --batch_size 4 \
   --grad_accum 4 \
   --seq_len 2048 \
-  --params 100m \
+  --params 20m \
   --tp_size 1 \
   --keep_checkpoints 3 \
   --deepspeed \
@@ -121,7 +121,7 @@ echo "Cleaned up temporary files."
 
 echo "=== Training Summary ==="
 echo "Configuration: 4-way Data Parallel"
-echo "Model size: 100M parameters PER GPU (4 independent models)"
+echo "Model size: 20M parameters PER GPU (4 independent models)"
 echo "GPUs used: 0,1,2,3"
 echo "Tensor parallel size: 1 (complete model per GPU)"
 echo "Data parallel size: 4 (4 different models)"
