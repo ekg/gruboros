@@ -179,7 +179,7 @@ class EvolutionaryTrainingNode:
             self.logger.info(f"🔧 _send_weights: Serialized {len(weights_bytes)/1e6:.2f} MB")
             
             # Send via asyncio - much simpler and faster
-            await NetworkUtils.send_message(writer, weights_bytes, self.logger)
+            await NetworkUtils.send_message(writer, weights_bytes, logger=self.logger)
             
             self.logger.info("✅ Weight transfer completed")
             self.successful_mixes += 1
@@ -194,7 +194,7 @@ class EvolutionaryTrainingNode:
         self.logger.info("🥈 Waiting for weight transfer...")
         
         # Give more time for large weight transfers
-        weights_bytes = await NetworkUtils.receive_message(reader, timeout=300.0, self.logger)  # 5 minutes
+        weights_bytes = await NetworkUtils.receive_message(reader, timeout=300.0, logger=self.logger)  # 5 minutes
         
         if weights_bytes and len(weights_bytes) > 0:
             self.logger.info(f"🥈 Received {len(weights_bytes)/1e6:.2f} MB, applying weights...")
