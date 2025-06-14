@@ -126,66 +126,44 @@ class NetworkUtils:
             return base_port
     
     @staticmethod
-    async def safe_connect(host: str, port: int, timeout: float = 5.0) -> Optional[Tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
-        """Safely connect to a peer with timeout"""
+    async def safe_connect(partner_id: str) -> Optional[Tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=timeout
-            )
-            return reader, writer
+            host, port_str = partner_id.split(':')
+            port = int(port_str)
+            return await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5.0)
         except Exception:
             return None
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, message: bytes):
         """
-        [THE CORRECT ASYNCIO FIX] Send a large message without deadlocking the event loop.
+        [THE CORRECT ASYNCIO FIX] Use writer.drain() to ensure all data is sent.
+        This is safe now because the lock is managed correctly in the protocol.
         """
         try:
-            # Prepare the full payload with a length prefix.
             len_bytes = len(message).to_bytes(4, 'big')
-            
-            # Write the length prefix and the message to the stream's buffer.
-            # These are non-blocking operations.
             writer.write(len_bytes)
             writer.write(message)
-            
-            # The KEY to avoiding the deadlock:
-            # Instead of `await writer.drain()`, which can block the event loop,
-            # we simply yield control back to the loop for one cycle.
-            # This gives the loop an opportunity to process the I/O and actually
-            # start sending the data from the buffer over the network.
-            # The final `writer.close()` will handle the draining implicitly.
-            await asyncio.sleep(0)
-
+            # This is now safe and correct. It pauses the coroutine until the
+            # OS buffer is ready for more data, allowing large sends to complete.
+            await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
             logging.warning("send_message failed: Connection was closed by peer.")
         except Exception as e:
             logging.error(f"send_message failed with unexpected error: {e}")
 
     @staticmethod
-    async def receive_message(reader: asyncio.StreamReader, timeout: float = 5.0) -> Optional[bytes]:
+    async def receive_message(reader: asyncio.StreamReader, timeout: float) -> Optional[bytes]:
         try:
-            # First, read the 4-byte length prefix with a short timeout.
             len_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
             msg_len = int.from_bytes(len_bytes, 'big')
-
-            # Now, read the full payload with a much longer timeout,
-            # giving the sender time to prepare and transmit the large model.
-            if msg_len > 500 * 1024 * 1024: # Safety check for > 500MB
+            if msg_len > 500 * 1024 * 1024:
                  logging.error(f"Message size {msg_len/1e6:.2f} MB exceeds limit.")
                  return None
-                 
-            # Use a long, fixed timeout for receiving the actual large payload.
-            payload_timeout = 300.0
-            return await asyncio.wait_for(reader.readexactly(msg_len), timeout=payload_timeout)
-        except asyncio.IncompleteReadError:
-            logging.warning("receive_message failed: Incomplete read, peer likely closed connection.")
-            return None
-        except asyncio.TimeoutError:
-            # This will now correctly trigger if the payload isn't received in time.
-            logging.warning(f"receive_message timed out after waiting {timeout}s (for header) or 300s (for payload).")
+            return await asyncio.wait_for(reader.readexactly(msg_len), timeout=timeout)
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError):
+            # This log is more accurate now.
+            logging.warning(f"receive_message timed out or failed after waiting {timeout}s.")
             return None
         except (ConnectionResetError, BrokenPipeError):
             logging.warning("receive_message failed: Connection was closed by peer.")
