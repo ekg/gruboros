@@ -127,8 +127,10 @@ class NetworkUtils:
             return base_port
     
     @staticmethod
-    async def send_message(writer: asyncio.StreamWriter, data: bytes):
+    async def send_message(writer: asyncio.StreamWriter, data: bytes, logger=None):
         """High-performance message sending with optimized TCP settings"""
+        if logger is None:
+            logger = logging.getLogger(__name__)  # Fallback
         try:
             # Get the underlying socket for optimization
             sock = writer.get_extra_info('socket')
@@ -157,7 +159,7 @@ class NetworkUtils:
             
             # ✅ Always log start with timing
             start_time = time.time()
-            logging.info(f"🚀 Starting transfer: {len(data)/1e6:.2f} MB")
+            logger.info(f"🚀 Starting transfer: {len(data)/1e6:.2f} MB")
             
             # Send data with MINIMAL progress logging
             chunk_size = 8 * 1024 * 1024  # 8MB chunks for good performance
@@ -176,7 +178,7 @@ class NetworkUtils:
                 
                 # ✅ Only log progress for LARGE transfers (>100MB) and infrequently
                 if len(data) > 100 * 1024 * 1024 and bytes_sent >= next_progress_threshold:
-                    logging.info(f"📤 Progress: {bytes_sent/1e6:.0f}/{len(data)/1e6:.0f} MB")
+                    logger.info(f"📤 Progress: {bytes_sent/1e6:.0f}/{len(data)/1e6:.0f} MB")
                     next_progress_threshold += 100 * 1024 * 1024  # Next 100MB
                 
                 # Only drain periodically or at the end
@@ -191,21 +193,23 @@ class NetworkUtils:
             # ✅ Always log completion with speed
             elapsed = time.time() - start_time
             speed_mbps = (len(data) / 1e6) / elapsed if elapsed > 0 else 0
-            logging.info(f"✅ Transfer complete: {len(data)/1e6:.2f} MB in {elapsed:.2f}s ({speed_mbps:.0f} MB/s)")
+            logger.info(f"✅ Transfer complete: {len(data)/1e6:.2f} MB in {elapsed:.2f}s ({speed_mbps:.0f} MB/s)")
             
         except ConnectionResetError:
             # ✅ Handle peer busy gracefully - don't log as error
-            logging.warning("⚠️  Peer connection reset (likely busy) - transfer cancelled")
+            logger.warning("⚠️  Peer connection reset (likely busy) - transfer cancelled")
             raise ConnectionResetError("Peer busy")  # Re-raise but as expected condition
         except Exception as e:
-            logging.error(f"❌ High-speed transfer failed: {e}")
+            logger.error(f"❌ High-speed transfer failed: {e}")
             import traceback
-            logging.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
     @staticmethod
-    async def receive_message(reader: asyncio.StreamReader, timeout: float = 300.0) -> Optional[bytes]:
+    async def receive_message(reader: asyncio.StreamReader, timeout: float = 300.0, logger=None) -> Optional[bytes]:
         """High-performance message receiving with optimized settings"""
+        if logger is None:
+            logger = logging.getLogger(__name__)  # Fallback
         try:
             # Read length prefix
             prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=30.0)
@@ -213,7 +217,7 @@ class NetworkUtils:
             
             # ✅ Always log start with timing
             start_time = time.time()
-            logging.info(f"🔄 Receiving {expected_size/1e6:.2f} MB...")
+            logger.info(f"🔄 Receiving {expected_size/1e6:.2f} MB...")
             
             # Use large read chunks for better performance
             received_data = bytearray()
@@ -231,25 +235,25 @@ class NetworkUtils:
                 
                 # ✅ Only log progress for LARGE transfers (>100MB) and infrequently
                 if expected_size > 100 * 1024 * 1024 and len(received_data) >= next_progress_threshold:
-                    logging.info(f"📥 Progress: {len(received_data)/1e6:.0f}/{expected_size/1e6:.0f} MB")
+                    logger.info(f"📥 Progress: {len(received_data)/1e6:.0f}/{expected_size/1e6:.0f} MB")
                     next_progress_threshold += 100 * 1024 * 1024  # Next 100MB
             
             # ✅ Always log completion with speed
             elapsed = time.time() - start_time
             speed_mbps = (expected_size / 1e6) / elapsed if elapsed > 0 else 0
-            logging.info(f"✅ Receive complete: {len(received_data)/1e6:.2f} MB in {elapsed:.2f}s ({speed_mbps:.0f} MB/s)")
+            logger.info(f"✅ Receive complete: {len(received_data)/1e6:.2f} MB in {elapsed:.2f}s ({speed_mbps:.0f} MB/s)")
             return bytes(received_data)
             
         except asyncio.TimeoutError:
-            logging.error(f"⏰ Receive timeout after {timeout}s")
+            logger.error(f"⏰ Receive timeout after {timeout}s")
             return None
         except ConnectionResetError:
-            logging.warning("⚠️  Peer connection reset (likely busy) - receive cancelled")
+            logger.warning("⚠️  Peer connection reset (likely busy) - receive cancelled")
             return None
         except Exception as e:
-            logging.error(f"❌ Receive failed: {e}")
+            logger.error(f"❌ Receive failed: {e}")
             import traceback
-            logging.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     @staticmethod
