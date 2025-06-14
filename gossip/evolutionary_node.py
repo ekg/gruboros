@@ -217,11 +217,25 @@ class EvolutionaryTrainingNode:
                 pass # A mix is already requested, that's fine.
     
     async def _initiate_mix(self):
-        if not self.peer_list: return
+        # [THE FINAL, CRITICAL FIX] Ensure we don't try to mix with ourselves.
+        
+        # Get a list of all *other* peers, excluding ourself.
+        # This is more robust than hardcoding 127.0.0.1
+        my_hostname = os.environ.get('MASTER_ADDR', 'localhost')
+        my_address = f"{my_hostname}:{self.gossip_port}"
+        
+        other_peers = [p for p in self.peer_list.keys() if p != my_address]
+
+        if not other_peers:
+            self.logger.info("No other peers found to mix with.")
+            return
+
         self.mixing_attempts += 1
         
         async with self.mixing_lock:
-            partner_id = self.mixing_rng.choice(list(self.peer_list.keys()))
+            # Choose a random peer from the filtered list.
+            partner_id = self.mixing_rng.choice(other_peers)
+            
             host, port_str = partner_id.split(':')
             port = int(port_str)
             
