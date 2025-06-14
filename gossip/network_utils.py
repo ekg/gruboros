@@ -140,29 +140,25 @@ class NetworkUtils:
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, message: bytes):
         """
-        [THE DEFINITIVE FIX] Send a large message without deadlocking the event loop.
+        [THE CORRECT ASYNCIO FIX] Send a large message without deadlocking the event loop.
         """
         try:
-            # Get the underlying socket from the writer
-            sock = writer.get_extra_info('socket')
-            if sock is None:
-                logging.error("Could not get socket from writer.")
-                return
-
-            # Prepare the full payload (length prefix + message)
+            # Prepare the full payload with a length prefix.
             len_bytes = len(message).to_bytes(4, 'big')
-            full_payload = len_bytes + message
             
-            # Get the current running event loop
-            loop = asyncio.get_running_loop()
+            # Write the length prefix and the message to the stream's buffer.
+            # These are non-blocking operations.
+            writer.write(len_bytes)
+            writer.write(message)
             
-            # Use loop.run_in_executor to run the blocking sock.sendall() in a thread pool.
-            # This prevents the main event loop from blocking on the large I/O operation.
-            await loop.run_in_executor(
-                None,  # Use the default ThreadPoolExecutor
-                sock.sendall, # The blocking function to run
-                full_payload # The argument to the function
-            )
+            # The KEY to avoiding the deadlock:
+            # Instead of `await writer.drain()`, which can block the event loop,
+            # we simply yield control back to the loop for one cycle.
+            # This gives the loop an opportunity to process the I/O and actually
+            # start sending the data from the buffer over the network.
+            # The final `writer.close()` will handle the draining implicitly.
+            await asyncio.sleep(0)
+
         except (ConnectionResetError, BrokenPipeError):
             logging.warning("send_message failed: Connection was closed by peer.")
         except Exception as e:
@@ -171,12 +167,28 @@ class NetworkUtils:
     @staticmethod
     async def receive_message(reader: asyncio.StreamReader, timeout: float = 5.0) -> Optional[bytes]:
         try:
+            # First, read the 4-byte length prefix with a short timeout.
             len_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
             msg_len = int.from_bytes(len_bytes, 'big')
-            # Set a more generous timeout for receiving the large payload itself
-            payload_timeout = max(timeout, 300.0) # Ensure at least 5 minutes for payload
+
+            # Now, read the full payload with a much longer timeout,
+            # giving the sender time to prepare and transmit the large model.
+            if msg_len > 500 * 1024 * 1024: # Safety check for > 500MB
+                 logging.error(f"Message size {msg_len/1e6:.2f} MB exceeds limit.")
+                 return None
+                 
+            # Use a long, fixed timeout for receiving the actual large payload.
+            payload_timeout = 300.0
             return await asyncio.wait_for(reader.readexactly(msg_len), timeout=payload_timeout)
-        except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.TimeoutError):
+        except asyncio.IncompleteReadError:
+            logging.warning("receive_message failed: Incomplete read, peer likely closed connection.")
+            return None
+        except asyncio.TimeoutError:
+            # This will now correctly trigger if the payload isn't received in time.
+            logging.warning(f"receive_message timed out after waiting {timeout}s (for header) or 300s (for payload).")
+            return None
+        except (ConnectionResetError, BrokenPipeError):
+            logging.warning("receive_message failed: Connection was closed by peer.")
             return None
 
     @staticmethod
