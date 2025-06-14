@@ -135,38 +135,44 @@ class NetworkUtils:
             return None
     
     @staticmethod
-    async def send_message(writer: asyncio.StreamWriter, message: bytes):
-        """
-        [THE CORRECT ASYNCIO FIX] Use writer.drain() to ensure all data is sent.
-        This is safe now because the lock is managed correctly in the protocol.
-        """
+    async def send_message(writer: asyncio.StreamWriter, data: bytes):
+        """Send binary data with length prefix (proven pattern)"""
         try:
-            len_bytes = len(message).to_bytes(4, 'big')
-            writer.write(len_bytes)
-            writer.write(message)
-            # This is now safe and correct. It pauses the coroutine until the
-            # OS buffer is ready for more data, allowing large sends to complete.
+            # Send 4-byte length prefix (network byte order)
+            size_bytes = len(data).to_bytes(4, byteorder='big')
+            writer.write(size_bytes)
+            writer.write(data)
+            # Critical: ensure all data is sent before returning
             await writer.drain()
-        except (ConnectionResetError, BrokenPipeError):
-            logging.warning("send_message failed: Connection was closed by peer.")
         except Exception as e:
-            logging.error(f"send_message failed with unexpected error: {e}")
+            logging.error(f"send_message failed: {e}")
+            raise
 
     @staticmethod
-    async def receive_message(reader: asyncio.StreamReader, timeout: float) -> Optional[bytes]:
+    async def receive_message(reader: asyncio.StreamReader, timeout: float = 60.0) -> Optional[bytes]:
+        """Receive binary data with length prefix (proven pattern)"""
         try:
-            len_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
-            msg_len = int.from_bytes(len_bytes, 'big')
-            if msg_len > 500 * 1024 * 1024:
-                 logging.error(f"Message size {msg_len/1e6:.2f} MB exceeds limit.")
-                 return None
-            return await asyncio.wait_for(reader.readexactly(msg_len), timeout=timeout)
-        except (asyncio.IncompleteReadError, asyncio.TimeoutError):
-            # This log is more accurate now.
-            logging.warning(f"receive_message timed out or failed after waiting {timeout}s.")
+            # Read exactly 4 bytes for the length prefix
+            size_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
+            size = int.from_bytes(size_bytes, byteorder='big')
+            
+            # Sanity check
+            if size > 500 * 1024 * 1024:  # 500MB limit
+                logging.error(f"Message size {size/1e6:.2f} MB exceeds limit")
+                return None
+            
+            # Read exactly the number of bytes specified
+            data = await asyncio.wait_for(reader.readexactly(size), timeout=timeout)
+            return data
+            
+        except asyncio.IncompleteReadError as e:
+            logging.warning(f"Incomplete read: got {len(e.partial)} bytes, expected more")
             return None
-        except (ConnectionResetError, BrokenPipeError):
-            logging.warning("receive_message failed: Connection was closed by peer.")
+        except asyncio.TimeoutError:
+            logging.warning(f"Receive timeout after {timeout}s")
+            return None
+        except Exception as e:
+            logging.error(f"receive_message failed: {e}")
             return None
 
     @staticmethod
