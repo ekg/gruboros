@@ -55,3 +55,4 @@ typing_extensions @ file:///home/conda/feedstock_root/build_artifacts/bld/rattle
 urllib3 @ file:///home/conda/feedstock_root/build_artifacts/urllib3_1744323578849/work
 zstandard==0.23.0
 numpy>=1.21.0
+uvloop

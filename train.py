@@ -19,6 +19,7 @@ import asyncio
 import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
+import uvloop
 
 def configure_backend(args):
     """Configure environment for the selected backend (CUDA or ROCm)"""
@@ -558,6 +559,11 @@ def verify_gpu_health(use_rocm):
 # Environment setup is now handled by the batch script
 
 async def main():
+    # Install uvloop as the default event loop for asyncio
+    # This must be the first thing done in the async main function.
+    uvloop.install()
+    print("INFO: uvloop has been installed as the default asyncio event loop.")
+    
     args = get_args()
 
     # Add an executor for running synchronous blocking calls (like barrier)

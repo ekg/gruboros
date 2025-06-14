@@ -9,6 +9,7 @@ from asyncio import Queue
 from typing import Dict
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
+import uvloop
 
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module,
@@ -183,14 +184,16 @@ class EvolutionaryTrainingNode:
         self.gossip_running = True
         try:
             # CRITICAL: Increase buffer limit to 500MB for large weight transfers
+            # OPTIMIZATION: Add reuse_port=True, which is highly effective with uvloop.
             self.server = await asyncio.start_server(
-                self._handle_peer_connection, 
-                '0.0.0.0', 
+                self._handle_peer_connection,
+                '0.0.0.0',
                 self.gossip_port,
-                limit=500 * 1024 * 1024  # 500MB buffer limit (was 64KB!)
+                limit=500 * 1024 * 1024,  # 500MB buffer limit
+                reuse_port=True
             )
             self.mixer_task = asyncio.create_task(self._mixer_loop())
-            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} with 500MB buffer")
+            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} with uvloop backend.")
         except Exception as e:
             self.logger.error(f"Failed to start gossip protocol: {e}")
             self.gossip_running = False
