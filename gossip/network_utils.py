@@ -127,73 +127,49 @@ class NetworkUtils:
             return base_port
     
     @staticmethod
-    def send_message(host: str, port: int, data: bytes) -> bool:
-        """Raw socket send - works localhost and across hosts"""
+    async def send_message(writer: asyncio.StreamWriter, data: bytes):
+        """Simple, fast approach - remove all chunking overhead"""
         try:
-            start_time = time.time()
+            # Send length prefix + data in one operation
+            prefix = len(data).to_bytes(4, "big")
+            writer.write(prefix + data)  # Combine into single write
+            await writer.drain()        # Single drain call
             
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Optimize for large transfers
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)  # 16MB buffer
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)  
-            sock.settimeout(60.0)  # 60 second timeout
-            
-            # Connect
-            sock.connect((host, port))
-            
-            # Send length prefix
-            length_bytes = len(data).to_bytes(4, 'big')
-            sock.sendall(length_bytes)
-            
-            # Send all data at once
-            sock.sendall(data)
-            
-            transfer_time = time.time() - start_time
-            speed_mbps = (len(data) / 1024 / 1024) / transfer_time if transfer_time > 0 else 0
-            
-            sock.close()
-            print(f"🚀 Raw socket: {len(data)/1e6:.2f} MB in {transfer_time:.2f}s = {speed_mbps:.1f} MB/s")
-            return True
+            logging.info(f"🚀 Sent {len(data)/1e6:.2f} MB")
             
         except Exception as e:
-            print(f"❌ Raw socket send failed: {e}")
-            return False
-    
+            logging.error(f"send_message failed: {e}")
+            raise
+
     @staticmethod
-    def receive_message_blocking(sock: socket.socket) -> bytes:
-        """Raw socket receive"""
-        # Receive length prefix
-        length_data = b''
-        while len(length_data) < 4:
-            chunk = sock.recv(4 - len(length_data))
-            if not chunk:
-                raise ConnectionError("Connection closed during length read")
-            length_data += chunk
-        
-        expected_length = int.from_bytes(length_data, 'big')
-        print(f"🔧 Expecting {expected_length/1e6:.2f} MB")
-        
-        # Receive data
-        received_data = b''
-        while len(received_data) < expected_length:
-            remaining = expected_length - len(received_data)
-            chunk = sock.recv(min(1024 * 1024, remaining))  # 1MB max per recv
-            if not chunk:
-                raise ConnectionError("Connection closed during data read")
-            received_data += chunk
+    async def receive_message(reader: asyncio.StreamReader, timeout: float = 60.0) -> Optional[bytes]:
+        """Simple, robust receive"""
+        try:
+            # Read length prefix
+            prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=10.0)
+            expected_size = int.from_bytes(prefix_bytes, "big")
             
-            if len(received_data) % (50 * 1024 * 1024) == 0:  # Log every 50MB
-                print(f"🔧 Received {len(received_data)/1e6:.1f}/{expected_length/1e6:.1f} MB")
-        
-        print(f"🔧 Successfully received {len(received_data)/1e6:.2f} MB")
-        return received_data
+            logging.info(f"🔧 Expecting {expected_size/1e6:.2f} MB")
+            
+            # Read all data at once - let asyncio handle it
+            data = await asyncio.wait_for(reader.readexactly(expected_size), timeout=timeout)
+            
+            logging.info(f"🔧 Successfully received {len(data)/1e6:.2f} MB")
+            return data
+            
+        except Exception as e:
+            logging.error(f"receive_message failed: {e}")
+            return None
     
     @staticmethod
-    async def safe_connect(partner_id: str) -> Optional[Tuple[str, int]]:
-        """Return host, port for raw socket connection"""
+    async def safe_connect(partner_id: str) -> Optional[Tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
         try:
             host, port_str = partner_id.split(':')
             port = int(port_str)
-            return (host, port)
+            
+            return await asyncio.wait_for(
+                asyncio.open_connection(host, port), 
+                timeout=10.0
+            )
         except Exception:
             return None

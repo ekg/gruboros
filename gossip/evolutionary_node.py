@@ -98,24 +98,18 @@ class EvolutionaryTrainingNode:
         self.mixing_attempts += 1
         partner_id = self.mixing_rng.choice(other_peers)
         
-        connection_info = await NetworkUtils.safe_connect(partner_id)
-        if not connection_info:
-            self.logger.warning(f"❌ Could not parse partner address: {partner_id}")
+        connection = await NetworkUtils.safe_connect(partner_id)
+        if not connection:
+            self.logger.warning(f"❌ Could not connect to {partner_id}")
             return
         
-        host, port = connection_info
-        
-        # Connect via asyncio for handshake
+        reader, writer = connection
         try:
-            import asyncio
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=5.0
-            )
             await self._run_protocol(reader, writer, is_initiator=True)
         except Exception as e:
             self.logger.error(f"Unhandled error in mix initiator: {e}")
         finally:
-            if 'writer' in locals() and writer and not writer.is_closing():
+            if writer and not writer.is_closing():
                 writer.close()
 
     async def _run_protocol(self, reader, writer, is_initiator):
@@ -168,7 +162,7 @@ class EvolutionaryTrainingNode:
             self.is_mixing = False
 
     async def _send_weights(self, writer):
-        """Use raw socket for speed"""
+        """Send weights using simple asyncio approach"""
         try:
             # Serialize weights
             self.logger.info("🔧 _send_weights: Starting weight preparation")
@@ -177,50 +171,40 @@ class EvolutionaryTrainingNode:
             weights_bytes = buffer.getvalue()
             self.logger.info(f"🔧 _send_weights: Serialized {len(weights_bytes)/1e6:.2f} MB")
             
-            # Get peer address
-            peer_info = writer.get_extra_info('peername')
-            host, port = peer_info[0], peer_info[1]
+            # Send via asyncio - much simpler and faster
+            await NetworkUtils.send_message(writer, weights_bytes)
             
-            # Close asyncio connection
-            writer.close()
-            
-            # Use raw socket on different port for weight transfer
-            raw_port = self.gossip_port + 1000
-            success = NetworkUtils.send_message(host, raw_port, weights_bytes)
-            
-            if success:
-                self.logger.info("✅ Raw socket transfer completed")
-                self.successful_mixes += 1
-            else:
-                self.logger.error("❌ Raw socket transfer failed")
+            self.logger.info("✅ Weight transfer completed")
+            self.successful_mixes += 1
                 
         except Exception as e:
-            self.logger.error(f"Error in raw socket send: {e}")
+            self.logger.error(f"Error in weight send: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
 
     async def _receive_weights(self, reader):
-        """Stub - raw socket receiver handles this"""
-        # Raw socket receiver will handle weight reception
-        self.logger.info("🥈 Waiting for raw socket weight transfer...")
-        # The raw socket receiver thread will call _perform_losing_clone
+        """Receive weights using simple asyncio approach"""
+        self.logger.info("🥈 Waiting for weight transfer...")
+        weights_bytes = await NetworkUtils.receive_message(reader, timeout=120.0)
+        if weights_bytes:
+            self._perform_losing_clone(weights_bytes)
+        else:
+            self.logger.warning("Failed to receive weights")
     
     async def start_gossip_protocol(self):
         self.gossip_running = True
         try:
-            # Start asyncio server for handshakes
+            # Start asyncio server with increased buffer limits
             self.server = await asyncio.start_server(
                 self._handle_peer_connection,
                 '0.0.0.0',
                 self.gossip_port,
+                limit=500 * 1024 * 1024,  # 500MB buffer limit
                 reuse_port=True
             )
             
-            # Start raw socket receiver for weight transfers
-            self._start_raw_receiver()
-            
             self.mixer_task = asyncio.create_task(self._mixer_loop())
-            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} (asyncio) and {self.gossip_port + 1000} (raw socket)")
+            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} with uvloop backend")
         except Exception as e:
             self.logger.error(f"Failed to start gossip protocol: {e}")
             self.gossip_running = False
