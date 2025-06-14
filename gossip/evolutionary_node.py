@@ -198,17 +198,28 @@ class EvolutionaryTrainingNode:
     async def start_gossip_protocol(self):
         self.gossip_running = True
         try:
-            # Start asyncio server with increased buffer limits
+            # Create server with optimized settings
             self.server = await asyncio.start_server(
                 self._handle_peer_connection,
                 '0.0.0.0',
                 self.gossip_port,
-                limit=500 * 1024 * 1024,  # 500MB buffer limit
+                limit=32*1024*1024,  # 32MB buffer limit
                 reuse_port=True
             )
             
+            # Optimize server sockets
+            for sock in self.server.sockets:
+                # Enable TCP optimizations on server sockets
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+                
+                if hasattr(socket, 'TCP_QUICKACK'):
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+            
             self.mixer_task = asyncio.create_task(self._mixer_loop())
-            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} with uvloop backend")
+            self.logger.info(f"🚀 High-performance gossip protocol started on port {self.gossip_port}")
+            
         except Exception as e:
             self.logger.error(f"Failed to start gossip protocol: {e}")
             self.gossip_running = False

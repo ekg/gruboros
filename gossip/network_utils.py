@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import json
 import logging
 import os
@@ -126,101 +127,135 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Send with detailed debugging and progress tracking"""
+        """High-performance message sending with optimized TCP settings"""
         try:
-            # Send length prefix first
+            # Get the underlying socket for optimization
+            sock = writer.get_extra_info('socket')
+            if sock:
+                # Enable TCP_NODELAY for low latency (disable Nagle's algorithm)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                
+                # Set large socket buffers for high throughput
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)  # 16MB
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)  # 16MB
+                
+                # Enable TCP_QUICKACK on Linux for faster ACKs
+                if hasattr(socket, 'TCP_QUICKACK'):
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+            
+            # Get the transport for buffer limit optimization
+            transport = writer.transport
+            if hasattr(transport, 'set_write_buffer_limits'):
+                # Set very high write buffer limits to avoid premature blocking
+                # This reduces the frequency of drain() calls
+                transport.set_write_buffer_limits(high=64*1024*1024, low=32*1024*1024)  # 64MB/32MB
+            
+            # Send length prefix
             prefix = len(data).to_bytes(4, "big")
             writer.write(prefix)
-            await writer.drain()  # Ensure prefix is sent first
             
-            logging.info(f"🔧 Sent length prefix: {len(data)} bytes ({len(data)/1e6:.2f} MB)")
+            logging.info(f"🚀 Starting high-speed transfer: {len(data)/1e6:.2f} MB")
             
-            # Send data in smaller chunks with individual drains for reliability
-            chunk_size = 4 * 1024 * 1024  # 4MB chunks for more reliable transfer
+            # Use much larger chunks and minimize drain() calls
+            chunk_size = 32 * 1024 * 1024  # 32MB chunks for maximum throughput
             bytes_sent = 0
+            drain_interval = 128 * 1024 * 1024  # Only drain every 128MB
+            last_drain = 0
             
             while bytes_sent < len(data):
                 chunk_end = min(bytes_sent + chunk_size, len(data))
                 chunk = data[bytes_sent:chunk_end]
                 
-                # Write and drain each chunk individually
+                # Write chunk without immediate drain
                 writer.write(chunk)
-                await writer.drain()
-                
                 bytes_sent = chunk_end
                 
-                # Log progress more frequently for debugging
-                if bytes_sent % (25 * 1024 * 1024) == 0 or bytes_sent == len(data):
-                    logging.info(f"🔧 Sent chunk: {bytes_sent/1e6:.1f}/{len(data)/1e6:.1f} MB")
+                # Only drain periodically or at the end
+                if (bytes_sent - last_drain) >= drain_interval or bytes_sent == len(data):
+                    await writer.drain()
+                    last_drain = bytes_sent
+                    logging.info(f"🔥 Transferred: {bytes_sent/1e6:.1f}/{len(data)/1e6:.1f} MB")
+                
+                # Brief yield to event loop without blocking
+                if bytes_sent % (64 * 1024 * 1024) == 0:  # Every 64MB
+                    await asyncio.sleep(0)
             
-            logging.info(f"🚀 Send completed: {len(data)/1e6:.2f} MB")
+            logging.info(f"✅ Transfer completed: {len(data)/1e6:.2f} MB")
             
         except Exception as e:
-            logging.error(f"send_message failed: {e}")
+            logging.error(f"❌ High-speed transfer failed: {e}")
             import traceback
             logging.error(f"Traceback: {traceback.format_exc()}")
             raise
 
     @staticmethod
-    async def receive_message(reader: asyncio.StreamReader, timeout: float = 60.0) -> Optional[bytes]:
-        """Receive with detailed debugging and progress tracking"""
+    async def receive_message(reader: asyncio.StreamReader, timeout: float = 300.0) -> Optional[bytes]:
+        """High-performance message receiving with optimized settings"""
         try:
             # Read length prefix
-            logging.info("🔧 Reading length prefix...")
-            prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=15.0)
+            prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=30.0)
             expected_size = int.from_bytes(prefix_bytes, "big")
             
-            logging.info(f"🔧 Expecting {expected_size} bytes ({expected_size/1e6:.2f} MB)")
+            logging.info(f"🔄 Receiving {expected_size/1e6:.2f} MB...")
             
-            # For large transfers, read in chunks with progress
-            if expected_size > 10 * 1024 * 1024:  # > 10MB
-                received_data = bytearray()
-                bytes_remaining = expected_size
-                chunk_size = 4 * 1024 * 1024  # 4MB chunks
-                
-                while bytes_remaining > 0:
-                    read_size = min(chunk_size, bytes_remaining)
-                    
-                    logging.info(f"🔧 Reading chunk: {read_size/1e6:.1f} MB, {bytes_remaining/1e6:.1f} MB remaining")
-                    
-                    chunk = await asyncio.wait_for(reader.readexactly(read_size), timeout=30.0)
-                    received_data.extend(chunk)
-                    bytes_remaining -= len(chunk)
-                    
-                    # Log progress every 50MB
-                    bytes_received = len(received_data)
-                    if bytes_received % (50 * 1024 * 1024) == 0 or bytes_remaining == 0:
-                        logging.info(f"🔧 Received: {bytes_received/1e6:.1f}/{expected_size/1e6:.1f} MB")
-                
-                data = bytes(received_data)
-            else:
-                # Small data, read all at once
-                data = await asyncio.wait_for(reader.readexactly(expected_size), timeout=timeout)
+            # Use large read chunks for better performance
+            received_data = bytearray()
+            bytes_remaining = expected_size
+            read_chunk_size = 32 * 1024 * 1024  # 32MB read chunks
             
-            logging.info(f"🔧 Successfully received {len(data)/1e6:.2f} MB")
-            return data
+            while bytes_remaining > 0:
+                read_size = min(read_chunk_size, bytes_remaining)
+                
+                # Use readexactly for reliable large transfers
+                chunk = await asyncio.wait_for(reader.readexactly(read_size), timeout=60.0)
+                received_data.extend(chunk)
+                bytes_remaining -= len(chunk)
+                
+                # Log progress for large transfers
+                if len(received_data) % (50 * 1024 * 1024) == 0 or bytes_remaining == 0:
+                    logging.info(f"📥 Received: {len(received_data)/1e6:.1f}/{expected_size/1e6:.1f} MB")
+            
+            logging.info(f"✅ Receive completed: {len(received_data)/1e6:.2f} MB")
+            return bytes(received_data)
             
         except asyncio.TimeoutError:
-            logging.error(f"receive_message timeout after {timeout}s")
-            return None
-        except asyncio.IncompleteReadError as e:
-            logging.error(f"receive_message incomplete read: got {len(e.partial)} bytes")
+            logging.error(f"⏰ Receive timeout after {timeout}s")
             return None
         except Exception as e:
-            logging.error(f"receive_message failed: {e}")
+            logging.error(f"❌ Receive failed: {e}")
             import traceback
             logging.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     @staticmethod
     async def safe_connect(partner_id: str) -> Optional[Tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
+        """Create optimized connection with high-performance settings"""
         try:
             host, port_str = partner_id.split(':')
             port = int(port_str)
             
-            return await asyncio.wait_for(
-                asyncio.open_connection(host, port), 
+            # Use large buffer limits for high-throughput connections
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    host, port,
+                    limit=32*1024*1024  # 32MB buffer instead of default 64KB
+                ), 
                 timeout=10.0
             )
-        except Exception:
+            
+            # Apply socket optimizations immediately after connection
+            sock = writer.get_extra_info('socket')
+            if sock:
+                # Critical TCP optimizations
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+                
+                if hasattr(socket, 'TCP_QUICKACK'):
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+            
+            return reader, writer
+            
+        except Exception as e:
+            logging.error(f"Connection failed to {partner_id}: {e}")
             return None
