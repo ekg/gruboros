@@ -62,6 +62,22 @@ class EvolutionaryTrainingNode:
     
     
     async def _handle_peer_connection(self, reader, writer):
+        # [CRITICAL FIX] Implement the "BUSY" check to prevent head-of-line blocking.
+        # First, check if we are busy without blocking.
+        if self.mixing_lock.locked():
+            peer_addr = writer.get_extra_info('peername')
+            self.logger.info(f"Received mix request from {peer_addr} while busy. Responding with BUSY.")
+            try:
+                # Tell the initiator we're busy and it should try again later.
+                await NetworkUtils.send_message(writer, b"RESPONSE|BUSY")
+            except (ConnectionResetError, BrokenPipeError):
+                pass # The initiator might have already timed out and closed.
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            return # End this handler immediately.
+
+        # If we are not busy, acquire the lock and handle the full protocol.
         async with self.mixing_lock:
             await self._run_gossip_protocol(reader, writer, is_initiator=False)
     
@@ -117,6 +133,11 @@ class EvolutionaryTrainingNode:
                     return
 
                 response = response_data.decode()
+                # [CRITICAL FIX] Handle the new BUSY response.
+                if response == "RESPONSE|BUSY":
+                    self.logger.info(f"Peer {partner_id} is busy. Will try again later.")
+                    return
+                
                 if response == "RESPONSE|LOSER":
                     # 3a. INITIATOR (we won): The peer is now waiting. We prepare and send the payload.
                     self.logger.info(f"🏆 Peer {partner_id} is loser. Preparing to send weights...")
@@ -175,66 +196,48 @@ class EvolutionaryTrainingNode:
             self.logger.error(f"Error during gossip with {partner_addr}: {type(e).__name__} - {e}")
     
     async def start_gossip_protocol(self):
-        """Start the gossip protocol"""
         self.gossip_running = True
-        
         try:
-            # Start server
             self.server = await asyncio.start_server(
-                self._handle_peer_connection, 
-                '0.0.0.0', 
-                self.gossip_port
+                self._handle_peer_connection, '0.0.0.0', self.gossip_port
             )
-            
-            # Start background tasks
+            # Create background tasks
             self.gossip_task = asyncio.create_task(self._gossip_loop())
-            # Start the persistent mixer task that listens to the queue
             self.mixer_task = asyncio.create_task(self._mixer())
-            
             self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port}")
-            
         except Exception as e:
             self.logger.error(f"Failed to start gossip protocol: {e}")
             self.gossip_running = False
     
     async def _gossip_loop(self):
-        """Background gossip loop"""
         while self.gossip_running:
             try:
                 await self._discover_peers()
                 await asyncio.sleep(self.mixing_rng.uniform(10, 30))
+            except asyncio.CancelledError: break
             except Exception as e:
                 self.logger.error(f"Gossip loop error: {e}")
                 await asyncio.sleep(30)
     
     async def _mixer(self):
-        """A persistent background task that waits for mix requests from the queue."""
-        self.logger.info("Mixer task started, waiting for mix requests...")
-        
         while self.gossip_running:
             try:
-                # This call will wait indefinitely until the training loop puts something in the queue.
                 await self.mix_request_queue.get()
-                
-                # Run the mix initiation logic directly.
-                # The lock inside _initiate_mix will prevent overlap with incoming connections.
                 await self._initiate_mix()
-                
                 self.mix_request_queue.task_done()
-
-            except asyncio.CancelledError:
-                self.logger.info("Mixer task cancelled.")
-                break
+            except asyncio.CancelledError: break
             except Exception as e:
                 self.logger.error(f"Error in mixer task: {e}")
-                await asyncio.sleep(1)  # Brief pause before retrying
+                await asyncio.sleep(1)
     
     def request_mix(self):
-        if self.mixing_rng.random() < self.mixing_probability:
+        # NOTE: This uses the global `random` module. It's CRITICAL that
+        # `train.py` re-seeds it with the global_rank after deepspeed.initialize()
+        if random.random() < self.mixing_probability:
             try:
                 self.mix_request_queue.put_nowait(True)
             except asyncio.QueueFull:
-                pass
+                pass # A mix is already requested, that's fine.
     
     async def _initiate_mix(self):
         if not self.peer_list: return
@@ -264,44 +267,16 @@ class EvolutionaryTrainingNode:
                 self.peer_list[bootstrap_addr] = {}
     
     async def stop_gossip_protocol(self):
-        """Gracefully shuts down the gossip protocol components."""
-        self.logger.info("Stopping gossip protocol...")
-        
-        # 1. Signal all background tasks to stop their loops
         self.gossip_running = False
-
-        # 2. Cancel the mixer task so no new mixes are initiated.
-        if hasattr(self, 'mixer_task') and self.mixer_task:
-            self.mixer_task.cancel()
-            # Wait for the task to acknowledge cancellation
-            try:
-                await self.mixer_task
-            except asyncio.CancelledError:
-                self.logger.info("Mixer task successfully cancelled.")
-
-        # 3. Cancel other background tasks
-        if self.gossip_task:
-            self.gossip_task.cancel()
-            try:
-                await self.gossip_task
-            except asyncio.CancelledError:
-                self.logger.info("Gossip task successfully cancelled.")
-
-        # 4. Stop accepting new connections
+        for task in [self.mixer_task, self.gossip_task]:
+            if task:
+                task.cancel()
+                try: await task
+                except asyncio.CancelledError: pass
         if self.server:
             self.server.close()
             await self.server.wait_closed()
-            self.logger.info("Gossip server closed.")
-
-        # 5. Wait briefly for any final in-flight operation protected by the lock
-        try:
-            await asyncio.wait_for(self.mixing_lock.acquire(), timeout=2.0)
-            self.mixing_lock.release()
-        except asyncio.TimeoutError:
-            self.logger.warning("Timed out waiting for final mix to complete.")
-        
-        success_rate = (self.successful_mixes / max(1, self.mixing_attempts)) * 100
-        self.logger.info(f"Gossip stopped. Success rate: {success_rate:.1f}%")
+        self.logger.info("Gossip protocol stopped.")
     
     def get_status(self) -> dict:
         return {
