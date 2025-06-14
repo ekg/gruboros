@@ -145,27 +145,32 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Debug version with granular logging"""
+        """Send binary data in reliable chunks"""
         try:
             logging.info(f"🔧 send_message: Starting with {len(data)} bytes")
             
-            # Step 1: Prepare prefix
-            logging.info("🔧 send_message: Creating length prefix")
+            # Send length prefix
             prefix = len(data).to_bytes(4, "big")
-            
-            # Step 2: Write prefix
-            logging.info("🔧 send_message: Writing length prefix")
             writer.write(prefix)
-            
-            # Step 3: Write data (this is likely where it hangs)
-            logging.info("🔧 send_message: Writing data payload")
-            writer.write(data)
-            
-            # Step 4: Drain (this is also suspect)
-            logging.info("🔧 send_message: Calling drain()")
             await writer.drain()
+            logging.info("🔧 send_message: Length prefix sent")
             
-            logging.info(f"🔧 send_message: Successfully completed {len(data)/1e6:.2f} MB")
+            # Send data in chunks
+            chunk_size = 1024 * 1024  # 1MB chunks
+            bytes_sent = 0
+            
+            while bytes_sent < len(data):
+                chunk_end = min(bytes_sent + chunk_size, len(data))
+                chunk = data[bytes_sent:chunk_end]
+                
+                logging.info(f"🔧 send_message: Sending chunk {len(chunk)} bytes")
+                writer.write(chunk)
+                await writer.drain()  # Ensure each chunk is sent
+                
+                bytes_sent += len(chunk)
+                logging.info(f"🔧 send_message: Sent {bytes_sent}/{len(data)} bytes")
+            
+            logging.info(f"🔧 send_message: Successfully sent all {len(data)/1e6:.2f} MB")
             
         except Exception as e:
             logging.error(f"🔧 send_message: Failed with {type(e).__name__}: {e}")
