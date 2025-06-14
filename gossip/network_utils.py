@@ -132,26 +132,8 @@ class NetworkUtils:
         if logger is None:
             logger = logging.getLogger(__name__)  # Fallback
         try:
-            # Get the underlying socket for optimization
-            sock = writer.get_extra_info('socket')
-            if sock:
-                # Enable TCP_NODELAY for low latency (disable Nagle's algorithm)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                
-                # Set large socket buffers for high throughput
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)  # 16MB
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)  # 16MB
-                
-                # Enable TCP_QUICKACK on Linux for faster ACKs
-                if hasattr(socket, 'TCP_QUICKACK'):
-                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
-            
-            # Get the transport for buffer limit optimization
-            transport = writer.transport
-            if hasattr(transport, 'set_write_buffer_limits'):
-                # Set very high write buffer limits to avoid premature blocking
-                # This reduces the frequency of drain() calls
-                transport.set_write_buffer_limits(high=64*1024*1024, low=32*1024*1024)  # 64MB/32MB
+            # Apply critical TCP optimizations FIRST
+            NetworkUtils._optimize_socket_for_throughput(writer)
             
             # Send length prefix
             prefix = len(data).to_bytes(4, "big")
@@ -257,6 +239,28 @@ class NetworkUtils:
             return None
     
     @staticmethod
+    def _optimize_socket_for_throughput(writer):
+        """Apply high-performance TCP settings for large transfers"""
+        sock = writer.get_extra_info('socket')
+        if sock:
+            # Critical TCP optimizations for high throughput
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            
+            # Large buffers for high throughput (16MB each)  
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+            
+            # Additional optimizations if available
+            if hasattr(socket, 'TCP_QUICKACK'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+        
+        # Optimize asyncio transport buffer limits
+        transport = writer.transport
+        if hasattr(transport, 'set_write_buffer_limits'):
+            # Set very high write buffer limits to avoid premature blocking
+            transport.set_write_buffer_limits(high=64*1024*1024, low=32*1024*1024)  # 64MB/32MB
+    
+    @staticmethod
     async def safe_connect(partner_id: str) -> Optional[Tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
         """Create optimized connection with high-performance settings"""
         try:
@@ -273,15 +277,7 @@ class NetworkUtils:
             )
             
             # Apply socket optimizations immediately after connection
-            sock = writer.get_extra_info('socket')
-            if sock:
-                # Critical TCP optimizations
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-                
-                if hasattr(socket, 'TCP_QUICKACK'):
-                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+            NetworkUtils._optimize_socket_for_throughput(writer)
             
             return reader, writer
             

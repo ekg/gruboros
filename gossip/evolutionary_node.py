@@ -216,7 +216,7 @@ class EvolutionaryTrainingNode:
             
             # Optimize server sockets
             for sock in self.server.sockets:
-                # Enable TCP optimizations on server sockets
+                # Apply same optimizations to listening sockets
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
