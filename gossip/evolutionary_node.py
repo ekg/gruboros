@@ -242,42 +242,6 @@ class EvolutionaryTrainingNode:
             await self.server.wait_closed()
         self.logger.info("Gossip protocol stopped.")
     
-    def _start_raw_receiver(self):
-        """Start raw socket receiver thread"""
-        def receiver_thread():
-            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-            server_sock.bind(('0.0.0.0', self.gossip_port + 1000))
-            server_sock.listen(5)
-            server_sock.settimeout(1.0)  # Non-blocking accept
-            
-            self.logger.info(f"Raw socket receiver listening on port {self.gossip_port + 1000}")
-            
-            while self.gossip_running:
-                try:
-                    client_sock, addr = server_sock.accept()
-                    self.logger.info(f"🔧 Raw socket connection from {addr}")
-                    
-                    # Receive weights
-                    weights_bytes = NetworkUtils.receive_message_blocking(client_sock)
-                    client_sock.close()
-                    
-                    # Apply weights
-                    self._perform_losing_clone(weights_bytes)
-                    
-                except socket.timeout:
-                    continue  # Check gossip_running flag
-                except Exception as e:
-                    if self.gossip_running:  # Only log if we're supposed to be running
-                        self.logger.error(f"Raw socket receiver error: {e}")
-            
-            server_sock.close()
-            self.logger.info("Raw socket receiver stopped")
-        
-        import threading
-        threading.Thread(target=receiver_thread, daemon=True).start()
-    
     def get_status(self) -> dict:
         return {
             'node_id': self.node_id,
