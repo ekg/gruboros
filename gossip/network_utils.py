@@ -145,22 +145,14 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Send binary data in chunks to avoid memory issues"""
+        """Send binary data with proper buffer handling"""
         try:
             # Send 4-byte length prefix
             size_bytes = len(data).to_bytes(4, byteorder='big')
             writer.write(size_bytes)
-            await writer.drain()
-            
-            # Send data in 1MB chunks to avoid blocking
-            chunk_size = 1024 * 1024  # 1MB chunks
-            for i in range(0, len(data), chunk_size):
-                chunk = data[i:i + chunk_size]
-                writer.write(chunk)
-                await writer.drain()  # Ensure each chunk is sent
-                
-            logging.info(f"Successfully sent {len(data)/1e6:.2f} MB in {(len(data) + chunk_size - 1) // chunk_size} chunks")
-                
+            writer.write(data)  # Send all data at once
+            await writer.drain()  # Wait for everything to be sent
+            logging.info(f"Successfully sent {len(data)/1e6:.2f} MB")
         except Exception as e:
             logging.error(f"send_message failed: {e}")
             raise
