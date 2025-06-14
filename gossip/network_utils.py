@@ -126,54 +126,90 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Fast but safe - reasonable chunks, single drain"""
+        """Send with detailed debugging and progress tracking"""
         try:
             # Send length prefix first
             prefix = len(data).to_bytes(4, "big")
             writer.write(prefix)
+            await writer.drain()  # Ensure prefix is sent first
             
-            # Send data in reasonable chunks (don't overwhelm write buffer)
-            chunk_size = 8 * 1024 * 1024  # 8MB chunks (reasonable size)
+            logging.info(f"🔧 Sent length prefix: {len(data)} bytes ({len(data)/1e6:.2f} MB)")
+            
+            # Send data in smaller chunks with individual drains for reliability
+            chunk_size = 4 * 1024 * 1024  # 4MB chunks for more reliable transfer
             bytes_sent = 0
             
             while bytes_sent < len(data):
                 chunk_end = min(bytes_sent + chunk_size, len(data))
                 chunk = data[bytes_sent:chunk_end]
+                
+                # Write and drain each chunk individually
                 writer.write(chunk)
+                await writer.drain()
+                
                 bytes_sent = chunk_end
                 
-                # Log progress every 50MB
-                if bytes_sent % (50 * 1024 * 1024) == 0:
-                    logging.info(f"🔧 Queued {bytes_sent/1e6:.1f}/{len(data)/1e6:.1f} MB")
+                # Log progress more frequently for debugging
+                if bytes_sent % (25 * 1024 * 1024) == 0 or bytes_sent == len(data):
+                    logging.info(f"🔧 Sent chunk: {bytes_sent/1e6:.1f}/{len(data)/1e6:.1f} MB")
             
-            # Single drain at the end (much faster than chunked draining)
-            logging.info(f"🔧 Draining {len(data)/1e6:.2f} MB...")
-            await writer.drain()
-            
-            logging.info(f"🚀 Sent {len(data)/1e6:.2f} MB")
+            logging.info(f"🚀 Send completed: {len(data)/1e6:.2f} MB")
             
         except Exception as e:
             logging.error(f"send_message failed: {e}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
             raise
 
     @staticmethod
     async def receive_message(reader: asyncio.StreamReader, timeout: float = 60.0) -> Optional[bytes]:
-        """Simple, robust receive"""
+        """Receive with detailed debugging and progress tracking"""
         try:
             # Read length prefix
-            prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=10.0)
+            logging.info("🔧 Reading length prefix...")
+            prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=15.0)
             expected_size = int.from_bytes(prefix_bytes, "big")
             
-            logging.info(f"🔧 Expecting {expected_size/1e6:.2f} MB")
+            logging.info(f"🔧 Expecting {expected_size} bytes ({expected_size/1e6:.2f} MB)")
             
-            # Read all data at once - let asyncio handle it
-            data = await asyncio.wait_for(reader.readexactly(expected_size), timeout=timeout)
+            # For large transfers, read in chunks with progress
+            if expected_size > 10 * 1024 * 1024:  # > 10MB
+                received_data = bytearray()
+                bytes_remaining = expected_size
+                chunk_size = 4 * 1024 * 1024  # 4MB chunks
+                
+                while bytes_remaining > 0:
+                    read_size = min(chunk_size, bytes_remaining)
+                    
+                    logging.info(f"🔧 Reading chunk: {read_size/1e6:.1f} MB, {bytes_remaining/1e6:.1f} MB remaining")
+                    
+                    chunk = await asyncio.wait_for(reader.readexactly(read_size), timeout=30.0)
+                    received_data.extend(chunk)
+                    bytes_remaining -= len(chunk)
+                    
+                    # Log progress every 50MB
+                    bytes_received = len(received_data)
+                    if bytes_received % (50 * 1024 * 1024) == 0 or bytes_remaining == 0:
+                        logging.info(f"🔧 Received: {bytes_received/1e6:.1f}/{expected_size/1e6:.1f} MB")
+                
+                data = bytes(received_data)
+            else:
+                # Small data, read all at once
+                data = await asyncio.wait_for(reader.readexactly(expected_size), timeout=timeout)
             
             logging.info(f"🔧 Successfully received {len(data)/1e6:.2f} MB")
             return data
             
+        except asyncio.TimeoutError:
+            logging.error(f"receive_message timeout after {timeout}s")
+            return None
+        except asyncio.IncompleteReadError as e:
+            logging.error(f"receive_message incomplete read: got {len(e.partial)} bytes")
+            return None
         except Exception as e:
             logging.error(f"receive_message failed: {e}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     @staticmethod
