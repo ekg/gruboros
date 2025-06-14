@@ -22,6 +22,7 @@ class EvolutionaryTrainingNode:
         
         self.mix_request_queue = Queue(maxsize=1)
         self.mixing_lock = asyncio.Lock()
+        self.is_mixing = False  # Prevent concurrent mixing operations
         self.fitness_tracker = FitnessTracker()
         self.peer_list: Dict[str, dict] = {}
         
@@ -61,6 +62,16 @@ class EvolutionaryTrainingNode:
     
     async def _handle_peer_connection(self, reader, writer):
         """Entry point for incoming connections. Ensures the writer is always closed."""
+        # Reject if already mixing to prevent race conditions
+        if self.is_mixing:
+            try:
+                await NetworkUtils.send_message(writer, b"BUSY")
+                self.logger.debug("Rejected incoming connection - already mixing")
+            except:
+                pass
+            writer.close()
+            return
+            
         try:
             await self._run_protocol(reader, writer, is_initiator=False)
         except Exception as e:
@@ -72,6 +83,11 @@ class EvolutionaryTrainingNode:
     
     async def _initiate_mix(self):
         """Entry point for outgoing mix attempts."""
+        # Skip if already mixing to prevent race conditions
+        if self.is_mixing:
+            self.logger.debug("Skipping mix attempt - already mixing")
+            return
+            
         my_address = f"{os.environ.get('MASTER_ADDR', 'localhost')}:{self.gossip_port}"
         other_peers = [p for p in self.peer_list.keys() if p != my_address]
         if not other_peers:
@@ -95,13 +111,16 @@ class EvolutionaryTrainingNode:
                 writer.close()
 
     async def _run_protocol(self, reader, writer, is_initiator):
-        # The lock is now ONLY for the quick handshake phase.
-        if self.mixing_lock.locked():
-            if not is_initiator: await NetworkUtils.send_message(writer, b"BUSY")
+        # Check if already mixing - prevent race conditions
+        if self.is_mixing:
+            if not is_initiator: 
+                await NetworkUtils.send_message(writer, b"BUSY")
             return
-
-        async with self.mixing_lock:
-            # This locked section is now guaranteed to be fast.
+            
+        # Set mixing flag for entire operation
+        self.is_mixing = True
+        try:
+            # Quick handshake phase
             if is_initiator:
                 our_fitness = self.get_current_fitness()
                 partner_addr = writer.get_extra_info('peername')
@@ -127,16 +146,18 @@ class EvolutionaryTrainingNode:
                 we_are_winner = (our_fitness > peer_fitness)
                 response = b"I_WIN" if we_are_winner else b"YOU_WIN"
                 await NetworkUtils.send_message(writer, response)
-        
-        # --- LOCK IS NOW RELEASED ---
-        # The long I/O operations happen outside the lock.
-        
-        if we_are_winner:
-            self.logger.info("🏆 We are the winner. Preparing and sending weights...")
-            await self._send_weights(writer)
-        else: # We are the loser
-            self.logger.info("🥈 We are the loser. Waiting for weights...")
-            await self._receive_weights(reader)
+            
+            # Weight transfer phase (protected by is_mixing flag)
+            if we_are_winner:
+                self.logger.info("🏆 We are the winner. Preparing and sending weights...")
+                await self._send_weights(writer)
+            else: # We are the loser
+                self.logger.info("🥈 We are the loser. Waiting for weights...")
+                await self._receive_weights(reader)
+                
+        finally:
+            # Always clear mixing flag
+            self.is_mixing = False
 
     async def _send_weights(self, writer):
         """Prepares and sends the model state dict."""
