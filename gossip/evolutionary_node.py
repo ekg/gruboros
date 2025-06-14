@@ -214,9 +214,8 @@ class EvolutionaryTrainingNode:
                 reuse_port=True
             )
             
-            # Optimize server sockets
+            # Optimize server sockets with same high-performance settings
             for sock in self.server.sockets:
-                # Apply same optimizations to listening sockets
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
