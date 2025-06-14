@@ -145,17 +145,30 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Write a length-prefixed buffer to the stream"""
+        """Debug version with granular logging"""
         try:
-            # Encode the message length as a 4 byte big-endian integer
+            logging.info(f"🔧 send_message: Starting with {len(data)} bytes")
+            
+            # Step 1: Prepare prefix
+            logging.info("🔧 send_message: Creating length prefix")
             prefix = len(data).to_bytes(4, "big")
-            # Write the prefix and buffer to the stream
+            
+            # Step 2: Write prefix
+            logging.info("🔧 send_message: Writing length prefix")
             writer.write(prefix)
+            
+            # Step 3: Write data (this is likely where it hangs)
+            logging.info("🔧 send_message: Writing data payload")
             writer.write(data)
+            
+            # Step 4: Drain (this is also suspect)
+            logging.info("🔧 send_message: Calling drain()")
             await writer.drain()
-            logging.info(f"Successfully sent {len(data)/1e6:.2f} MB")
+            
+            logging.info(f"🔧 send_message: Successfully completed {len(data)/1e6:.2f} MB")
+            
         except Exception as e:
-            logging.error(f"send_message failed: {e}")
+            logging.error(f"🔧 send_message: Failed with {type(e).__name__}: {e}")
             raise
 
     @staticmethod

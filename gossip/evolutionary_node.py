@@ -160,17 +160,60 @@ class EvolutionaryTrainingNode:
             self.is_mixing = False
 
     async def _send_weights(self, writer):
-        """Prepares and sends the model state dict."""
+        """Debug version with granular logging"""
+        self.logger.info("🔧 _send_weights: Starting weight preparation")
+        
         try:
+            # Step 1: Serialize weights
+            self.logger.info("🔧 _send_weights: Creating buffer")
             buffer = io.BytesIO()
+            
+            self.logger.info("🔧 _send_weights: Calling torch.save")
             torch.save(self.model.state_dict(), buffer)
+            
+            self.logger.info("🔧 _send_weights: Getting bytes from buffer")
             weights_bytes = buffer.getvalue()
-            self.logger.info(f"Sending weights ({len(weights_bytes)/1e6:.2f} MB)...")
-            await NetworkUtils.send_message(writer, weights_bytes)
-            self.logger.info("✅ Weights sent successfully.")
+            
+            self.logger.info(f"🔧 _send_weights: Serialized {len(weights_bytes)/1e6:.2f} MB")
+            
+            # Step 2: Test connection is alive
+            self.logger.info("🔧 _send_weights: Testing connection")
+            if writer.is_closing():
+                self.logger.error("🔧 _send_weights: Writer is already closing!")
+                return
+                
+            # TEMPORARY: Test with small data first
+            test_mode = True
+            
+            if test_mode:
+                self.logger.info("🧪 TEST MODE: Sending 1MB test payload instead of full weights")
+                test_data = b'X' * (1024 * 1024)  # 1MB test data
+                await NetworkUtils.send_message(writer, test_data)
+                self.logger.info("🧪 TEST MODE: 1MB test completed successfully")
+                self.successful_mixes += 1
+                return
+            
+            # Step 3: Send with timeout (normal mode)
+            self.logger.info("🔧 _send_weights: Starting network send")
+            
+            # Wrap the entire send in a timeout
+            async def _do_send():
+                self.logger.info("🔧 _do_send: Calling NetworkUtils.send_message")
+                await NetworkUtils.send_message(writer, weights_bytes)
+                self.logger.info("🔧 _do_send: NetworkUtils.send_message completed")
+            
+            # 60 second timeout for the entire send operation
+            await asyncio.wait_for(_do_send(), timeout=60.0)
+            
+            self.logger.info("✅ _send_weights: All operations completed successfully")
             self.successful_mixes += 1
+            
+        except asyncio.TimeoutError:
+            self.logger.error("🔧 _send_weights: TIMEOUT during send operation")
         except Exception as e:
-            self.logger.error(f"Error sending weights: {e}")
+            self.logger.error(f"🔧 _send_weights: ERROR: {type(e).__name__}: {e}")
+            import traceback
+            self.logger.error(f"🔧 _send_weights: Traceback: {traceback.format_exc()}")
 
     async def _receive_weights(self, reader):
         """Receives and applies weights."""
