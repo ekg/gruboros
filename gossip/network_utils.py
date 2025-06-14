@@ -145,13 +145,14 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Send binary data with proper buffer handling"""
+        """Write a length-prefixed buffer to the stream"""
         try:
-            # Send 4-byte length prefix
-            size_bytes = len(data).to_bytes(4, byteorder='big')
-            writer.write(size_bytes)
-            writer.write(data)  # Send all data at once
-            await writer.drain()  # Wait for everything to be sent
+            # Encode the message length as a 4 byte big-endian integer
+            prefix = len(data).to_bytes(4, "big")
+            # Write the prefix and buffer to the stream
+            writer.write(prefix)
+            writer.write(data)
+            await writer.drain()
             logging.info(f"Successfully sent {len(data)/1e6:.2f} MB")
         except Exception as e:
             logging.error(f"send_message failed: {e}")
@@ -159,19 +160,21 @@ class NetworkUtils:
 
     @staticmethod
     async def receive_message(reader: asyncio.StreamReader, timeout: float = 60.0) -> Optional[bytes]:
-        """Receive binary data with length prefix (proven pattern)"""
+        """Read a length-prefixed buffer from the stream"""
         try:
-            # Read exactly 4 bytes for the length prefix
-            size_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
-            size = int.from_bytes(size_bytes, byteorder='big')
+            # Read the next 4 byte prefix
+            prefix = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
+            # Convert the prefix back into an integer for the next message length  
+            n = int.from_bytes(prefix, "big")
             
             # Sanity check
-            if size > 500 * 1024 * 1024:  # 500MB limit
-                logging.error(f"Message size {size/1e6:.2f} MB exceeds limit")
+            if n > 500 * 1024 * 1024:  # 500MB limit
+                logging.error(f"Message size {n/1e6:.2f} MB exceeds limit")
                 return None
-            
-            # Read exactly the number of bytes specified
-            data = await asyncio.wait_for(reader.readexactly(size), timeout=timeout)
+                
+            # Read in the full message buffer
+            data = await asyncio.wait_for(reader.readexactly(n), timeout=timeout)
+            logging.info(f"Successfully received {len(data)/1e6:.2f} MB")
             return data
             
         except asyncio.IncompleteReadError as e:

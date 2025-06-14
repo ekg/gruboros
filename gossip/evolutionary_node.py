@@ -61,12 +61,11 @@ class EvolutionaryTrainingNode:
     
     
     async def _handle_peer_connection(self, reader, writer):
-        """Entry point for incoming connections. Ensures the writer is always closed."""
-        # Reject if already mixing to prevent race conditions
-        if self.is_mixing:
+        """Handle incoming connections with proper busy rejection"""
+        # Check if already mixing
+        if self.mixing_lock.locked():
             try:
                 await NetworkUtils.send_message(writer, b"BUSY")
-                self.logger.debug("Rejected incoming connection - already mixing")
             except:
                 pass
             writer.close()
@@ -75,7 +74,7 @@ class EvolutionaryTrainingNode:
         try:
             await self._run_protocol(reader, writer, is_initiator=False)
         except Exception as e:
-            self.logger.error(f"Unhandled error in peer connection handler: {e}")
+            self.logger.error(f"Protocol error: {e}")
         finally:
             if writer and not writer.is_closing():
                 writer.close()
