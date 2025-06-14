@@ -81,113 +81,89 @@ class EvolutionaryTrainingNode:
         async with self.mixing_lock:
             await self._run_gossip_protocol(reader, writer, is_initiator=False)
     
-    async def _handle_mixing_proposal(self, reader, writer, proposal):
-        """Handle mixing proposal - schedule future mixing"""
-        partner_id = proposal.get('sender')
-        partner_fitness = proposal.get('fitness', 0.0)
-        proposed_step = proposal.get('mix_at_step')
-        
-        current_fitness = self.get_current_fitness()
-        recent_loss = self.fitness_tracker.get_recent_loss()
-        
-        # Always accept proposals (we're async now!)
-        accept = proposed_step not in self.pending_mixes
-        
-        self.logger.info(f"📨 RECEIVED MIXING PROPOSAL: from={partner_id}, step={proposed_step}")
-        self.logger.info(f"  Partner fitness: {partner_fitness:.4f} vs our fitness: {current_fitness:.4f}")
-        self.logger.info(f"  Our recent loss: {recent_loss:.4f}, fitness ratio: {partner_fitness/max(current_fitness, 1e-6):.3f}")
-        
-        if accept:
-            # Schedule the mixing
-            self.pending_mixes[proposed_step] = {
-                'partner': partner_id,
-                'role': 'acceptor',
-                'fitness': partner_fitness
-            }
-            self.logger.info(f"✅ ACCEPTED PROPOSAL: scheduling mix at step {proposed_step}")
-        else:
-            self.logger.info(f"❌ REJECTED PROPOSAL: step {proposed_step} already busy")
-        
-        response = {
-            'accept': accept,
-            'fitness': current_fitness
-        }
-        
-        await NetworkUtils.safe_send_json(writer, response, timeout=2.0)
     
     async def _run_gossip_protocol(self, reader, writer, is_initiator: bool):
+        """
+        [THE DEFINITIVE FIX] A robust, symmetrical protocol.
+        The winner ALWAYS sends weights. The loser ALWAYS receives.
+        """
         partner_addr = writer.get_extra_info('peername')
         try:
             if is_initiator:
-                # 1. INITIATOR: Sends probe
                 partner_id = self.mixing_rng.choice(list(self.peer_list.keys()))
-                current_fitness = self.get_current_fitness()
-                self.logger.info(f"🎲 INITIATING MIXING with {partner_id} (fitness: {current_fitness:.4f})")
-                probe = f"PROBE|{self.node_id}|{current_fitness:.6f}"
+                our_fitness = self.get_current_fitness()
+                self.logger.info(f"🎲 INITIATING MIXING with {partner_id} (fitness: {our_fitness:.4f})")
+                probe = f"PROBE|{self.node_id}|{our_fitness:.6f}"
                 await NetworkUtils.send_message(writer, probe.encode())
 
-                # 2. INITIATOR: Waits for peer's decision
+                # Step 2: Initiator waits for the peer's simple decision.
                 response_data = await NetworkUtils.receive_message(reader, timeout=15.0)
                 if not response_data:
                     self.logger.warning(f"No response from {partner_id}.")
                     return
 
                 response = response_data.decode()
-                # [CRITICAL FIX] Handle the new BUSY response.
                 if response == "RESPONSE|BUSY":
                     self.logger.info(f"Peer {partner_id} is busy. Will try again later.")
                     return
                 
-                if response == "RESPONSE|LOSER":
-                    # 3a. INITIATOR (we won): The peer is now waiting. We prepare and send the payload.
-                    self.logger.info(f"🏆 Peer {partner_id} is loser. Preparing to send weights...")
-                    
+                # Step 3: Act based on the decision.
+                if response == "RESPONSE|WINNER": # This means WE LOST
+                    self.logger.info(f"🥈 We are the loser. Waiting for weights from {partner_id}.")
+                    weights_bytes = await NetworkUtils.receive_message(reader, timeout=300.0)
+                    if weights_bytes:
+                        self.logger.info(f"Received {len(weights_bytes)/1e6:.2f} MB of weights from winner {partner_id}.")
+                        self._perform_losing_clone(weights_bytes)
+                    else:
+                        self.logger.warning(f"Connection timed out or was closed while waiting for weights from {partner_id}.")
+
+                elif response == "RESPONSE|LOSER": # This means WE WON
+                    self.logger.info(f"🏆 We are the winner. Preparing to send weights to {partner_id}.")
                     buffer = io.BytesIO()
                     torch.save(self.model.state_dict(), buffer)
                     weights_bytes = buffer.getvalue()
                     
-                    self.logger.info(f"Sending weights to {partner_id} ({len(weights_bytes)/1e6:.2f} MB).")
+                    self.logger.info(f"Sending weights ({len(weights_bytes)/1e6:.2f} MB).")
                     await NetworkUtils.send_message(writer, weights_bytes)
                     self.logger.info(f"✅ Sent weights successfully.")
                     self.successful_mixes += 1
-                else: # Response is "WINNER"
-                    # 3b. INITIATOR (we lost): The peer has closed the connection. The mix is over for us.
-                    self.logger.info(f"🥈 Peer {partner_id} is winner. Ending mix.")
 
             else:  # I am the PEER
-                # 1. PEER: Receives probe
                 probe_data = await NetworkUtils.receive_message(reader, timeout=15.0)
                 if not probe_data: return
                 
                 probe = probe_data.decode()
                 if not probe.startswith("PROBE"): return
                 
-                _, partner_node_id, peer_fitness_str = probe.split('|')
-                peer_fitness = float(peer_fitness_str)
-                current_fitness = self.get_current_fitness()
-                self.logger.info(f"📬 Received probe from {partner_node_id} (fitness: {peer_fitness:.4f}). Our fitness: {current_fitness:.4f}")
+                _, partner_node_id, peer_fitness = probe.split('|')
+                peer_fitness = float(peer_fitness)
+                our_fitness = self.get_current_fitness()
+                self.logger.info(f"📬 Received probe from {partner_node_id} (fitness: {peer_fitness:.4f}). Our fitness: {our_fitness:.4f}")
 
-                # 2. PEER: Makes decision
-                if peer_fitness > current_fitness:
-                    # 3a. PEER (we are the loser): We tell the initiator it won, then wait patiently for the payload.
-                    self.logger.info(f"🥈 We are the loser. Sending LOSER response and waiting for weights...")
+                # Step 2: Peer makes decision and acts.
+                if our_fitness > peer_fitness: # WE ARE THE WINNER
+                    self.logger.info(f"🏆 We are the winner. Sending WINNER response and preparing weights.")
+                    await NetworkUtils.send_message(writer, b"RESPONSE|WINNER")
+                    
+                    buffer = io.BytesIO()
+                    torch.save(self.model.state_dict(), buffer)
+                    weights_bytes = buffer.getvalue()
+                    
+                    self.logger.info(f"Sending weights ({len(weights_bytes)/1e6:.2f} MB).")
+                    await NetworkUtils.send_message(writer, weights_bytes)
+                    self.logger.info(f"✅ Sent weights successfully.")
+                    self.successful_mixes += 1
+
+                else: # WE ARE THE LOSER
+                    self.logger.info(f"🥈 We are the loser. Sending LOSER response and waiting for weights.")
                     await NetworkUtils.send_message(writer, b"RESPONSE|LOSER")
                     
-                    # [THE CRITICAL FIX] Increase the timeout significantly here.
-                    # This is the ONLY place a long timeout is needed.
-                    # 5 minutes should be more than enough for any model serialization.
                     weights_bytes = await NetworkUtils.receive_message(reader, timeout=300.0)
-                    
                     if weights_bytes:
                         self.logger.info(f"Received {len(weights_bytes)/1e6:.2f} MB of weights from winner {partner_node_id}.")
                         self._perform_losing_clone(weights_bytes)
                     else:
                         self.logger.warning(f"Connection timed out or was closed while waiting for weights from {partner_node_id}.")
-                else:
-                    # 3b. PEER (we are the winner): We tell the initiator it lost. The mix is over for us.
-                    self.logger.info(f"🏆 We are the winner. Sending WINNER response and ending mix.")
-                    await NetworkUtils.send_message(writer, b"RESPONSE|WINNER")
-
         except asyncio.TimeoutError:
             self.logger.warning(f"⏳ Connection with {partner_addr} timed out during initial handshake.")
         except (ConnectionResetError, BrokenPipeError):
