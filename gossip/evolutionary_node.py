@@ -133,15 +133,13 @@ class EvolutionaryTrainingNode:
         
         if we_are_winner:
             self.logger.info("🏆 We are the winner. Preparing and sending weights...")
-            # Fire-and-forget the send task. It will run in the background.
-            # The writer object is passed to it, and it will be closed by the outer handler.
-            asyncio.create_task(self._send_weights(writer))
+            await self._send_weights(writer)
         else: # We are the loser
             self.logger.info("🥈 We are the loser. Waiting for weights...")
             await self._receive_weights(reader)
 
     async def _send_weights(self, writer):
-        """Prepares and sends the model state dict. This is a background task."""
+        """Prepares and sends the model state dict."""
         try:
             buffer = io.BytesIO()
             torch.save(self.model.state_dict(), buffer)
@@ -151,7 +149,7 @@ class EvolutionaryTrainingNode:
             self.logger.info("✅ Weights sent successfully.")
             self.successful_mixes += 1
         except Exception as e:
-            self.logger.error(f"Error in background task _send_weights: {e}")
+            self.logger.error(f"Error sending weights: {e}")
 
     async def _receive_weights(self, reader):
         """Receives and applies weights."""
