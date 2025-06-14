@@ -139,20 +139,43 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, message: bytes):
+        """
+        [THE DEFINITIVE FIX] Send a large message without deadlocking the event loop.
+        """
         try:
+            # Get the underlying socket from the writer
+            sock = writer.get_extra_info('socket')
+            if sock is None:
+                logging.error("Could not get socket from writer.")
+                return
+
+            # Prepare the full payload (length prefix + message)
             len_bytes = len(message).to_bytes(4, 'big')
-            writer.write(len_bytes)
-            writer.write(message)
-            await writer.drain()
-        except ConnectionResetError:
-            pass # Fail silently if the other end hangs up
+            full_payload = len_bytes + message
+            
+            # Get the current running event loop
+            loop = asyncio.get_running_loop()
+            
+            # Use loop.run_in_executor to run the blocking sock.sendall() in a thread pool.
+            # This prevents the main event loop from blocking on the large I/O operation.
+            await loop.run_in_executor(
+                None,  # Use the default ThreadPoolExecutor
+                sock.sendall, # The blocking function to run
+                full_payload # The argument to the function
+            )
+        except (ConnectionResetError, BrokenPipeError):
+            logging.warning("send_message failed: Connection was closed by peer.")
+        except Exception as e:
+            logging.error(f"send_message failed with unexpected error: {e}")
 
     @staticmethod
     async def receive_message(reader: asyncio.StreamReader, timeout: float = 5.0) -> Optional[bytes]:
         try:
             len_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
             msg_len = int.from_bytes(len_bytes, 'big')
-            return await asyncio.wait_for(reader.readexactly(msg_len), timeout=timeout)
+            # Set a more generous timeout for receiving the large payload itself
+            payload_timeout = max(timeout, 300.0) # Ensure at least 5 minutes for payload
+            return await asyncio.wait_for(reader.readexactly(msg_len), timeout=payload_timeout)
         except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.TimeoutError):
             return None
 
