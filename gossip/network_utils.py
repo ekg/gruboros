@@ -126,12 +126,29 @@ class NetworkUtils:
     
     @staticmethod
     async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Simple, fast approach - remove all chunking overhead"""
+        """Fast but safe - reasonable chunks, single drain"""
         try:
-            # Send length prefix + data in one operation
+            # Send length prefix first
             prefix = len(data).to_bytes(4, "big")
-            writer.write(prefix + data)  # Combine into single write
-            await writer.drain()        # Single drain call
+            writer.write(prefix)
+            
+            # Send data in reasonable chunks (don't overwhelm write buffer)
+            chunk_size = 8 * 1024 * 1024  # 8MB chunks (reasonable size)
+            bytes_sent = 0
+            
+            while bytes_sent < len(data):
+                chunk_end = min(bytes_sent + chunk_size, len(data))
+                chunk = data[bytes_sent:chunk_end]
+                writer.write(chunk)
+                bytes_sent = chunk_end
+                
+                # Log progress every 50MB
+                if bytes_sent % (50 * 1024 * 1024) == 0:
+                    logging.info(f"🔧 Queued {bytes_sent/1e6:.1f}/{len(data)/1e6:.1f} MB")
+            
+            # Single drain at the end (much faster than chunked draining)
+            logging.info(f"🔧 Draining {len(data)/1e6:.2f} MB...")
+            await writer.drain()
             
             logging.info(f"🚀 Sent {len(data)/1e6:.2f} MB")
             
