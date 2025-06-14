@@ -48,7 +48,8 @@ class EvolutionaryTrainingNode:
         return self.fitness_tracker.get_fitness()
 
     def _perform_losing_clone(self, partner_weights_bytes: bytes):
-        self.logger.info(f"🧬 EVOLUTIONARY CLONING: Loading new weights...")
+        # [ADD THIS LOG]
+        self.logger.info(f"🧬 Received {len(partner_weights_bytes)/1e6:.2f} MB payload. Applying new weights...")
         try:
             device = next(self.model.parameters()).device
             buffer = io.BytesIO(partner_weights_bytes)
