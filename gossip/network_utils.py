@@ -173,31 +173,47 @@ class NetworkUtils:
 
     @staticmethod
     async def receive_message(reader: asyncio.StreamReader, timeout: float = 60.0) -> Optional[bytes]:
-        """Read a length-prefixed buffer from the stream"""
+        """Receive binary data with proper TCP reconstruction"""
         try:
-            # Read the next 4 byte prefix
-            prefix = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
-            # Convert the prefix back into an integer for the next message length  
-            n = int.from_bytes(prefix, "big")
+            # Read exactly 4 bytes for length prefix
+            logging.info("🔧 receive_message: Reading length prefix")
+            prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=10.0)
+            expected_size = int.from_bytes(prefix_bytes, "big")
+            
+            logging.info(f"🔧 receive_message: Expecting {expected_size} bytes ({expected_size/1e6:.2f} MB)")
             
             # Sanity check
-            if n > 500 * 1024 * 1024:  # 500MB limit
-                logging.error(f"Message size {n/1e6:.2f} MB exceeds limit")
+            if expected_size > 500 * 1024 * 1024:
+                logging.error(f"🔧 receive_message: Size {expected_size/1e6:.2f} MB exceeds limit")
                 return None
+            
+            # Read data in chunks until we have everything
+            received_data = bytearray()
+            bytes_remaining = expected_size
+            
+            while bytes_remaining > 0:
+                # Read in chunks, but don't exceed what we expect
+                chunk_size = min(1024 * 1024, bytes_remaining)  # 1MB max per read
                 
-            # Read in the full message buffer
-            data = await asyncio.wait_for(reader.readexactly(n), timeout=timeout)
-            logging.info(f"Successfully received {len(data)/1e6:.2f} MB")
-            return data
+                logging.info(f"🔧 receive_message: Reading chunk of {chunk_size} bytes, {bytes_remaining} remaining")
+                
+                chunk = await asyncio.wait_for(reader.readexactly(chunk_size), timeout=30.0)
+                received_data.extend(chunk)
+                bytes_remaining -= len(chunk)
+                
+                logging.info(f"🔧 receive_message: Received chunk of {len(chunk)} bytes, {bytes_remaining} remaining")
+                
+            logging.info(f"🔧 receive_message: Successfully received all {len(received_data)} bytes")
+            return bytes(received_data)
             
         except asyncio.IncompleteReadError as e:
-            logging.warning(f"Incomplete read: got {len(e.partial)} bytes, expected more")
+            logging.error(f"🔧 receive_message: Incomplete read - got {len(e.partial)} bytes, connection closed")
             return None
         except asyncio.TimeoutError:
-            logging.warning(f"Receive timeout after {timeout}s")
+            logging.error(f"🔧 receive_message: Timeout after {timeout}s")
             return None
         except Exception as e:
-            logging.error(f"receive_message failed: {e}")
+            logging.error(f"🔧 receive_message: Failed with {type(e).__name__}: {e}")
             return None
 
     @staticmethod
