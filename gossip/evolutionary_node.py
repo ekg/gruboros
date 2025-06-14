@@ -1,173 +1,63 @@
 import asyncio
 import random
-import numpy as np
 import torch
-import json
+import io
 import time
 import os
-import socket
-import pickle
-import hashlib
 import logging
 from asyncio import Queue
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
 
 class EvolutionaryTrainingNode:
-    def __init__(self, node_id: str, model: torch.nn.Module, 
+    def __init__(self, node_id: str, model: torch.nn.Module,
                  global_rank: int, world_size: int, data_parallel_rank: int,
                  tp_size: int, mixing_probability: float = 0.01):
         self.node_id = node_id
         self.model = model
         self.global_rank = global_rank
-        self.world_size = world_size
-        self.data_parallel_rank = data_parallel_rank
-        self.tp_size = tp_size
-        
-        # Per-process random state
+        # Use a per-process RNG for mixing decisions to prevent synchronization
         self.mixing_rng = random.Random(42 + global_rank * 1000)
         self.mixing_probability = mixing_probability
-        self.is_mixing = False  # State flag to prevent concurrent mixes
         
-        # Queue for mix requests from training loop
         self.mix_request_queue = Queue(maxsize=1)
-        
-        # Global lock to prevent concurrent mixing operations
-        self.mixing_lock = asyncio.Lock()
-        
-        # Fitness tracking
+        self.mixing_lock = asyncio.Lock()  # Prevents deadlock
         self.fitness_tracker = FitnessTracker()
-        self.step_count = 0
-        
-        # Peer management
         self.peer_list: Dict[str, dict] = {}
-        
-        # NEW: Scheduled mixing system
-        self.pending_mixes: Dict[int, dict] = {}  # {step: {partner, role}}
-        self.mixing_proposals: Dict[str, dict] = {}  # {partner: proposal_data}
         
         # Network setup
         master_addr = os.environ.get('MASTER_ADDR', 'localhost')
         self.gossip_port = NetworkUtils.get_gossip_port(data_parallel_rank, master_addr)
         self.server = None
         self.gossip_running = False
-        self.gossip_task = None
-        self.discovery_task = None
         
-        # Logging
-        self.logger = logging.getLogger(f'evolutionary_node_{node_id}')
+        self.logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
         
-        # Bootstrap nodes - NOW INCLUDES TP_SIZE
         self.bootstrap_nodes = NetworkUtils.get_bootstrap_nodes(
             global_rank, world_size, data_parallel_rank, tp_size, self.logger
         )
         
-        # Statistics
         self.mixing_attempts = 0
         self.successful_mixes = 0
         
     def update_fitness(self, loss_value: float):
-        """Update fitness based on recent loss"""
         self.fitness_tracker.update(loss_value)
-        self.step_count += 1
     
     def get_current_fitness(self) -> float:
-        """Get current fitness score"""
         return self.fitness_tracker.get_fitness()
-    
-    # The attempt_mix_if_scheduled method has been removed.
-    # Mixing is now handled by the persistent _mixer_task background thread.
-    
-    async def _execute_mixing_as_initiator(self, partner: str) -> bool:
-        """Execute mixing as the initiator"""
-        try:
-            host, port = partner.split(':')
-            port = int(port)
-            
-            # Quick connection for weight exchange
-            connection = await NetworkUtils.safe_connect(host, port, timeout=3.0)
-            if not connection:
-                return False
-            
-            reader, writer = connection
-            
-            try:
-                # Send "ready to mix" signal
-                ready_msg = {
-                    'type': 'ready_to_mix',
-                    'sender': self.node_id,
-                    'fitness': self.get_current_fitness()
-                }
-                
-                if not await NetworkUtils.safe_send_json(writer, ready_msg, timeout=2.0):
-                    return False
-                
-                # Get partner's weights
-                partner_weights = await NetworkUtils.safe_recv_json(reader, timeout=5.0)
-                if not partner_weights or partner_weights.get('type') != 'weights':
-                    return False
-                
-                # Send our weights (full state dict)
-                our_weights = {
-                    'type': 'weights',
-                    'fitness': self.get_current_fitness(),
-                    'state_dict': {k: v.cpu().numpy().tolist() for k, v in self.model.state_dict().items()},
-                    'weights_hash': self._get_model_hash()
-                }
-                
-                if not await NetworkUtils.safe_send_json(writer, our_weights, timeout=5.0):
-                    return False
-                
-                # Convert partner's weights back to tensors and do the cloning
-                if 'state_dict' in partner_weights:
-                    partner_state = {k: torch.tensor(v) for k, v in partner_weights['state_dict'].items()}
-                    self._mix_weights_based_on_fitness(partner_weights['fitness'], partner_state)
-                else:
-                    self._mix_weights_based_on_fitness(partner_weights['fitness'])
-                
-                return True
-                
-            finally:
-                writer.close()
-                await writer.wait_closed()
-                
-        except Exception as e:
-            self.logger.error(f"Mixing execution failed: {e}")
-            return False
-    
-    async def _execute_mixing_as_acceptor(self, partner: str) -> bool:
-        """Execute mixing as the acceptor - wait for initiator to connect"""
-        # The acceptor waits for the initiator to connect
-        # This is handled in _handle_ready_to_mix
-        return True
-    
-    def _perform_losing_clone(self, partner_weights: dict, partner_fitness: float, our_fitness_at_decision_time: float):
-        """
-        This function is only called when this node has been confirmed as the "loser".
-        It performs a complete clone of the winner's weights.
-        """
-        self.logger.info(f"🧬 EVOLUTIONARY CLONING (LOSER):")
-        self.logger.info(f"  Decision: Partner Fitness ({partner_fitness:.4f}) > Our Fitness ({our_fitness_at_decision_time:.4f})")
-        
-        try:
-            # Create a state_dict on the correct device from the received data
-            # The model is already on the correct device, so new tensors will be moved there
-            device = next(self.model.parameters()).device
-            partner_state_dict = {k: torch.tensor(v, device=device) for k, v in partner_weights.items()}
 
+    def _perform_losing_clone(self, partner_weights_bytes: bytes):
+        self.logger.info(f"🧬 EVOLUTIONARY CLONING: Loading new weights...")
+        try:
+            device = next(self.model.parameters()).device
+            buffer = io.BytesIO(partner_weights_bytes)
+            partner_state_dict = torch.load(buffer, map_location=device)
             self.model.load_state_dict(partner_state_dict)
-            total_params = sum(p.numel() for p in self.model.parameters())
-            self.logger.info(f"  🔥 CLONING COMPLETE: All {total_params:,} parameters overwritten by winner's weights.")
+            self.logger.info(f"  🔥 CLONING COMPLETE.")
+            self.successful_mixes += 1
         except Exception as e:
             self.logger.error(f"  ❌ FAILED to clone partner weights: {e}")
-    
-    def _get_model_hash(self) -> str:
-        """Get hash of model weights"""
-        model_str = ""
-        for name, param in self.model.named_parameters():
-            model_str += param.data.cpu().numpy().tobytes().hex()[:50]
-        return hashlib.md5(model_str.encode()).hexdigest()[:8]
     
     
     
