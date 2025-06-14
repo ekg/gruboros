@@ -1,6 +1,7 @@
-import asyncio
-import json
 import socket
+import threading
+import time
+import json
 import logging
 import os
 import glob
@@ -126,130 +127,73 @@ class NetworkUtils:
             return base_port
     
     @staticmethod
-    async def safe_connect(partner_id: str) -> Optional[Tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
+    def send_message(host: str, port: int, data: bytes) -> bool:
+        """Raw socket send - works localhost and across hosts"""
         try:
-            host, port_str = partner_id.split(':')
-            port = int(port_str)
+            start_time = time.time()
             
-            # CRITICAL: Increase buffer limit for client connections too
-            return await asyncio.wait_for(
-                asyncio.open_connection(
-                    host, 
-                    port, 
-                    limit=500 * 1024 * 1024  # 500MB buffer limit
-                ), 
-                timeout=5.0
-            )
-        except Exception:
-            return None
-    
-    @staticmethod
-    async def send_message(writer: asyncio.StreamWriter, data: bytes):
-        """Send binary data in reliable chunks"""
-        try:
-            logging.info(f"🔧 send_message: Starting with {len(data)} bytes")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Optimize for large transfers
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)  # 16MB buffer
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)  
+            sock.settimeout(60.0)  # 60 second timeout
+            
+            # Connect
+            sock.connect((host, port))
             
             # Send length prefix
-            prefix = len(data).to_bytes(4, "big")
-            writer.write(prefix)
-            await writer.drain()
-            logging.info("🔧 send_message: Length prefix sent")
+            length_bytes = len(data).to_bytes(4, 'big')
+            sock.sendall(length_bytes)
             
-            # Send data in chunks
-            chunk_size = 1024 * 1024  # 1MB chunks
-            bytes_sent = 0
+            # Send all data at once
+            sock.sendall(data)
             
-            while bytes_sent < len(data):
-                chunk_end = min(bytes_sent + chunk_size, len(data))
-                chunk = data[bytes_sent:chunk_end]
-                
-                logging.info(f"🔧 send_message: Sending chunk {len(chunk)} bytes")
-                writer.write(chunk)
-                await writer.drain()  # Ensure each chunk is sent
-                
-                bytes_sent += len(chunk)
-                logging.info(f"🔧 send_message: Sent {bytes_sent}/{len(data)} bytes")
+            transfer_time = time.time() - start_time
+            speed_mbps = (len(data) / 1024 / 1024) / transfer_time if transfer_time > 0 else 0
             
-            logging.info(f"🔧 send_message: Successfully sent all {len(data)/1e6:.2f} MB")
-            
-        except Exception as e:
-            logging.error(f"🔧 send_message: Failed with {type(e).__name__}: {e}")
-            raise
-
-    @staticmethod
-    async def receive_message(reader: asyncio.StreamReader, timeout: float = 60.0) -> Optional[bytes]:
-        """Receive binary data with proper TCP reconstruction"""
-        try:
-            # Read exactly 4 bytes for length prefix
-            logging.info("🔧 receive_message: Reading length prefix")
-            prefix_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=10.0)
-            expected_size = int.from_bytes(prefix_bytes, "big")
-            
-            logging.info(f"🔧 receive_message: Expecting {expected_size} bytes ({expected_size/1e6:.2f} MB)")
-            
-            # Sanity check
-            if expected_size > 500 * 1024 * 1024:
-                logging.error(f"🔧 receive_message: Size {expected_size/1e6:.2f} MB exceeds limit")
-                return None
-            
-            # Read data in chunks until we have everything
-            received_data = bytearray()
-            bytes_remaining = expected_size
-            
-            while bytes_remaining > 0:
-                # Read in chunks, but don't exceed what we expect
-                chunk_size = min(1024 * 1024, bytes_remaining)  # 1MB max per read
-                
-                logging.info(f"🔧 receive_message: Reading chunk of {chunk_size} bytes, {bytes_remaining} remaining")
-                
-                chunk = await asyncio.wait_for(reader.readexactly(chunk_size), timeout=30.0)
-                received_data.extend(chunk)
-                bytes_remaining -= len(chunk)
-                
-                logging.info(f"🔧 receive_message: Received chunk of {len(chunk)} bytes, {bytes_remaining} remaining")
-                
-            logging.info(f"🔧 receive_message: Successfully received all {len(received_data)} bytes")
-            return bytes(received_data)
-            
-        except asyncio.IncompleteReadError as e:
-            logging.error(f"🔧 receive_message: Incomplete read - got {len(e.partial)} bytes, connection closed")
-            return None
-        except asyncio.TimeoutError:
-            logging.error(f"🔧 receive_message: Timeout after {timeout}s")
-            return None
-        except Exception as e:
-            logging.error(f"🔧 receive_message: Failed with {type(e).__name__}: {e}")
-            return None
-
-    @staticmethod
-    async def safe_send_json(writer: asyncio.StreamWriter, data: dict, timeout: float = 5.0) -> bool:
-        """Safely send JSON data"""
-        try:
-            json_data = json.dumps(data).encode()
-            length = len(json_data)
-            # Send length first, then data
-            writer.write(length.to_bytes(4, byteorder='big'))
-            writer.write(json_data)
-            await asyncio.wait_for(writer.drain(), timeout=timeout)
+            sock.close()
+            print(f"🚀 Raw socket: {len(data)/1e6:.2f} MB in {transfer_time:.2f}s = {speed_mbps:.1f} MB/s")
             return True
-        except Exception:
+            
+        except Exception as e:
+            print(f"❌ Raw socket send failed: {e}")
             return False
     
     @staticmethod
-    async def safe_recv_json(reader: asyncio.StreamReader, timeout: float = 5.0) -> Optional[dict]:
-        """Safely receive JSON data"""
+    def receive_message_blocking(sock: socket.socket) -> bytes:
+        """Raw socket receive"""
+        # Receive length prefix
+        length_data = b''
+        while len(length_data) < 4:
+            chunk = sock.recv(4 - len(length_data))
+            if not chunk:
+                raise ConnectionError("Connection closed during length read")
+            length_data += chunk
+        
+        expected_length = int.from_bytes(length_data, 'big')
+        print(f"🔧 Expecting {expected_length/1e6:.2f} MB")
+        
+        # Receive data
+        received_data = b''
+        while len(received_data) < expected_length:
+            remaining = expected_length - len(received_data)
+            chunk = sock.recv(min(1024 * 1024, remaining))  # 1MB max per recv
+            if not chunk:
+                raise ConnectionError("Connection closed during data read")
+            received_data += chunk
+            
+            if len(received_data) % (50 * 1024 * 1024) == 0:  # Log every 50MB
+                print(f"🔧 Received {len(received_data)/1e6:.1f}/{expected_length/1e6:.1f} MB")
+        
+        print(f"🔧 Successfully received {len(received_data)/1e6:.2f} MB")
+        return received_data
+    
+    @staticmethod
+    async def safe_connect(partner_id: str) -> Optional[Tuple[str, int]]:
+        """Return host, port for raw socket connection"""
         try:
-            # Read length first
-            length_bytes = await asyncio.wait_for(reader.read(4), timeout=timeout)
-            if len(length_bytes) != 4:
-                return None
-            
-            length = int.from_bytes(length_bytes, byteorder='big')
-            if length > 10 * 1024 * 1024:  # 10MB limit
-                return None
-            
-            # Read actual data
-            data = await asyncio.wait_for(reader.read(length), timeout=timeout)
-            return json.loads(data.decode())
+            host, port_str = partner_id.split(':')
+            port = int(port_str)
+            return (host, port)
         except Exception:
             return None

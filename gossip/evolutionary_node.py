@@ -5,6 +5,8 @@ import io
 import time
 import os
 import logging
+import socket
+import threading
 from asyncio import Queue
 from typing import Dict
 from .fitness_tracker import FitnessTracker
@@ -96,18 +98,24 @@ class EvolutionaryTrainingNode:
         self.mixing_attempts += 1
         partner_id = self.mixing_rng.choice(other_peers)
         
-        connection = await NetworkUtils.safe_connect(partner_id)
-        if not connection:
-            self.logger.warning(f"❌ Could not connect to {partner_id}")
+        connection_info = await NetworkUtils.safe_connect(partner_id)
+        if not connection_info:
+            self.logger.warning(f"❌ Could not parse partner address: {partner_id}")
             return
         
-        reader, writer = connection
+        host, port = connection_info
+        
+        # Connect via asyncio for handshake
         try:
+            import asyncio
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=5.0
+            )
             await self._run_protocol(reader, writer, is_initiator=True)
         except Exception as e:
             self.logger.error(f"Unhandled error in mix initiator: {e}")
         finally:
-            if writer and not writer.is_closing():
+            if 'writer' in locals() and writer and not writer.is_closing():
                 writer.close()
 
     async def _run_protocol(self, reader, writer, is_initiator):
@@ -160,64 +168,59 @@ class EvolutionaryTrainingNode:
             self.is_mixing = False
 
     async def _send_weights(self, writer):
-        """Debug version with granular logging"""
-        self.logger.info("🔧 _send_weights: Starting weight preparation")
-        
+        """Use raw socket for speed"""
         try:
-            # Step 1: Serialize weights
-            self.logger.info("🔧 _send_weights: Creating buffer")
+            # Serialize weights
+            self.logger.info("🔧 _send_weights: Starting weight preparation")
             buffer = io.BytesIO()
-            
-            self.logger.info("🔧 _send_weights: Calling torch.save")
             torch.save(self.model.state_dict(), buffer)
-            
-            self.logger.info("🔧 _send_weights: Getting bytes from buffer")
             weights_bytes = buffer.getvalue()
-            
             self.logger.info(f"🔧 _send_weights: Serialized {len(weights_bytes)/1e6:.2f} MB")
             
-            # Step 2: Test connection is alive
-            self.logger.info("🔧 _send_weights: Testing connection")
-            if writer.is_closing():
-                self.logger.error("🔧 _send_weights: Writer is already closing!")
-                return
+            # Get peer address
+            peer_info = writer.get_extra_info('peername')
+            host, port = peer_info[0], peer_info[1]
+            
+            # Close asyncio connection
+            writer.close()
+            
+            # Use raw socket on different port for weight transfer
+            raw_port = self.gossip_port + 1000
+            success = NetworkUtils.send_message(host, raw_port, weights_bytes)
+            
+            if success:
+                self.logger.info("✅ Raw socket transfer completed")
+                self.successful_mixes += 1
+            else:
+                self.logger.error("❌ Raw socket transfer failed")
                 
-            # Step 3: Send full weights
-            self.logger.info("🔧 _send_weights: Starting full weight transfer")
-            await NetworkUtils.send_message(writer, weights_bytes)
-            
-            self.logger.info("✅ _send_weights: All operations completed successfully")
-            self.successful_mixes += 1
-            
-        except asyncio.TimeoutError:
-            self.logger.error("🔧 _send_weights: TIMEOUT during send operation")
         except Exception as e:
-            self.logger.error(f"🔧 _send_weights: ERROR: {type(e).__name__}: {e}")
+            self.logger.error(f"Error in raw socket send: {e}")
             import traceback
-            self.logger.error(f"🔧 _send_weights: Traceback: {traceback.format_exc()}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
 
     async def _receive_weights(self, reader):
-        """Receives and applies weights."""
-        weights_bytes = await NetworkUtils.receive_message(reader, timeout=300.0)
-        if weights_bytes:
-            self._perform_losing_clone(weights_bytes)
-        else:
-            self.logger.warning("Failed to receive weights (timed out or connection closed).")
+        """Stub - raw socket receiver handles this"""
+        # Raw socket receiver will handle weight reception
+        self.logger.info("🥈 Waiting for raw socket weight transfer...")
+        # The raw socket receiver thread will call _perform_losing_clone
     
     async def start_gossip_protocol(self):
         self.gossip_running = True
         try:
-            # CRITICAL: Increase buffer limit to 500MB for large weight transfers
-            # OPTIMIZATION: Add reuse_port=True, which is highly effective with uvloop.
+            # Start asyncio server for handshakes
             self.server = await asyncio.start_server(
                 self._handle_peer_connection,
                 '0.0.0.0',
                 self.gossip_port,
-                limit=500 * 1024 * 1024,  # 500MB buffer limit
                 reuse_port=True
             )
+            
+            # Start raw socket receiver for weight transfers
+            self._start_raw_receiver()
+            
             self.mixer_task = asyncio.create_task(self._mixer_loop())
-            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} with uvloop backend.")
+            self.logger.info(f"Node {self.node_id}: Gossip protocol started on port {self.gossip_port} (asyncio) and {self.gossip_port + 1000} (raw socket)")
         except Exception as e:
             self.logger.error(f"Failed to start gossip protocol: {e}")
             self.gossip_running = False
@@ -254,6 +257,42 @@ class EvolutionaryTrainingNode:
             self.server.close()
             await self.server.wait_closed()
         self.logger.info("Gossip protocol stopped.")
+    
+    def _start_raw_receiver(self):
+        """Start raw socket receiver thread"""
+        def receiver_thread():
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+            server_sock.bind(('0.0.0.0', self.gossip_port + 1000))
+            server_sock.listen(5)
+            server_sock.settimeout(1.0)  # Non-blocking accept
+            
+            self.logger.info(f"Raw socket receiver listening on port {self.gossip_port + 1000}")
+            
+            while self.gossip_running:
+                try:
+                    client_sock, addr = server_sock.accept()
+                    self.logger.info(f"🔧 Raw socket connection from {addr}")
+                    
+                    # Receive weights
+                    weights_bytes = NetworkUtils.receive_message_blocking(client_sock)
+                    client_sock.close()
+                    
+                    # Apply weights
+                    self._perform_losing_clone(weights_bytes)
+                    
+                except socket.timeout:
+                    continue  # Check gossip_running flag
+                except Exception as e:
+                    if self.gossip_running:  # Only log if we're supposed to be running
+                        self.logger.error(f"Raw socket receiver error: {e}")
+            
+            server_sock.close()
+            self.logger.info("Raw socket receiver stopped")
+        
+        import threading
+        threading.Thread(target=receiver_thread, daemon=True).start()
     
     def get_status(self) -> dict:
         return {
