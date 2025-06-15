@@ -12,6 +12,14 @@ from typing import List, Optional, Tuple
 
 class NetworkUtils:
     @staticmethod
+    def optimize_socket(sock):
+        """Apply high-performance TCP settings"""
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)  # 16MB
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)  # 16MB
+        if hasattr(socket, 'TCP_QUICKACK'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+    @staticmethod
     def get_bootstrap_nodes(global_rank: int, world_size: int, data_parallel_rank: int, 
                           tp_size: int, logger) -> List[str]:
         """

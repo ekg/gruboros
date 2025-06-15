@@ -1,4 +1,3 @@
-import asyncio
 import random
 import torch
 import io
@@ -7,32 +6,40 @@ import os
 import logging
 import socket
 import threading
-from asyncio import Queue
-from typing import Dict
+import queue
+import struct
+from typing import Dict, Optional
+from dataclasses import dataclass
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
-import uvloop
+
+@dataclass
+class WeightUpdate:
+    state_dict: dict
+    source_node: str
 
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module,
                  global_rank: int, world_size: int, data_parallel_rank: int,
                  tp_size: int, mixing_probability: float = 0.01):
         self.node_id = node_id
-        self.model = model
+        self.model = model  # Main thread owns this
         self.global_rank = global_rank
         self.mixing_rng = random.Random(42 + global_rank * 1000)
         self.mixing_probability = mixing_probability
         
-        self.mix_request_queue = Queue(maxsize=1)
-        self.mixing_lock = asyncio.Lock()
-        self.is_mixing = False  # Prevent concurrent mixing operations
+        # Simple thread-safe communication
+        self.incoming_updates = queue.Queue()  # Background thread -> Main thread
         self.fitness_tracker = FitnessTracker()
-        self.peer_list: Dict[str, dict] = {}
+        self.fitness_lock = threading.Lock()
         
         master_addr = os.environ.get('MASTER_ADDR', 'localhost')
         self.gossip_port = NetworkUtils.get_gossip_port(data_parallel_rank, master_addr)
-        self.server = None
+        
+        # Thread control
         self.gossip_running = False
+        self.gossip_thread = None
+        self.server_thread = None
         
         self.logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
         
@@ -44,224 +51,274 @@ class EvolutionaryTrainingNode:
         self.successful_mixes = 0
         
     def update_fitness(self, loss_value: float):
-        self.fitness_tracker.update(loss_value)
+        """Called by main thread after each training step"""
+        with self.fitness_lock:
+            self.fitness_tracker.update(loss_value)
     
     def get_current_fitness(self) -> float:
-        return self.fitness_tracker.get_fitness()
+        """Thread-safe fitness access"""
+        with self.fitness_lock:
+            return self.fitness_tracker.get_fitness()
+    
+    def check_for_updates(self) -> Optional[WeightUpdate]:
+        """Called by main thread to check for new weights"""
+        try:
+            # Non-blocking check - returns immediately
+            update = self.incoming_updates.get_nowait()
+            return update
+        except queue.Empty:
+            return None
+    
+    def apply_update(self, update: WeightUpdate):
+        """Called by main thread to safely apply update"""
+        self.logger.info(f"🔄 Applying update from {update.source_node}")
+        device = next(self.model.parameters()).device
+        
+        # Move state dict to correct device
+        for name, param in update.state_dict.items():
+            update.state_dict[name] = param.to(device)
+            
+        self.model.load_state_dict(update.state_dict)
+        self.successful_mixes += 1
+        self.logger.info("✅ Update applied successfully")
 
-    def _perform_losing_clone(self, partner_weights_bytes: bytes):
-        self.logger.info(f"🧬 Received {len(partner_weights_bytes)/1e6:.2f} MB payload. Applying new weights...")
-        try:
-            device = next(self.model.parameters()).device
-            buffer = io.BytesIO(partner_weights_bytes)
-            partner_state_dict = torch.load(buffer, map_location=device)
-            self.model.load_state_dict(partner_state_dict)
-            self.logger.info(f"  🔥 CLONING COMPLETE.")
-            self.successful_mixes += 1
-        except Exception as e:
-            self.logger.error(f"  ❌ FAILED to clone partner weights: {e}")
+    def start_gossip_protocol(self):
+        """Start the background gossip thread"""
+        self.gossip_running = True
+        self.gossip_thread = threading.Thread(target=self._gossip_worker, daemon=True)
+        self.gossip_thread.start()
+        
+        self.server_thread = threading.Thread(target=self._server_loop, daemon=True)
+        self.server_thread.start()
+        
+        self.logger.info("🚀 Background gossip started")
     
-    
-    
-    async def _handle_peer_connection(self, reader, writer):
-        """Handle incoming connections with proper busy rejection"""
-        # Check if already mixing
-        if self.mixing_lock.locked():
+    def _gossip_worker(self):
+        """Background thread that handles gossip networking"""
+        # Wait a bit for server to start
+        time.sleep(2)
+        
+        # Discover peers
+        self.peer_list = {}
+        for bootstrap_addr in self.bootstrap_nodes:
+            self.peer_list[bootstrap_addr] = {}
+        
+        self.logger.info(f"Discovered {len(self.peer_list)} peers: {list(self.peer_list.keys())}")
+        
+        # Main gossip loop
+        while self.gossip_running:
             try:
-                await NetworkUtils.send_message(writer, b"BUSY")
-            except:
-                pass
-            writer.close()
-            return
-            
+                time.sleep(random.uniform(10, 20))  # Wait between mix attempts
+                if random.random() < self.mixing_probability:
+                    self._try_mix_with_peer()
+            except Exception as e:
+                self.logger.error(f"Error in gossip worker: {e}")
+                time.sleep(5)
+    
+    def _server_loop(self):
+        """Background thread: listen for incoming gossip requests"""
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.settimeout(1.0)
+        
+        # Apply optimizations
+        NetworkUtils.optimize_socket(server_sock)
+        
         try:
-            await self._run_protocol(reader, writer, is_initiator=False)
-        except Exception as e:
-            self.logger.error(f"Protocol error: {e}")
+            server_sock.bind(('0.0.0.0', self.gossip_port))
+            server_sock.listen(5)
+            self.logger.info(f"🚀 Gossip server listening on port {self.gossip_port}")
+            
+            while self.gossip_running:
+                try:
+                    client_sock, addr = server_sock.accept()
+                    # Handle each connection in separate thread
+                    threading.Thread(
+                        target=self._handle_incoming_request,
+                        args=(client_sock, addr),
+                        daemon=True
+                    ).start()
+                except socket.timeout:
+                    continue  # Check self.gossip_running again
+                except Exception as e:
+                    if self.gossip_running:
+                        self.logger.error(f"Server error: {e}")
+                        time.sleep(1)
+                    
         finally:
-            if writer and not writer.is_closing():
-                writer.close()
+            server_sock.close()
     
+    def _handle_incoming_request(self, client_sock, addr):
+        """Background thread: handle one incoming gossip request"""
+        try:
+            NetworkUtils.optimize_socket(client_sock)
+            
+            # Receive fitness comparison
+            data = client_sock.recv(1024).decode()
+            if not data.startswith("FITNESS:"):
+                return
+                
+            peer_fitness = float(data.split(":")[1])
+            our_fitness = self.get_current_fitness()
+            
+            self.logger.info(f"📞 Peer {addr[0]} fitness: {peer_fitness:.4f}, ours: {our_fitness:.4f}")
+            
+            if our_fitness > peer_fitness:
+                # We win - send our weights
+                client_sock.send(b"SENDING_WEIGHTS")
+                self._send_our_weights_to_peer(client_sock)
+                
+            else:
+                # We lose - receive their weights
+                client_sock.send(b"SEND_ME_WEIGHTS")
+                new_weights = self._receive_weights_from_peer(client_sock)
+                
+                if new_weights:
+                    # Queue the update for main thread (don't apply here!)
+                    update = WeightUpdate(
+                        state_dict=new_weights,
+                        source_node=f"peer_{addr[0]}"
+                    )
+                    self.incoming_updates.put(update)
+                    self.logger.info("📦 Queued weight update for main thread")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling request from {addr}: {e}")
+        finally:
+            client_sock.close()
     
-    async def _initiate_mix(self):
-        """Entry point for outgoing mix attempts."""
-        # Skip if already mixing to prevent race conditions
-        if self.is_mixing:
-            self.logger.debug("Skipping mix attempt - already mixing")
+    def _try_mix_with_peer(self):
+        """Background thread: try to connect to a peer and mix"""
+        if not self.peer_list:
             return
             
+        # Choose random peer
         my_address = f"{os.environ.get('MASTER_ADDR', 'localhost')}:{self.gossip_port}"
         other_peers = [p for p in self.peer_list.keys() if p != my_address]
         if not other_peers:
             return
-
-        self.mixing_attempts += 1
-        partner_id = self.mixing_rng.choice(other_peers)
+            
+        peer_address = self.mixing_rng.choice(other_peers)
+        host, port_str = peer_address.split(':')
+        port = int(port_str)
         
-        connection = await NetworkUtils.safe_connect(partner_id)
-        if not connection:
-            self.logger.warning(f"❌ Could not connect to {partner_id}")
-            return
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        NetworkUtils.optimize_socket(sock)
         
-        reader, writer = connection
         try:
-            await self._run_protocol(reader, writer, is_initiator=True)
-        except ConnectionResetError:
-            # ✅ Expected condition - peer is busy
-            self.logger.warning(f"⚠️  Partner {partner_id} is busy, trying again later")
+            sock.settimeout(10.0)
+            sock.connect((host, port))
+            
+            # Send our fitness
+            our_fitness = self.get_current_fitness()
+            message = f"FITNESS:{our_fitness:.6f}".encode()
+            sock.send(message)
+            
+            # Get response
+            response = sock.recv(1024)
+            
+            if response == b"SENDING_WEIGHTS":
+                # Peer is sending weights to us
+                new_weights = self._receive_weights_from_peer(sock)
+                if new_weights:
+                    update = WeightUpdate(
+                        state_dict=new_weights,
+                        source_node=peer_address
+                    )
+                    self.incoming_updates.put(update)
+                    self.logger.info(f"📦 Queued weight update from {peer_address}")
+                    
+            elif response == b"SEND_ME_WEIGHTS":
+                # We need to send weights to peer
+                self._send_our_weights_to_peer(sock)
+                
+            self.mixing_attempts += 1
+            
         except Exception as e:
-            self.logger.error(f"Unhandled error in mix initiator: {e}")
+            self.logger.warning(f"❌ Could not connect to {peer_address}: {e}")
         finally:
-            if writer and not writer.is_closing():
-                writer.close()
-
-    async def _run_protocol(self, reader, writer, is_initiator):
-        # Check if already mixing - prevent race conditions
-        if self.is_mixing:
-            if not is_initiator: 
-                await NetworkUtils.send_message(writer, b"BUSY")
-            return
-            
-        # Set mixing flag for entire operation
-        self.is_mixing = True
-        try:
-            # Quick handshake phase
-            if is_initiator:
-                our_fitness = self.get_current_fitness()
-                partner_addr = writer.get_extra_info('peername')
-                self.logger.info(f"🎲 INITIATING MIXING with {partner_addr} (fitness: {our_fitness:.4f})")
-                probe = f"PROBE|{self.node_id}|{our_fitness:.6f}"
-                await NetworkUtils.send_message(writer, probe.encode())
-                
-                decision_bytes = await NetworkUtils.receive_message(reader, timeout=15.0)
-                if not decision_bytes: return
-                
-                decision = decision_bytes.decode()
-                if decision == "BUSY": return
-                we_are_winner = (decision == "YOU_WIN")
-            else: # We are the peer
-                probe_bytes = await NetworkUtils.receive_message(reader, timeout=15.0)
-                if not probe_bytes or not probe_bytes.decode().startswith("PROBE"): return
-                
-                _, partner_node_id, peer_fitness_str = probe_bytes.decode().split('|')
-                peer_fitness = float(peer_fitness_str)
-                our_fitness = self.get_current_fitness()
-                self.logger.info(f"📬 Received probe from {partner_node_id} (fitness: {peer_fitness:.4f}). Our fitness: {our_fitness:.4f}")
-                
-                we_are_winner = (our_fitness > peer_fitness)
-                response = b"I_WIN" if we_are_winner else b"YOU_WIN"
-                await NetworkUtils.send_message(writer, response)
-            
-            # Weight transfer phase (protected by is_mixing flag)
-            if we_are_winner:
-                self.logger.info("🏆 We are the winner. Preparing and sending weights...")
-                await self._send_weights(writer)
-            else: # We are the loser
-                self.logger.info("🥈 We are the loser. Waiting for weights...")
-                await self._receive_weights(reader)
-                
-        except ConnectionResetError:
-            # ✅ Handle busy peer gracefully
-            self.logger.warning(f"⚠️  Candidate partner is busy - mix attempt cancelled")
-            return  # Clean exit, no error propagation
-        finally:
-            # Always clear mixing flag
-            self.is_mixing = False
-
-    async def _send_weights(self, writer):
-        """Send weights using simple asyncio approach"""
+            sock.close()
+    
+    def _send_our_weights_to_peer(self, sock):
+        """Send our current weights through socket"""
         try:
             # Serialize weights
-            self.logger.info("🔧 _send_weights: Starting weight preparation")
-            buffer = io.BytesIO()
-            torch.save(self.model.state_dict(), buffer)
-            weights_bytes = buffer.getvalue()
-            self.logger.info(f"🔧 _send_weights: Serialized {len(weights_bytes)/1e6:.2f} MB")
+            state_dict = self.model.state_dict()
+            cpu_state_dict = {name: param.cpu() for name, param in state_dict.items()}
             
-            # Send via asyncio - much simpler and faster
-            await NetworkUtils.send_message(writer, weights_bytes, logger=self.logger)
+            buffer = io.BytesIO()
+            torch.save(cpu_state_dict, buffer)
+            weights_bytes = buffer.getvalue()
+            
+            self.logger.info(f"🚀 Sending {len(weights_bytes)/1e6:.2f} MB to peer")
+            
+            # Send length prefix
+            sock.send(struct.pack('!I', len(weights_bytes)))
+            
+            # Send data in chunks
+            chunk_size = 1024 * 1024  # 1MB chunks
+            bytes_sent = 0
+            
+            while bytes_sent < len(weights_bytes):
+                chunk_end = min(bytes_sent + chunk_size, len(weights_bytes))
+                chunk = weights_bytes[bytes_sent:chunk_end]
+                sock.sendall(chunk)
+                bytes_sent = chunk_end
             
             self.logger.info("✅ Weight transfer completed")
-            self.successful_mixes += 1
-                
+            
         except Exception as e:
-            self.logger.error(f"Error in weight send: {e}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-
-    async def _receive_weights(self, reader):
-        """Receive weights with extended timeout and better error handling"""
-        self.logger.info("🥈 Waiting for weight transfer...")
-        
-        # Give more time for large weight transfers
-        weights_bytes = await NetworkUtils.receive_message(reader, timeout=300.0, logger=self.logger)  # 5 minutes
-        
-        if weights_bytes and len(weights_bytes) > 0:
-            self.logger.info(f"🥈 Received {len(weights_bytes)/1e6:.2f} MB, applying weights...")
-            self._perform_losing_clone(weights_bytes)
-        else:
-            self.logger.error("❌ Failed to receive weights or received empty data")
+            self.logger.error(f"Error sending weights: {e}")
     
-    async def start_gossip_protocol(self):
-        self.gossip_running = True
+    def _receive_weights_from_peer(self, sock) -> Optional[dict]:
+        """Receive weights from peer through socket"""
         try:
-            # Create server with optimized settings
-            self.server = await asyncio.start_server(
-                self._handle_peer_connection,
-                '0.0.0.0',
-                self.gossip_port,
-                limit=32*1024*1024,  # 32MB buffer limit
-                reuse_port=True
-            )
+            # Receive length prefix
+            length_data = b''
+            while len(length_data) < 4:
+                chunk = sock.recv(4 - len(length_data))
+                if not chunk:
+                    return None
+                length_data += chunk
             
-            # Optimize server sockets with same high-performance settings
-            for sock in self.server.sockets:
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-                
-                if hasattr(socket, 'TCP_QUICKACK'):
-                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+            expected_size = struct.unpack('!I', length_data)[0]
+            self.logger.info(f"🔄 Receiving {expected_size/1e6:.2f} MB from peer")
             
-            self.mixer_task = asyncio.create_task(self._mixer_loop())
-            self.logger.info(f"🚀 High-performance gossip protocol started on port {self.gossip_port}")
+            # Receive data
+            received_data = bytearray()
+            while len(received_data) < expected_size:
+                remaining = expected_size - len(received_data)
+                chunk_size = min(1024 * 1024, remaining)  # 1MB chunks
+                chunk = sock.recv(chunk_size)
+                if not chunk:
+                    return None
+                received_data.extend(chunk)
+            
+            # Deserialize
+            buffer = io.BytesIO(bytes(received_data))
+            state_dict = torch.load(buffer, map_location='cpu')
+            
+            self.logger.info("✅ Weights received and deserialized")
+            return state_dict
             
         except Exception as e:
-            self.logger.error(f"Failed to start gossip protocol: {e}")
-            self.gossip_running = False
-
-    async def _mixer_loop(self):
-        # Discover peers once at the start, then start mixing
-        await self._discover_peers()
-        while self.gossip_running:
-            try:
-                await self.mix_request_queue.get()
-                await self._initiate_mix()
-                self.mix_request_queue.task_done()
-            except asyncio.CancelledError: break
-            except Exception as e:
-                self.logger.error(f"Error in mixer loop: {e}")
-                await asyncio.sleep(1)
+            self.logger.error(f"Error receiving weights: {e}")
+            return None
+    
+    def stop_gossip_protocol(self):
+        """Stop the gossip protocol"""
+        self.gossip_running = False
+        if self.gossip_thread:
+            self.gossip_thread.join(timeout=5)
+        if self.server_thread:
+            self.server_thread.join(timeout=5)
+        self.logger.info("Gossip protocol stopped.")
     
     def request_mix(self):
-        if random.random() < self.mixing_probability:
-            try:
-                self.mix_request_queue.put_nowait(True)
-            except asyncio.QueueFull:
-                pass
-    
-    async def _discover_peers(self):
-        for bootstrap_addr in self.bootstrap_nodes:
-            self.peer_list[bootstrap_addr] = {}
-
-    async def stop_gossip_protocol(self):
-        self.gossip_running = False
-        if self.mixer_task:
-            self.mixer_task.cancel()
-        if self.server:
-            self.server.close()
-            await self.server.wait_closed()
-        self.logger.info("Gossip protocol stopped.")
+        """Called by main thread to trigger mixing (for compatibility)"""
+        # In the threaded approach, mixing happens automatically
+        # This method exists for compatibility with existing code
+        pass
     
     def get_status(self) -> dict:
         return {
