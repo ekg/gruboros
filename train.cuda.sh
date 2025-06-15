@@ -11,15 +11,15 @@ mkdir -p logs
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="20m_model_4way_dp_gossip"
+NAME="20m_model_8way_dp_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
 
 # ====================== CUDA & DISTRIBUTED CONFIGURATION ======================
 
-# NVIDIA/CUDA specific settings - USE GPUs 0-3
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+# NVIDIA/CUDA specific settings - USE GPUs 0-7
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 # Force using gloo backend for data parallel + gossip
 export TORCH_DISTRIBUTED_DEBUG=OFF
@@ -42,18 +42,18 @@ export OMP_NUM_THREADS=4
 
 # ====================== LOCAL GOSSIP PROTOCOL SETUP ======================
 
-# Create hostfile for local 4-GPU data parallel testing
+# Create hostfile for local 8-GPU data parallel testing
 echo "Creating local hostfile for gossip protocol..."
 cat > hostfile-job-local.txt << EOF
-localhost slots=4
+localhost slots=8
 EOF
 
 # Set environment variables for gossip discovery
 export SLURM_JOB_ID="local"
 export SLURM_JOB_NODELIST="localhost"
 
-# Gossip protocol will use ports 29501-29504 for ranks 0-3
-echo "Gossip protocol will use ports 29501-29504 for 4 GPU ranks"
+# Gossip protocol will use ports 29501-29508 for ranks 0-7
+echo "Gossip protocol will use ports 29501-29508 for 8 GPU ranks"
 
 # ====================== DISTRIBUTED TRAINING SETUP ======================
 
@@ -62,7 +62,7 @@ export MASTER_ADDR=127.0.0.1
 export MASTER_PORT=29500  # DeepSpeed uses this, gossip uses 29501+
 
 # Number of GPUs
-NUM_GPUS=4
+NUM_GPUS=8
 
 # ====================== TRAINING LAUNCH ======================
 
@@ -76,11 +76,11 @@ if [ ! -f "$DATA_PATH" ]; then
     exit 1
 fi
 
-echo "Starting 4-way DATA PARALLEL training with evolutionary gossip..."
-echo "Model setup: 4 independent 20M parameter models (one per GPU)"
-echo "Using GPUs: 0,1,2,3"
+echo "Starting 8-way DATA PARALLEL training with evolutionary gossip..."
+echo "Model setup: 8 independent 20M parameter models (one per GPU)"
+echo "Using GPUs: 0,1,2,3,4,5,6,7"
 echo "Tensor Parallel Size: 1 (each GPU has complete model)"
-echo "Data Parallel Size: 4 (4 separate models with different data)"
+echo "Data Parallel Size: 8 (8 separate models with different data)"
 echo "Data path: $DATA_PATH"
 echo "Output directory: $OUTPUT_DIR"
 echo "Hostfile created: hostfile-job-local.txt"
@@ -120,17 +120,17 @@ echo "Cleaned up temporary files."
 # ====================== POST-TRAINING SUMMARY ======================
 
 echo "=== Training Summary ==="
-echo "Configuration: 4-way Data Parallel"
-echo "Model size: 20M parameters PER GPU (4 independent models)"
-echo "GPUs used: 0,1,2,3"
+echo "Configuration: 8-way Data Parallel"
+echo "Model size: 20M parameters PER GPU (8 independent models)"
+echo "GPUs used: 0,1,2,3,4,5,6,7"
 echo "Tensor parallel size: 1 (complete model per GPU)"
-echo "Data parallel size: 4 (4 different models)"
+echo "Data parallel size: 8 (8 different models)"
 echo "Each model gets different data samples"
-echo "Evolutionary mixing between the 4 models via gossip"
+echo "Evolutionary mixing between the 8 models via gossip"
 echo "Sequence length: 2048"
 echo "Batch size per GPU: 4"
 echo "Gradient accumulation: 4"
-echo "Global effective batch size: 64 (4 * 4 * 4)"
+echo "Global effective batch size: 128 (8 * 4 * 4)"
 echo "Learning rate: 0.003"
 echo "Training steps: 20,000"
 echo "Output saved to: $OUTPUT_DIR"
