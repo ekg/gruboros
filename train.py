@@ -1682,6 +1682,10 @@ def main():
                     f"tok/s={tokens_per_sec_system:.2f}"
                 ]
                 
+                # Add mixing statistics
+                status = evolutionary_node.get_status()
+                formatted_stats.append(f"mixes={status['mixing_attempts']},{status['successful_mixes']}")
+                
                 # Add validation info and epoch if available
                 # Always show validation loss once we have calculated it at least once
                 if current_val_loss is not None:
