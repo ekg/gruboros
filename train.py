@@ -1085,7 +1085,7 @@ def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
-        mixing_probability=0.05  # 5% chance to attempt a mix each step
+        mixing_probability=0.01  # 1% chance to attempt a mix each step
     )
     
     # Start gossip protocol
