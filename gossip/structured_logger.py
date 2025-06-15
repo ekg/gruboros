@@ -8,7 +8,8 @@ from pathlib import Path
 from .network_utils import NetworkUtils
 
 class GossipLogger:
-    def __init__(self, node_id: str, global_rank: int, data_parallel_rank: int):
+    def __init__(self, node_id: str, global_rank: int, data_parallel_rank: int, 
+                 output_dir: Optional[str] = None):
         self.node_id = node_id
         self.global_rank = global_rank
         self.data_parallel_rank = data_parallel_rank
@@ -17,12 +18,17 @@ class GossipLogger:
         self.local_ip, self.gossip_port = NetworkUtils.get_node_identity(data_parallel_rank)
         self.node_identity = f"{self.local_ip}:{self.gossip_port}"
         
-        # Create per-node log file
-        log_dir = Path("gossip_logs")
+        # Create gossip subdirectory in output directory
+        if output_dir:
+            log_dir = Path(output_dir) / "gossip"
+        else:
+            log_dir = Path("gossip")  # Fallback
+        
         log_dir.mkdir(exist_ok=True)
         
+        # Create per-node log file with simple name
         safe_identity = self.node_identity.replace(':', '_').replace('.', '_')
-        self.log_file = log_dir / f"gossip_{safe_identity}_rank_{global_rank}.tsv"
+        self.log_file = log_dir / f"{safe_identity}_rank_{global_rank}.tsv"
         
         # Write TSV header
         if not self.log_file.exists():

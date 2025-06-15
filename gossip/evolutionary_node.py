@@ -24,7 +24,8 @@ class WeightUpdate:
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module,
                  global_rank: int, world_size: int, data_parallel_rank: int,
-                 tp_size: int, mixing_probability: float = 0.01):
+                 tp_size: int, mixing_probability: float = 0.01, 
+                 output_dir: Optional[str] = None):
         self.node_id = node_id
         self.model = model  # Main thread owns this
         self.global_rank = global_rank
@@ -46,7 +47,7 @@ class EvolutionaryTrainingNode:
         self.server_thread = None
         
         # Replace standard logger with structured gossip logger
-        self.logger = GossipLogger(node_id, global_rank, data_parallel_rank)
+        self.logger = GossipLogger(node_id, global_rank, data_parallel_rank, output_dir)
         
         # Create standard logger for bootstrap discovery
         std_logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
