@@ -67,7 +67,7 @@ NUM_GPUS=8
 # ====================== TRAINING LAUNCH ======================
 
 # Data path - MODIFY THIS TO YOUR DATA PATH
-DATA_PATH="/mnt/nvme2n1/erikg/fineweb-edu/fineweb-0kx10m.txt"
+DATA_PATH="/mnt/nvme2n1/erikg/pile.txt"
 
 # Verify data path exists
 if [ ! -f "$DATA_PATH" ]; then
@@ -92,7 +92,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --cuda \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --train_steps 20000 \
+  --train_steps 100000 \
   --validate_every 1000 \
   --save_every 2000 \
   --lr 0.003 \
@@ -132,5 +132,5 @@ echo "Batch size per GPU: 4"
 echo "Gradient accumulation: 4"
 echo "Global effective batch size: 128 (8 * 4 * 4)"
 echo "Learning rate: 0.003"
-echo "Training steps: 20,000"
+echo "Training steps: 100,000"
 echo "Output saved to: $OUTPUT_DIR"
