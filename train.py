@@ -1651,8 +1651,6 @@ def main():
             # Check for incoming weight updates from other nodes
             update = evolutionary_node.check_for_updates()
             if update:
-                if model_engine.global_rank == 0:
-                    print(f"🔄 Applying weight update from {update.source_node}")
                 evolutionary_node.apply_update(update)
                 # Note: In practice, you might want to reset the optimizer state here
             
