@@ -15,11 +15,9 @@ import json
 import datetime
 from datetime import timedelta
 import sys
-import asyncio
 import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
-import uvloop
 
 def configure_backend(args):
     """Configure environment for the selected backend (CUDA or ROCm)"""
@@ -558,19 +556,8 @@ def verify_gpu_health(use_rocm):
 
 # Environment setup is now handled by the batch script
 
-async def main():
-    # Install uvloop as the default event loop for asyncio
-    # This must be the first thing done in the async main function.
-    uvloop.install()
-    print("INFO: uvloop has been installed as the default asyncio event loop.")
-    
+def main():
     args = get_args()
-
-    # Add an executor for running synchronous blocking calls (like barrier)
-    # without blocking the asyncio event loop.
-    import concurrent.futures
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    loop = asyncio.get_running_loop()
     
     # Configure backend based on command-line arguments
     use_rocm = configure_backend(args)
@@ -1102,7 +1089,7 @@ async def main():
     )
     
     # Start gossip protocol
-    await evolutionary_node.start_gossip_protocol()
+    evolutionary_node.start_gossip_protocol()
     
     if model_engine.global_rank == 0:
         print("Evolutionary gossip protocol initialized")
@@ -1111,7 +1098,7 @@ async def main():
         print("Evolutionary strategy: Loser's weights are completely overwritten by winner's.")
     
     # Allow gossip protocol to initialize
-    await asyncio.sleep(2)
+    time.sleep(2)
     # ============================================
     
     # Create worker-specific seeds based on data parallel rank
@@ -1661,12 +1648,16 @@ async def main():
             # Update evolutionary fitness
             evolutionary_node.update_fitness(loss_value)
             
+            # Check for incoming weight updates from other nodes
+            update = evolutionary_node.check_for_updates()
+            if update:
+                if model_engine.global_rank == 0:
+                    print(f"🔄 Applying weight update from {update.source_node}")
+                evolutionary_node.apply_update(update)
+                # Note: In practice, you might want to reset the optimizer state here
+            
             # Let the node decide stochastically using its own per-rank RNG
             evolutionary_node.request_mix()
-
-            # Yield control to the asyncio event loop for a moment. This is CRITICAL.
-            # It allows the background _mixer task and the server to run.
-            await asyncio.sleep(0)
             
             # Log status periodically
             if step % 500 == 0 and model_engine.global_rank == 0:
@@ -1784,7 +1775,7 @@ async def main():
         print(f"Final model saved to: {final_path}")
         
         # Cleanup evolutionary node
-        await evolutionary_node.stop_gossip_protocol()
+        evolutionary_node.stop_gossip_protocol()
         print("Evolutionary gossip protocol stopped")
         
         # Append final statistics to model summary
@@ -1806,4 +1797,4 @@ async def main():
                 f.write(f"Evolutionary strategy: Complete weight cloning (winner overwrites loser)\n")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
