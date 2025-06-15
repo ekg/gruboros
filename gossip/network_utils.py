@@ -122,6 +122,42 @@ class NetworkUtils:
         return []
     
     @staticmethod
+    def get_local_node_address() -> str:
+        """Get THIS node's actual IP address, not the master's"""
+        master_addr = os.environ.get('MASTER_ADDR', 'localhost')
+        
+        # Local multi-GPU case
+        if master_addr in ['localhost', '127.0.0.1']:
+            return 'localhost'
+        
+        # Distributed case - get our actual IP
+        try:
+            # Connect to master to determine which interface we'd use
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((master_addr, 80))
+                local_ip = s.getsockname()[0]
+                return local_ip
+        except Exception:
+            # Fallback for HPC systems
+            hostname = socket.gethostname()
+            return socket.gethostbyname(hostname)
+
+    @staticmethod
+    def get_node_identity(data_parallel_rank: int) -> tuple:
+        """Get (ip_address, port) for this data parallel replica"""
+        local_ip = NetworkUtils.get_local_node_address()
+        base_port = 29501
+        
+        # Local: different ports per DP rank
+        # Distributed: same port (different IPs)
+        if local_ip == 'localhost':
+            port = base_port + data_parallel_rank
+        else:
+            port = base_port
+            
+        return local_ip, port
+
+    @staticmethod
     def get_gossip_port(data_parallel_rank: int, master_addr: str) -> int:
         """Get the gossip port for this data parallel replica"""
         base_port = 29501

@@ -34,3 +34,15 @@ class FitnessTracker:
     def get_recent_loss(self) -> float:
         """Get most recent loss"""
         return self.loss_history[-1] if self.loss_history else float('inf')
+    
+    def inherit_fitness(self, source_fitness: float):
+        """Inherit fitness from source model when completely overwritten"""
+        # Clear our history and start fresh with source fitness
+        # Convert fitness back to approximate loss for continuity
+        inherited_loss = 1.0 / (source_fitness + 1e-6) - 1e-6
+        
+        self.loss_history = [inherited_loss] * min(5, len(self.loss_history) or 1)
+        
+        import logging
+        logger = logging.getLogger('fitness_tracker')
+        logger.debug(f"Inherited fitness {source_fitness:.4f} (approx loss {inherited_loss:.4f})")

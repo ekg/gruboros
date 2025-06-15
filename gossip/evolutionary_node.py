@@ -12,11 +12,14 @@ from typing import Dict, Optional
 from dataclasses import dataclass
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
+from .structured_logger import GossipLogger
 
 @dataclass
 class WeightUpdate:
     state_dict: dict
     source_node: str
+    source_fitness: float  # Added fitness transfer
+    correlation_id: str    # Added correlation tracking
 
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module,
@@ -42,21 +45,37 @@ class EvolutionaryTrainingNode:
         self.gossip_thread = None
         self.server_thread = None
         
-        self.logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
+        # Replace standard logger with structured gossip logger
+        self.logger = GossipLogger(node_id, global_rank, data_parallel_rank)
         
+        # Create standard logger for bootstrap discovery
+        std_logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
         self.bootstrap_nodes = NetworkUtils.get_bootstrap_nodes(
-            global_rank, world_size, data_parallel_rank, tp_size, self.logger
+            global_rank, world_size, data_parallel_rank, tp_size, std_logger
         )
         
         self.mixing_attempts = 0
         self.successful_mixes = 0
         self.current_step = 0
         
+        # Log node startup
+        self.logger.log_event("NODE_STARTUP", 
+                             message=f"TP_size={tp_size}, mixing_prob={mixing_probability}")
+        
     def update_fitness(self, loss_value: float, step: int):
         """Called by main thread after each training step"""
         with self.fitness_lock:
+            old_fitness = self.fitness_tracker.get_fitness()
             self.fitness_tracker.update(loss_value)
-            
+            new_fitness = self.fitness_tracker.get_fitness()
+        
+        # Log fitness updates periodically
+        if step % 100 == 0:
+            self.logger.log_event("FITNESS_UPDATE", 
+                                 step=step, 
+                                 fitness=new_fitness,
+                                 message=f"loss={loss_value:.4f}")
+        
         # Notify gossip worker about this step
         try:
             self.step_notifications.put_nowait(step)
@@ -79,17 +98,31 @@ class EvolutionaryTrainingNode:
             return None
     
     def apply_update(self, update: WeightUpdate):
-        """Called by main thread to safely apply update"""
-        self.logger.info(f"🔄 Applying update from {update.source_node}")
-        device = next(self.model.parameters()).device
+        """Apply update and inherit source fitness"""
+        self.logger.log_event("WEIGHT_UPDATE_APPLYING", 
+                             step=self.current_step,
+                             fitness=update.source_fitness,
+                             correlation_id=update.correlation_id,
+                             peer_addr=update.source_node,
+                             message="Inheriting source fitness")
         
-        # Move state dict to correct device
+        device = next(self.model.parameters()).device
         for name, param in update.state_dict.items():
             update.state_dict[name] = param.to(device)
             
         self.model.load_state_dict(update.state_dict)
+        
+        # CRITICAL: Inherit the source model's fitness
+        with self.fitness_lock:
+            old_fitness = self.fitness_tracker.get_fitness()
+            self.fitness_tracker.inherit_fitness(update.source_fitness)
+        
         self.successful_mixes += 1
-        self.logger.info("✅ Update applied successfully")
+        self.logger.log_event("WEIGHT_UPDATE_COMPLETE", 
+                             step=self.current_step,
+                             fitness=update.source_fitness,
+                             correlation_id=update.correlation_id,
+                             peer_addr=update.source_node)
 
     def start_gossip_protocol(self):
         """Start the background gossip thread"""
@@ -100,7 +133,8 @@ class EvolutionaryTrainingNode:
         self.server_thread = threading.Thread(target=self._server_loop, daemon=True)
         self.server_thread.start()
         
-        self.logger.info("🚀 Background gossip started")
+        self.logger.log_event("GOSSIP_PROTOCOL_STARTED", 
+                             message="Background threads launched")
     
     def _gossip_worker(self):
         """Background thread that handles gossip networking - NOW STEP-BASED"""
@@ -112,7 +146,8 @@ class EvolutionaryTrainingNode:
         for bootstrap_addr in self.bootstrap_nodes:
             self.peer_list[bootstrap_addr] = {}
         
-        self.logger.info(f"Discovered {len(self.peer_list)} peers: {list(self.peer_list.keys())}")
+        self.logger.log_event("PEER_DISCOVERY", 
+                             message=f"Found {len(self.peer_list)} peers: {list(self.peer_list.keys())}")
         
         # Main gossip loop - NOW STEP-BASED
         while self.gossip_running:
@@ -125,7 +160,10 @@ class EvolutionaryTrainingNode:
                     
                     # Check if we should attempt mixing on this step
                     if self.mixing_rng.random() < self.mixing_probability:
-                        self.logger.info(f"🎲 Step {step}: Attempting evolutionary mix")
+                        self.logger.log_event("MIX_DECISION", 
+                                             step=step,
+                                             fitness=self.get_current_fitness(),
+                                             message="Random check triggered mixing attempt")
                         self._try_mix_with_peer()
                     
                     # Mark step notification as processed
@@ -136,7 +174,8 @@ class EvolutionaryTrainingNode:
                     continue
                     
             except Exception as e:
-                self.logger.error(f"Error in gossip worker: {e}")
+                self.logger.log_event("GOSSIP_WORKER_ERROR", 
+                                     message=str(e))
                 time.sleep(1)
     
     def _server_loop(self):
@@ -151,7 +190,8 @@ class EvolutionaryTrainingNode:
         try:
             server_sock.bind(('0.0.0.0', self.gossip_port))
             server_sock.listen(5)
-            self.logger.info(f"🚀 Gossip server listening on port {self.gossip_port}")
+            self.logger.log_event("SERVER_STARTED", 
+                                 message=f"Listening on {self.logger.node_identity}")
             
             while self.gossip_running:
                 try:
@@ -166,7 +206,8 @@ class EvolutionaryTrainingNode:
                     continue  # Check self.gossip_running again
                 except Exception as e:
                     if self.gossip_running:
-                        self.logger.error(f"Server error: {e}")
+                        self.logger.log_event("SERVER_ERROR", 
+                                             message=str(e))
                         time.sleep(1)
                     
         finally:
@@ -174,56 +215,90 @@ class EvolutionaryTrainingNode:
     
     def _handle_incoming_request(self, client_sock, addr):
         """Background thread: handle one incoming gossip request"""
+        peer_addr = f"{addr[0]}:{addr[1]}"
+        correlation_id = None
+        
         try:
             NetworkUtils.optimize_socket(client_sock)
             
-            # Receive fitness comparison
+            # Receive fitness comparison with correlation ID
             data = client_sock.recv(1024).decode()
             if not data.startswith("FITNESS:"):
                 return
+            
+            # Parse: FITNESS:0.123456:CID:abc12345
+            parts = data.split(":")
+            if len(parts) >= 4 and parts[2] == "CID":
+                peer_fitness = float(parts[1])
+                correlation_id = parts[3]
+            else:
+                peer_fitness = float(parts[1])
+                correlation_id = self.logger.generate_correlation_id()
                 
-            peer_fitness = float(data.split(":")[1])
             our_fitness = self.get_current_fitness()
             
-            self.logger.info(f"📞 Step {self.current_step}: Peer {addr[0]} fitness: {peer_fitness:.4f}, ours: {our_fitness:.4f}")
+            self.logger.log_event("INCOMING_FITNESS_COMPARISON", 
+                                 step=self.current_step,
+                                 fitness=our_fitness,
+                                 correlation_id=correlation_id,
+                                 peer_addr=peer_addr,
+                                 message=f"peer_fitness={peer_fitness:.4f}")
             
             if our_fitness > peer_fitness:
                 # We win - send our weights
                 client_sock.send(b"SENDING_WEIGHTS")
-                self._send_our_weights_to_peer(client_sock)
-                self.logger.info(f"🏆 Step {self.current_step}: Sent weights to weaker peer")
+                self._send_our_weights_to_peer(client_sock, correlation_id)
                 
             else:
                 # We lose - receive their weights
                 client_sock.send(b"SEND_ME_WEIGHTS")
-                new_weights = self._receive_weights_from_peer(client_sock)
+                new_weights, source_fitness = self._receive_weights_from_peer(client_sock, correlation_id)
                 
                 if new_weights:
                     # Queue the update for main thread (don't apply here!)
                     update = WeightUpdate(
                         state_dict=new_weights,
-                        source_node=f"peer_{addr[0]}"
+                        source_node=peer_addr,
+                        source_fitness=source_fitness,
+                        correlation_id=correlation_id
                     )
                     self.incoming_updates.put(update)
-                    self.logger.info(f"📦 Step {self.current_step}: Queued weight update for main thread")
+                    self.logger.log_event("WEIGHT_UPDATE_QUEUED", 
+                                         step=self.current_step,
+                                         correlation_id=correlation_id,
+                                         peer_addr=peer_addr,
+                                         fitness=source_fitness)
                 
         except Exception as e:
-            self.logger.error(f"Error handling request from {addr}: {e}")
+            self.logger.log_event("INCOMING_REQUEST_ERROR", 
+                                 step=self.current_step,
+                                 correlation_id=correlation_id,
+                                 peer_addr=peer_addr,
+                                 message=str(e))
         finally:
             client_sock.close()
     
     def _try_mix_with_peer(self):
-        """Background thread: try to connect to a peer and mix"""
+        """Enhanced mixing with correlation tracking"""
         if not self.peer_list:
             return
             
-        # Choose random peer
-        my_address = f"{os.environ.get('MASTER_ADDR', 'localhost')}:{self.gossip_port}"
-        other_peers = [p for p in self.peer_list.keys() if p != my_address]
+        correlation_id = self.logger.generate_correlation_id()
+        
+        # Choose random peer - use our actual node identity
+        local_identity = self.logger.node_identity
+        other_peers = [p for p in self.peer_list.keys() if p != local_identity]
         if not other_peers:
             return
             
         peer_address = self.mixing_rng.choice(other_peers)
+        
+        self.logger.log_event("MIX_ATTEMPT_START", 
+                             step=self.current_step,
+                             correlation_id=correlation_id,
+                             peer_addr=peer_address,
+                             fitness=self.get_current_fitness())
+        
         host, port_str = peer_address.split(':')
         port = int(port_str)
         
@@ -234,54 +309,61 @@ class EvolutionaryTrainingNode:
             sock.settimeout(10.0)
             sock.connect((host, port))
             
-            # Send our fitness
+            # Send our fitness with correlation ID
             our_fitness = self.get_current_fitness()
-            message = f"FITNESS:{our_fitness:.6f}".encode()
+            message = f"FITNESS:{our_fitness:.6f}:CID:{correlation_id}".encode()
             sock.send(message)
             
-            # Get response
             response = sock.recv(1024)
             
             if response == b"SENDING_WEIGHTS":
-                # Peer is sending weights to us
-                new_weights = self._receive_weights_from_peer(sock)
+                new_weights, source_fitness = self._receive_weights_from_peer(sock, correlation_id)
                 if new_weights:
                     update = WeightUpdate(
                         state_dict=new_weights,
-                        source_node=peer_address
+                        source_node=peer_address,
+                        source_fitness=source_fitness,
+                        correlation_id=correlation_id
                     )
                     self.incoming_updates.put(update)
-                    self.logger.info(f"📦 Step {self.current_step}: Queued weight update from {peer_address}")
                     
             elif response == b"SEND_ME_WEIGHTS":
-                # We need to send weights to peer
-                self._send_our_weights_to_peer(sock)
-                self.logger.info(f"🏆 Step {self.current_step}: Sent weights to weaker peer {peer_address}")
+                self._send_our_weights_to_peer(sock, correlation_id)
                 
             self.mixing_attempts += 1
             
         except Exception as e:
-            self.logger.warning(f"❌ Step {self.current_step}: Could not connect to {peer_address}: {e}")
+            self.logger.log_event("MIX_ATTEMPT_FAILED", 
+                                 step=self.current_step,
+                                 correlation_id=correlation_id,
+                                 peer_addr=peer_address,
+                                 message=str(e))
         finally:
             sock.close()
     
-    def _send_our_weights_to_peer(self, sock):
-        """Send our current weights through socket"""
+    def _send_our_weights_to_peer(self, sock, correlation_id: str):
+        """Send weights with performance monitoring"""
+        start_time = time.time()
+        
         try:
-            # Serialize weights
             state_dict = self.model.state_dict()
             cpu_state_dict = {name: param.cpu() for name, param in state_dict.items()}
             
+            # Include fitness in the transfer
+            our_fitness = self.get_current_fitness()
+            transfer_data = {
+                'state_dict': cpu_state_dict,
+                'fitness': our_fitness,
+                'correlation_id': correlation_id
+            }
+            
             buffer = io.BytesIO()
-            torch.save(cpu_state_dict, buffer)
+            torch.save(transfer_data, buffer)
             weights_bytes = buffer.getvalue()
             
-            self.logger.info(f"🚀 Sending {len(weights_bytes)/1e6:.2f} MB to peer")
-            
-            # Send length prefix
+            # Send length prefix then data
             sock.send(struct.pack('!I', len(weights_bytes)))
             
-            # Send data in chunks
             chunk_size = 1024 * 1024  # 1MB chunks
             bytes_sent = 0
             
@@ -291,45 +373,73 @@ class EvolutionaryTrainingNode:
                 sock.sendall(chunk)
                 bytes_sent = chunk_end
             
-            self.logger.info("✅ Weight transfer completed")
+            transfer_time = (time.time() - start_time) * 1000
+            throughput = len(weights_bytes) / 1e6 / (transfer_time / 1000)
+            
+            self.logger.log_event("WEIGHT_SEND_COMPLETE",
+                                 step=self.current_step,
+                                 correlation_id=correlation_id,
+                                 data_size_bytes=len(weights_bytes),
+                                 transfer_time_ms=transfer_time,
+                                 fitness=our_fitness,
+                                 message=f"Throughput: {throughput:.2f} MB/s")
             
         except Exception as e:
-            self.logger.error(f"Error sending weights: {e}")
+            self.logger.log_event("WEIGHT_SEND_ERROR", 
+                                 step=self.current_step,
+                                 correlation_id=correlation_id,
+                                 message=str(e))
     
-    def _receive_weights_from_peer(self, sock) -> Optional[dict]:
-        """Receive weights from peer through socket"""
+    def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[dict], Optional[float]]:
+        """Receive weights with performance monitoring"""
+        start_time = time.time()
+        
         try:
             # Receive length prefix
             length_data = b''
             while len(length_data) < 4:
                 chunk = sock.recv(4 - len(length_data))
                 if not chunk:
-                    return None
+                    return None, None
                 length_data += chunk
             
             expected_size = struct.unpack('!I', length_data)[0]
-            self.logger.info(f"🔄 Receiving {expected_size/1e6:.2f} MB from peer")
             
             # Receive data
             received_data = bytearray()
             while len(received_data) < expected_size:
                 remaining = expected_size - len(received_data)
-                chunk_size = min(1024 * 1024, remaining)  # 1MB chunks
+                chunk_size = min(1024 * 1024, remaining)
                 chunk = sock.recv(chunk_size)
                 if not chunk:
-                    return None
+                    return None, None
                 received_data.extend(chunk)
             
             # Deserialize
             buffer = io.BytesIO(bytes(received_data))
-            state_dict = torch.load(buffer, map_location='cpu')
+            transfer_data = torch.load(buffer, map_location='cpu')
             
-            self.logger.info("✅ Weights received and deserialized")
-            return state_dict
+            transfer_time = (time.time() - start_time) * 1000
+            throughput = expected_size / 1e6 / (transfer_time / 1000)
+            
+            source_fitness = transfer_data.get('fitness', 0.0)
+            
+            self.logger.log_event("WEIGHT_RECEIVE_COMPLETE",
+                                 step=self.current_step,
+                                 correlation_id=correlation_id,
+                                 data_size_bytes=expected_size,
+                                 transfer_time_ms=transfer_time,
+                                 fitness=source_fitness,
+                                 message=f"Throughput: {throughput:.2f} MB/s")
+            
+            return transfer_data['state_dict'], source_fitness
             
         except Exception as e:
-            self.logger.error(f"Error receiving weights: {e}")
-            return None
+            self.logger.log_event("WEIGHT_RECEIVE_ERROR", 
+                                 step=self.current_step,
+                                 correlation_id=correlation_id,
+                                 message=str(e))
+            return None, None
     
     def stop_gossip_protocol(self):
         """Stop the gossip protocol"""
