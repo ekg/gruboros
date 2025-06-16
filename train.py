@@ -1067,13 +1067,31 @@ def main():
     data_parallel_rank = model_engine.global_rank // args.tp_size
 
     # ===== EVOLUTIONARY GOSSIP INTEGRATION =====
-    # Setup logging for gossip protocol
+    # Create per-rank logging directories
+    if checkpoint_dir:
+        # Create subdirectories for organized logging
+        gossip_dir = os.path.join(checkpoint_dir, "gossip")
+        metrics_dir = os.path.join(checkpoint_dir, "metrics")
+        
+        # Only rank 0 creates the directories initially
+        if model_engine.global_rank == 0:
+            os.makedirs(gossip_dir, exist_ok=True)
+            os.makedirs(metrics_dir, exist_ok=True)
+        
+        # Synchronize to ensure directories are created before other ranks try to use them
+        synchronize_processes()
+    else:
+        gossip_dir = "."
+        metrics_dir = "."
+    
+    # Setup per-rank logging for gossip protocol
+    gossip_log_file = os.path.join(gossip_dir, f"gossip_rank_{model_engine.global_rank:03d}.log")
     logging.basicConfig(
         level=logging.INFO, 
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(os.path.join(checkpoint_dir or ".", "gossip.log")),
-            logging.StreamHandler()
+            logging.FileHandler(gossip_log_file),
+            logging.StreamHandler() if model_engine.global_rank == 0 else logging.NullHandler()
         ]
     )
     
@@ -1085,7 +1103,8 @@ def main():
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
-        mixing_probability=0.01  # 1% chance to attempt a mix each step
+        mixing_probability=0.01,  # 1% chance to attempt a mix each step
+        output_dir=gossip_dir if checkpoint_dir else None
     )
     
     # Start gossip protocol
@@ -1227,12 +1246,12 @@ def main():
         prefetch_factor=2  # Prefetch batches
     )
     
-    # Create metrics log file
-    if model_engine.global_rank == 0 and checkpoint_dir:
-        metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
+    # Create per-rank metrics log file
+    if checkpoint_dir:
+        metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{model_engine.global_rank:03d}.tsv")
         with open(metrics_log_path, 'w') as f:
             header = [
-                "step", "time_elapsed_s", "train_loss", "ema_fitness", 
+                "rank", "step", "time_elapsed_s", "train_loss", "ema_fitness", 
                 "total_tokens_processed_system", "tokens_per_sec_system", "learning_rate", "global_effective_batch_size_samples"
             ]
             f.write('\t'.join(header) + '\n')
@@ -1391,12 +1410,12 @@ def main():
         return checkpoint_path
     
     
-    # Helper function to log metrics
+    # Helper function to log metrics (now per-rank)
     def log_metrics(step, train_loss, ema_fitness=None):
-        if model_engine.global_rank != 0 or not checkpoint_dir:
+        if not checkpoint_dir:
             return
         
-        metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
+        metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{model_engine.global_rank:03d}.tsv")
         elapsed = time.time() - start_time
     
         # Calculate system-wide tokens processed and tokens per second
@@ -1406,6 +1425,7 @@ def main():
         current_lr = model_engine.optimizer.param_groups[0]['lr']
     
         values = [
+            str(model_engine.global_rank),  # Add rank as first column
             str(step),
             f"{elapsed:.2f}",
             f"{train_loss:.6f}",
@@ -1596,7 +1616,7 @@ def main():
                 pbar.set_postfix_str(postfix)
                 pbar.update(1)
                 
-                # Get current EMA fitness and log metrics
+                # Get current EMA fitness and log metrics for all ranks
                 current_ema_fitness = evolutionary_node.get_current_fitness()
                 log_metrics(step, loss.detach().item(), current_ema_fitness)
             
@@ -1607,9 +1627,8 @@ def main():
         if args.validate_every > 0 and step > 0 and step % args.validate_every == 0:
             current_ema_fitness = evolutionary_node.get_current_fitness()
             
-            if model_engine.global_rank == 0:
-                # Log metrics with EMA fitness
-                log_metrics(step, loss_value, current_ema_fitness)
+            # Log metrics with EMA fitness for all ranks
+            log_metrics(step, loss_value, current_ema_fitness)
             
             # Determine if this is the best model based on EMA fitness (higher is better)
             is_best = current_ema_fitness > best_ema_fitness
@@ -1677,9 +1696,12 @@ def main():
         print("Evolutionary gossip protocol stopped")
         
         # Append final statistics to model summary
+        # Write per-rank final statistics
         if checkpoint_dir:
-            with open(os.path.join(checkpoint_dir, "model_summary.txt"), "a") as f:
-                f.write("\n----- Final Training Statistics -----\n")
+            rank_summary_path = os.path.join(metrics_dir, f"final_summary_rank_{model_engine.global_rank:03d}.txt")
+            with open(rank_summary_path, "w") as f:
+                f.write(f"Rank {model_engine.global_rank} Final Training Statistics\n")
+                f.write(f"========================================\n")
                 f.write(f"Total training time: {total_time:.2f} seconds\n")
                 f.write(f"Total system tokens processed: {total_tokens_processed_system:,}\n")
                 f.write(f"Average system tokens per second: {tokens_per_sec_system:.2f}\n")
@@ -1688,12 +1710,23 @@ def main():
                 
                 # Add evolutionary statistics
                 final_status = evolutionary_node.get_status()
-                f.write(f"\n----- Evolutionary Gossip Statistics -----\n")
+                f.write(f"\n----- Evolutionary Gossip Statistics (Rank {model_engine.global_rank}) -----\n")
                 f.write(f"Final fitness: {final_status['fitness']:.4f}\n")
                 f.write(f"Total mixing attempts: {final_status['mixing_attempts']}\n")
                 f.write(f"Successful mixes: {final_status['successful_mixes']}\n")
                 f.write(f"Mixing success rate: {final_status['successful_mixes']/max(1,final_status['mixing_attempts'])*100:.1f}%\n")
                 f.write(f"Evolutionary strategy: Complete weight cloning (winner overwrites loser)\n")
+            
+            # Also update the main model summary (rank 0 only)
+            if model_engine.global_rank == 0:
+                with open(os.path.join(checkpoint_dir, "model_summary.txt"), "a") as f:
+                    f.write("\n----- Final Training Statistics (Rank 0) -----\n")
+                    f.write(f"Total training time: {total_time:.2f} seconds\n")
+                    f.write(f"Total system tokens processed: {total_tokens_processed_system:,}\n")
+                    f.write(f"Average system tokens per second: {tokens_per_sec_system:.2f}\n")
+                    f.write(f"Final EMA fitness: {final_ema_fitness:.4f}\n")
+                    f.write(f"Best EMA fitness: {best_ema_fitness:.4f}\n")
+                    f.write(f"NOTE: Per-rank detailed logs available in metrics/ and gossip/ subdirectories\n")
 
 if __name__ == "__main__":
     main()
