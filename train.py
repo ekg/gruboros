@@ -1556,10 +1556,10 @@ def main():
             # Let the node decide stochastically using its own per-rank RNG
             evolutionary_node.request_mix()
             
-            # Log status periodically
+            # Log EMA fitness periodically
             if step % 500 == 0 and model_engine.global_rank == 0:
-                status = evolutionary_node.get_status()
-                print(f"Evolutionary Status: {status}")
+                current_ema_fitness = evolutionary_node.get_current_fitness()
+                print(f"Step {step}: EMA fitness = {current_ema_fitness:.4f}")
             # ===============================
             
             # Optimizer step (moved to AFTER mixing)
