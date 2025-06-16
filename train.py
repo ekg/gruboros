@@ -414,7 +414,7 @@ def get_args():
     parser.add_argument('--resume', type=str, default=None,
                         help='path to checkpoint to resume training from')
     parser.add_argument('--validate_every', type=int, default=50,
-                        help='validate and save checkpoint every N steps')
+                        help='save checkpoint based on EMA fitness every N steps')
     parser.add_argument('--save_every', type=int, default=100,
                         help='additional checkpoints every N steps (optional, validation runs will always save)')
     parser.add_argument('--batches_per_epoch', type=str, default="100",
@@ -1187,19 +1187,8 @@ def main():
         checkpoint_dir=checkpoint_dir if args.log_sample_hashes else None
     )
     
-    # Create a separate validation dataset - use 10% of training batches
-    val_batches = max(5, batches_per_epoch // 10)
-    val_dataset = ContinuousIIDDataset(
-        filepath=args.data,
-        seq_len=seq_len,
-        seed=worker_seed + 100,  # Validation seed still based on DP rank
-        samples_per_epoch=val_batches * batch_size,
-        batch_size=batch_size,
-        log_sample_hashes=False  # Don't log validation samples
-    )
-    
     if args.local_rank == 0:
-        print(f"Dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
+        print(f"Training dataset: {len(train_dataset)} samples per epoch")
     
     # Add seeding verification to confirm different data per rank
     if model_engine.global_rank == 0:
@@ -1214,7 +1203,7 @@ def main():
     # Also verify the actual seeds being used:
     print(f"RANK {model_engine.global_rank}: worker_seed={worker_seed}, train_sampler seed used")
     
-    # Create samplers for both datasets using UNIQUE SEEDS PER RANK
+    # Create sampler for training dataset using UNIQUE SEEDS PER RANK
     train_sampler = DistributedSampler(
         train_dataset,
         num_replicas=dp_world_size,  # Data parallel world size
@@ -1223,19 +1212,10 @@ def main():
         seed=worker_seed  # ← FIXED: Use unique seed per rank
     )
     
-    val_sampler = DistributedSampler(
-        val_dataset,
-        num_replicas=dp_world_size,  # Data parallel world size
-        rank=data_parallel_rank,     # Data parallel rank
-        shuffle=False,
-        seed=worker_seed + 1000  # ← FIXED: Unique val seed too
-    )
-    
-    # Initialize datasets with epoch 0
+    # Initialize dataset with epoch 0
     train_dataset.set_epoch(0)
-    val_dataset.set_epoch(0)
     
-    # 6) DataLoaders with per-rank worker seeds
+    # 6) DataLoader with per-rank worker seeds
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -1247,23 +1227,12 @@ def main():
         prefetch_factor=2  # Prefetch batches
     )
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        sampler=val_sampler,
-        num_workers=2,
-        pin_memory=True,
-        worker_init_fn=lambda wid: random.seed(worker_seed + 1000 + wid + os.getpid()),  # ← Unique val seed
-        persistent_workers=True,
-        prefetch_factor=2
-    )
-    
     # Create metrics log file
     if model_engine.global_rank == 0 and checkpoint_dir:
         metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
         with open(metrics_log_path, 'w') as f:
             header = [
-                "step", "time_elapsed_s", "train_loss", "val_loss", 
+                "step", "time_elapsed_s", "train_loss", "ema_fitness", 
                 "total_tokens_processed_system", "tokens_per_sec_system", "learning_rate", "global_effective_batch_size_samples"
             ]
             f.write('\t'.join(header) + '\n')
@@ -1288,7 +1257,7 @@ def main():
                 print(f"best.pt exists as a regular file, not a symlink")
 
     # Helper function to save checkpoint - now with symlinks for both best and latest
-    def save_checkpoint(step, train_loss, val_loss=None, is_best=False):
+    def save_checkpoint(step, train_loss, ema_fitness=None, is_best=False):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
         
@@ -1299,7 +1268,7 @@ def main():
             'step': step,
             'model_state_dict': model_engine.module.state_dict(),
             'train_loss': train_loss,
-            'val_loss': val_loss,
+            'ema_fitness': ema_fitness,
             'timestamp': datetime.datetime.now().isoformat(),
             'model_config': model_config,
             'args': vars(args)
@@ -1313,9 +1282,9 @@ def main():
             checkpoint['optimizer_state_dict'] = optimizer.state_dict()
         
         # Create a standardized filename with step and loss info
-        # Always include validation loss in filename if available
-        if val_loss is not None:
-            filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}-val_{val_loss:.4f}.pt"
+        # Always include EMA fitness in filename if available
+        if ema_fitness is not None:
+            filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}-fitness_{ema_fitness:.4f}.pt"
         else:
             filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}.pt"
         checkpoint_path = os.path.join(checkpoint_dir, filename)
@@ -1421,78 +1390,9 @@ def main():
         
         return checkpoint_path
     
-    # Helper function for validation
-    def validate():
-        model_engine.eval()
-        total_loss = 0.0
-        batch_count = 0
-        val_token_count = 0
-        validation_start = time.time()
-        
-        # Switch ScheduleFree to eval mode
-        if args.schedulefree:
-            if hasattr(model_engine.optimizer, 'optimizer'):
-                model_engine.optimizer.optimizer.eval()
-            else:
-                # Try direct access approach
-                try:
-                    model_engine.optimizer.eval()
-                except:
-                    print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree.")
-        
-        # Don't display validation progress meter
-        
-        with torch.no_grad():
-            # With continuous IID sampling, we no longer need to update epochs
-            # val_sampler still needs epoch updates for proper distributed sampling
-            val_sampler.set_epoch(current_epoch)
-            
-            for x in val_loader:
-                inputs, targets = x[:, :-1], x[:, 1:]
-                inputs, targets = inputs.to(model_engine.device), targets.to(model_engine.device)
-                
-                # Forward pass
-                loss = model_engine(inputs, return_loss=True)
-                
-                # Accumulate loss
-                total_loss += loss.item()
-                batch_count += 1
-                val_token_count += inputs.numel()
-                
-                # Update progress bar
-                if model_engine.global_rank == 0:
-                    # Skip validation progress updates
-                    pass
-                
-                # Limit validation to a few batches for speed
-                if batch_count >= 5:
-                    break
-        
-        # No validation bar to close
-        
-        # Calculate average
-        avg_loss = total_loss / max(1, batch_count)
-        
-        # Synchronize all processes after validation to prevent some processes 
-        # from continuing while others are still validating
-        synchronize_processes()
-        
-        # Switch back to train mode
-        model_engine.train()
-        if args.schedulefree:
-            if hasattr(model_engine.optimizer, 'optimizer'):
-                model_engine.optimizer.optimizer.train()
-            else:
-                # Try direct access approach
-                try:
-                    model_engine.optimizer.train()
-                except:
-                    print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree.")
-        
-        return avg_loss
     
     # Helper function to log metrics
-    def log_metrics(step, train_loss, val_loss=None):
+    def log_metrics(step, train_loss, ema_fitness=None):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
         
@@ -1509,7 +1409,7 @@ def main():
             str(step),
             f"{elapsed:.2f}",
             f"{train_loss:.6f}",
-            str(val_loss if val_loss is not None else "NA"),
+            f"{ema_fitness:.6f}" if ema_fitness is not None else "NA",
             str(total_tokens_processed_system),
             f"{tokens_per_sec_system:.2f}",
             f"{current_lr:.8f}",
@@ -1521,11 +1421,10 @@ def main():
     
     # 7) Training loop
     start_time = time.time()
-    best_val_loss = float('inf')
-    current_val_loss = None  # Track most recent validation loss
+    best_ema_fitness = 0.0  # Track best EMA fitness (higher is better)
+    current_ema_fitness = None  # Track most recent EMA fitness
     total_tokens_processed = 0  # Single-GPU tracking (legacy)
     total_tokens_processed_system = 0  # System-wide token tracking
-    val_loss_for_checkpoint = None  # Initialize to None at start
 
     # If resuming, calculate tokens already processed
     if resuming:
@@ -1686,11 +1585,11 @@ def main():
                 status = evolutionary_node.get_status()
                 formatted_stats.append(f"mixes={status['mixing_attempts']},{status['successful_mixes']}")
                 
-                # Add validation info and epoch if available
-                # Always show validation loss once we have calculated it at least once
-                if current_val_loss is not None:
-                    formatted_stats.append(f"val={current_val_loss:.4f}")
-                    formatted_stats.append(f"best={best_val_loss:.4f}")
+                # Add EMA fitness info and epoch if available
+                # Always show EMA fitness once we have calculated it at least once
+                if current_ema_fitness is not None:
+                    formatted_stats.append(f"ema_fit={current_ema_fitness:.4f}")
+                    formatted_stats.append(f"best_fit={best_ema_fitness:.4f}")
                 
                 # Add current epoch
                 formatted_stats.append(f"epoch={current_epoch}")
@@ -1701,50 +1600,50 @@ def main():
                 pbar.set_postfix_str(postfix)
                 pbar.update(1)
                 
-                # Log metrics for training
-                log_metrics(step, loss.detach().item())
+                # Get current EMA fitness and log metrics
+                current_ema_fitness = evolutionary_node.get_current_fitness()
+                log_metrics(step, loss.detach().item(), current_ema_fitness)
             
             # Break after one batch per step
             break
         
-        # Validate periodically
+        # Save checkpoint based on EMA fitness periodically
         if args.validate_every > 0 and step > 0 and step % args.validate_every == 0:
-            val_loss = validate()
-            val_loss_for_checkpoint = val_loss
-            current_val_loss = val_loss  # Store for display in progress bar
+            current_ema_fitness = evolutionary_node.get_current_fitness()
             
             if model_engine.global_rank == 0:
-                # Log metrics with validation
-                log_metrics(step, loss_value, val_loss)
+                # Log metrics with EMA fitness
+                log_metrics(step, loss_value, current_ema_fitness)
             
-            # Determine if this is the best model based on validation loss
-            is_best = val_loss < best_val_loss
+            # Determine if this is the best model based on EMA fitness (higher is better)
+            is_best = current_ema_fitness > best_ema_fitness
             if is_best:
-                best_val_loss = val_loss
+                best_ema_fitness = current_ema_fitness
             
-            # Always save checkpoint after validation, but silently
-            save_path = save_checkpoint(step, loss_value, val_loss, is_best=is_best)
+            # Always save checkpoint based on EMA fitness
+            save_path = save_checkpoint(step, loss_value, current_ema_fitness, is_best=is_best)
             
         
-        # Save additional checkpoints periodically (if not already saved by validation)
+        # Save additional checkpoints periodically (if not already saved by EMA fitness check)
         if args.save_every > 0 and step > 0 and step % args.save_every == 0:
-            # Skip if we just saved during validation
+            # Skip if we just saved during EMA fitness check
             if not (args.validate_every > 0 and step % args.validate_every == 0):
                 # Save checkpoint without affecting best model status
-                save_path = save_checkpoint(step, loss_value, None, is_best=False)
+                current_ema_fitness = evolutionary_node.get_current_fitness()
+                save_path = save_checkpoint(step, loss_value, current_ema_fitness, is_best=False)
                 
     
-    # Final validation
-    final_val_loss = validate()
+    # Get final EMA fitness
+    final_ema_fitness = evolutionary_node.get_current_fitness()
     
     # Save final checkpoint and make it the best if it's better than previous best
     if model_engine.global_rank == 0:
-        # Save the final checkpoint with validation loss and check if it's the best one
-        is_final_best = final_val_loss < best_val_loss
+        # Save the final checkpoint with EMA fitness and check if it's the best one
+        is_final_best = final_ema_fitness > best_ema_fitness
         if is_final_best:
-            best_val_loss = final_val_loss
+            best_ema_fitness = final_ema_fitness
         
-        final_path = save_checkpoint(train_steps + start_step, loss_value, final_val_loss, is_best=is_final_best)
+        final_path = save_checkpoint(train_steps + start_step, loss_value, final_ema_fitness, is_best=is_final_best)
         
         # Ensure best.pt exists as final fallback
         best_path = os.path.join(checkpoint_dir, "best.pt")
@@ -1771,7 +1670,8 @@ def main():
         
         # Print training summary
         print(f"\nTraining completed in {total_time:.2f}s")
-        print(f"Final validation loss: {final_val_loss:.4f}")
+        print(f"Final EMA fitness: {final_ema_fitness:.4f}")
+        print(f"Best EMA fitness: {best_ema_fitness:.4f}")
         print(f"Processed {total_tokens_processed_system:,} system-wide tokens")
         print(f"System throughput: {tokens_per_sec_system:.2f} tokens/sec")
         print(f"Final model saved to: {final_path}")
@@ -1787,7 +1687,8 @@ def main():
                 f.write(f"Total training time: {total_time:.2f} seconds\n")
                 f.write(f"Total system tokens processed: {total_tokens_processed_system:,}\n")
                 f.write(f"Average system tokens per second: {tokens_per_sec_system:.2f}\n")
-                f.write(f"Final validation loss: {final_val_loss:.4f}\n")
+                f.write(f"Final EMA fitness: {final_ema_fitness:.4f}\n")
+                f.write(f"Best EMA fitness: {best_ema_fitness:.4f}\n")
                 
                 # Add evolutionary statistics
                 final_status = evolutionary_node.get_status()
