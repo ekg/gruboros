@@ -1,48 +1,47 @@
 import numpy as np
-from typing import List
+from typing import Optional
 
 class FitnessTracker:
-    def __init__(self, decay_factor: float = 0.95, max_history: int = 50):
-        self.loss_history: List[float] = []
-        self.decay_factor = decay_factor
-        self.max_history = max_history
+    def __init__(self, decay_factor: float = 0.95):
+        self.ema_loss: Optional[float] = None  # Rolling exponential moving average
+        self.alpha = 1.0 - decay_factor  # Convert to EMA alpha
+        self.step_count = 0
         
     def update(self, loss_value: float):
-        """Update fitness based on recent loss"""
-        self.loss_history.append(loss_value)
-        if len(self.loss_history) > self.max_history:
-            self.loss_history.pop(0)
+        """Update fitness based on recent loss using exponential moving average"""
+        if self.ema_loss is None:
+            self.ema_loss = loss_value
+        else:
+            self.ema_loss = self.alpha * loss_value + (1 - self.alpha) * self.ema_loss
+        
+        self.step_count += 1
         
         # Log fitness updates occasionally for debugging
-        if len(self.loss_history) % 10 == 0:  # Every 10 updates
+        if self.step_count % 10 == 0:  # Every 10 updates
             current_fitness = self.get_fitness()
-            avg_recent_loss = sum(self.loss_history[-5:]) / min(5, len(self.loss_history))
             import logging
             logger = logging.getLogger('fitness_tracker')
-            logger.debug(f"Fitness update: loss={loss_value:.4f}, fitness={current_fitness:.4f}, avg_recent={avg_recent_loss:.4f}")
+            logger.debug(f"Fitness update: loss={loss_value:.4f}, fitness={current_fitness:.4f}, ema_loss={self.ema_loss:.4f}")
     
     def get_fitness(self) -> float:
-        """Calculate fitness as decaying weighted average of recent losses"""
-        if not self.loss_history:
+        """Calculate fitness as inverse of EMA loss"""
+        if self.ema_loss is None:
             return 1.0
-            
-        weights = [self.decay_factor ** i for i in range(len(self.loss_history))]
-        weighted_losses = [w * loss for w, loss in zip(weights, self.loss_history)]
-        avg_loss = sum(weighted_losses) / sum(weights)
-        return 1.0 / (avg_loss + 1e-6)
+        return 1.0 / (self.ema_loss + 1e-6)
     
     def get_recent_loss(self) -> float:
-        """Get most recent loss"""
-        return self.loss_history[-1] if self.loss_history else float('inf')
+        """Get current EMA loss"""
+        return self.ema_loss if self.ema_loss is not None else float('inf')
     
-    def inherit_fitness(self, source_fitness: float):
+    def inherit_fitness(self, source_fitness: float, source_ema_loss: Optional[float] = None):
         """Inherit fitness from source model when completely overwritten"""
-        # Clear our history and start fresh with source fitness
-        # Convert fitness back to approximate loss for continuity
-        inherited_loss = 1.0 / (source_fitness + 1e-6) - 1e-6
-        
-        self.loss_history = [inherited_loss] * min(5, len(self.loss_history) or 1)
+        if source_ema_loss is not None:
+            # Directly inherit the EMA loss (preserves learning history)
+            self.ema_loss = source_ema_loss
+        else:
+            # Fallback: convert fitness back to loss
+            self.ema_loss = 1.0 / (source_fitness + 1e-6) - 1e-6
         
         import logging
         logger = logging.getLogger('fitness_tracker')
-        logger.debug(f"Inherited fitness {source_fitness:.4f} (approx loss {inherited_loss:.4f})")
+        logger.debug(f"Inherited fitness {source_fitness:.4f} (ema_loss={self.ema_loss:.4f})")

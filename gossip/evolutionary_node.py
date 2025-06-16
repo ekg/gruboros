@@ -19,6 +19,7 @@ class WeightUpdate:
     state_dict: dict
     source_node: str
     source_fitness: float  # Added fitness transfer
+    source_ema_loss: Optional[float]  # Added EMA loss transfer
     correlation_id: str    # Added correlation tracking
 
 class EvolutionaryTrainingNode:
@@ -113,10 +114,12 @@ class EvolutionaryTrainingNode:
             
         self.model.load_state_dict(update.state_dict)
         
-        # CRITICAL: Inherit the source model's fitness
+        # CRITICAL: Inherit the source model's fitness and EMA loss
         with self.fitness_lock:
             old_fitness = self.fitness_tracker.get_fitness()
-            self.fitness_tracker.inherit_fitness(update.source_fitness)
+            # Extract EMA loss from update if available
+            source_ema_loss = getattr(update, 'source_ema_loss', None)
+            self.fitness_tracker.inherit_fitness(update.source_fitness, source_ema_loss)
         
         self.successful_mixes += 1
         self.logger.log_event("WEIGHT_UPDATE_COMPLETE", 
@@ -253,7 +256,7 @@ class EvolutionaryTrainingNode:
             else:
                 # We lose - receive their weights
                 client_sock.send(b"SEND_ME_WEIGHTS")
-                new_weights, source_fitness = self._receive_weights_from_peer(client_sock, correlation_id)
+                new_weights, source_fitness, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
                 
                 if new_weights:
                     # Queue the update for main thread (don't apply here!)
@@ -261,6 +264,7 @@ class EvolutionaryTrainingNode:
                         state_dict=new_weights,
                         source_node=peer_addr,
                         source_fitness=source_fitness,
+                        source_ema_loss=source_ema_loss,
                         correlation_id=correlation_id
                     )
                     self.incoming_updates.put(update)
@@ -318,12 +322,13 @@ class EvolutionaryTrainingNode:
             response = sock.recv(1024)
             
             if response == b"SENDING_WEIGHTS":
-                new_weights, source_fitness = self._receive_weights_from_peer(sock, correlation_id)
+                new_weights, source_fitness, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)
                 if new_weights:
                     update = WeightUpdate(
                         state_dict=new_weights,
                         source_node=peer_address,
                         source_fitness=source_fitness,
+                        source_ema_loss=source_ema_loss,
                         correlation_id=correlation_id
                     )
                     self.incoming_updates.put(update)
@@ -350,11 +355,13 @@ class EvolutionaryTrainingNode:
             state_dict = self.model.state_dict()
             cpu_state_dict = {name: param.cpu() for name, param in state_dict.items()}
             
-            # Include fitness in the transfer
+            # Include fitness and raw EMA loss in the transfer
             our_fitness = self.get_current_fitness()
+            our_ema_loss = self.fitness_tracker.get_recent_loss()
             transfer_data = {
                 'state_dict': cpu_state_dict,
                 'fitness': our_fitness,
+                'ema_loss': our_ema_loss,
                 'correlation_id': correlation_id
             }
             
@@ -391,7 +398,7 @@ class EvolutionaryTrainingNode:
                                  correlation_id=correlation_id,
                                  message=str(e))
     
-    def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[dict], Optional[float]]:
+    def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[dict], Optional[float], Optional[float]]:
         """Receive weights with performance monitoring"""
         start_time = time.time()
         
@@ -424,6 +431,7 @@ class EvolutionaryTrainingNode:
             throughput = expected_size / 1e6 / (transfer_time / 1000)
             
             source_fitness = transfer_data.get('fitness', 0.0)
+            source_ema_loss = transfer_data.get('ema_loss', None)
             
             self.logger.log_event("WEIGHT_RECEIVE_COMPLETE",
                                  step=self.current_step,
@@ -433,14 +441,14 @@ class EvolutionaryTrainingNode:
                                  fitness=source_fitness,
                                  message=f"Throughput: {throughput:.2f} MB/s")
             
-            return transfer_data['state_dict'], source_fitness
+            return transfer_data['state_dict'], source_fitness, source_ema_loss
             
         except Exception as e:
             self.logger.log_event("WEIGHT_RECEIVE_ERROR", 
                                  step=self.current_step,
                                  correlation_id=correlation_id,
                                  message=str(e))
-            return None, None
+            return None, None, None
     
     def stop_gossip_protocol(self):
         """Stop the gossip protocol"""
