@@ -1104,7 +1104,7 @@ def main():
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,
         mixing_probability=0.01,  # 1% chance to attempt a mix each step
-        output_dir=gossip_dir if checkpoint_dir else None
+        output_dir=checkpoint_dir  # Pass base directory, let GossipLogger create gossip subdir
     )
     
     # Start gossip protocol
