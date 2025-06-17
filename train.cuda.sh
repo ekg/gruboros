@@ -99,10 +99,10 @@ deepspeed --num_gpus=$NUM_GPUS \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 4 \
-  --grad_accum 4 \
+  --batch_size 1 \
+  --grad_accum 1 \
   --seq_len 2048 \
-  --params 300m \
+  --params 2g \
   --tp_size 1 \
   --keep_checkpoints 3 \
   --deepspeed \
