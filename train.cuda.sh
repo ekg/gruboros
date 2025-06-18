@@ -11,7 +11,7 @@ mkdir -p logs
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="300m_model_8way_dp_gossip"
+NAME="16m_model_8way_dp_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
@@ -67,7 +67,7 @@ NUM_GPUS=8
 # ====================== TRAINING LAUNCH ======================
 
 # Data path - MODIFY THIS TO YOUR DATA PATH
-DATA_PATH="/mnt/nvme2n1/erikg/pile.txt"
+DATA_PATH="/home/erikg/enwik/enwik8"
 
 # Verify data path exists
 if [ ! -f "$DATA_PATH" ]; then
@@ -77,7 +77,7 @@ if [ ! -f "$DATA_PATH" ]; then
 fi
 
 echo "Starting 8-way DATA PARALLEL training with evolutionary gossip..."
-echo "Model setup: 8 independent 300M parameter models (one per GPU)"
+echo "Model setup: 8 independent 16M parameter models (one per GPU)"
 echo "Using GPUs: 0,1,2,3,4,5,6,7"
 echo "Tensor Parallel Size: 1 (each GPU has complete model)"
 echo "Data Parallel Size: 8 (8 separate models with different data)"
@@ -102,7 +102,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --batch_size 1 \
   --grad_accum 1 \
   --seq_len 2048 \
-  --params 1g \
+  --params 16m \
   --tp_size 1 \
   --keep_checkpoints 3 \
   --deepspeed \
@@ -121,7 +121,7 @@ echo "Cleaned up temporary files."
 
 echo "=== Training Summary ==="
 echo "Configuration: 8-way Data Parallel"
-echo "Model size: 300M parameters PER GPU (8 independent models)"
+echo "Model size: 16M parameters PER GPU (8 independent models)"
 echo "GPUs used: 0,1,2,3,4,5,6,7"
 echo "Tensor parallel size: 1 (complete model per GPU)"
 echo "Data parallel size: 8 (8 different models)"
