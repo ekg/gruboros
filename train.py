@@ -1425,7 +1425,7 @@ def main():
         elapsed = time.time() - start_time
     
         # Calculate system-wide tokens processed and tokens per second
-        total_tokens_processed_system = step * tokens_per_micro_batch_step
+        total_tokens_processed_system = step * system_wide_tokens_per_step
         tokens_per_sec_system = total_tokens_processed_system / elapsed if elapsed > 0 else 0
     
         current_lr = model_engine.optimizer.param_groups[0]['lr']
@@ -1474,7 +1474,7 @@ def main():
         print(f"- Micro-batch size: {batch_size} per GPU")
         print(f"- Effective batch size per GPU: {effective_samples_per_gpu_update}")
         print(f"- Effective batch size per node: {effective_samples_per_node_update}")
-        print(f"- Global batch size: {global_effective_samples_per_update} samples ({tokens_per_micro_batch_step:,} tokens)")
+        print(f"- Global batch size: {global_effective_samples_per_update} samples ({system_wide_tokens_per_step:,} tokens)")
         
         # Log the configuration summary
         if checkpoint_dir:
