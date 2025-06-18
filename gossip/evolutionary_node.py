@@ -39,6 +39,15 @@ class EvolutionaryTrainingNode:
         self.fitness_tracker = FitnessTracker()
         self.fitness_lock = threading.Lock()
         
+        # NEW: Add async weight management
+        self.pending_update = None
+        self.weight_stream = torch.cuda.Stream()  # Dedicated stream for weight ops
+        self.weight_ready_event = torch.cuda.Event()  # Synchronization event
+        self.weight_transfer_lock = threading.Lock()
+        
+        # Pre-allocate pinned memory buffers for common model sizes
+        self._setup_pinned_buffers()
+        
         master_addr = os.environ.get('MASTER_ADDR', 'localhost')
         self.gossip_port = NetworkUtils.get_gossip_port(data_parallel_rank, master_addr)
         
@@ -49,6 +58,16 @@ class EvolutionaryTrainingNode:
         
         # Replace standard logger with structured gossip logger
         self.logger = GossipLogger(node_id, global_rank, data_parallel_rank, output_dir)
+    
+    def _setup_pinned_buffers(self):
+        """Pre-allocate pinned memory for faster transfers"""
+        # Estimate model size for buffer allocation
+        model_size_bytes = sum(p.numel() * p.element_size() for p in self.model.parameters())
+        
+        # Allocate pinned buffer (with some headroom)
+        buffer_size = int(model_size_bytes * 1.2)
+        self.pinned_buffer = torch.empty(buffer_size, dtype=torch.uint8, pin_memory=True)
+        print(f"Allocated {buffer_size / 1e6:.1f}MB pinned buffer for weight transfers")
         
         # Create standard logger for bootstrap discovery
         std_logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
@@ -91,42 +110,73 @@ class EvolutionaryTrainingNode:
             return self.fitness_tracker.get_fitness()
     
     def check_for_updates(self) -> Optional[WeightUpdate]:
-        """Called by main thread to check for new weights"""
+        """Non-blocking check for weight updates"""
         try:
-            # Non-blocking check - returns immediately
             update = self.incoming_updates.get_nowait()
+            # Start async transfer immediately
+            self._start_async_weight_transfer(update)
             return update
         except queue.Empty:
             return None
     
-    def apply_update(self, update: WeightUpdate):
-        """Apply update and inherit source fitness"""
-        self.logger.log_event("WEIGHT_UPDATE_APPLYING", 
-                             step=self.current_step,
-                             fitness=update.source_fitness,
-                             correlation_id=update.correlation_id,
-                             peer_addr=update.source_node,
-                             message="Inheriting source fitness")
-        
-        device = next(self.model.parameters()).device
-        for name, param in update.state_dict.items():
-            update.state_dict[name] = param.to(device)
+    def _start_async_weight_transfer(self, update: WeightUpdate):
+        """Start transferring weights on background CUDA stream"""
+        with self.weight_transfer_lock:
+            # Move to background stream for async transfer
+            with torch.cuda.stream(self.weight_stream):
+                device = next(self.model.parameters()).device
+                
+                # Pin memory and transfer asynchronously
+                for name, param in update.state_dict.items():
+                    if not param.is_pinned():
+                        param = param.pin_memory()
+                    # Non-blocking transfer to GPU
+                    update.state_dict[name] = param.to(device, non_blocking=True)
+                
+                # Record event when transfer is complete
+                self.weight_ready_event.record(self.weight_stream)
             
-        self.model.load_state_dict(update.state_dict)
+            # Store for later application
+            self.pending_update = update
+    
+    def apply_pending_update(self) -> bool:
+        """Apply any pending weight update (call at start of training step)"""
+        if self.pending_update is None:
+            return False
         
-        # CRITICAL: Inherit the source model's fitness and EMA loss
-        with self.fitness_lock:
-            old_fitness = self.fitness_tracker.get_fitness()
-            # Extract EMA loss from update if available
-            source_ema_loss = getattr(update, 'source_ema_loss', None)
-            self.fitness_tracker.inherit_fitness(update.source_fitness, source_ema_loss)
-        
-        self.successful_mixes += 1
-        self.logger.log_event("WEIGHT_UPDATE_COMPLETE", 
-                             step=self.current_step,
-                             fitness=update.source_fitness,
-                             correlation_id=update.correlation_id,
-                             peer_addr=update.source_node)
+        with self.weight_transfer_lock:
+            # Wait for async transfer to complete
+            torch.cuda.current_stream().wait_event(self.weight_ready_event)
+            
+            # Now apply the update (this is the only blocking part, but it's fast)
+            start_time = time.time()
+            self.model.load_state_dict(self.pending_update.state_dict)
+            load_time = (time.time() - start_time) * 1000
+            
+            # Inherit fitness
+            with self.fitness_lock:
+                source_ema_loss = getattr(self.pending_update, 'source_ema_loss', None)
+                self.fitness_tracker.inherit_fitness(
+                    self.pending_update.source_fitness, 
+                    source_ema_loss
+                )
+            
+            self.successful_mixes += 1
+            
+            self.logger.log_event("WEIGHT_UPDATE_APPLIED", 
+                                 step=self.current_step,
+                                 fitness=self.pending_update.source_fitness,
+                                 correlation_id=self.pending_update.correlation_id,
+                                 transfer_time_ms=load_time,
+                                 message=f"Deferred loading completed in {load_time:.1f}ms")
+            
+            self.pending_update = None
+            return True
+    
+    def apply_update(self, update: WeightUpdate):
+        """Legacy method - now just queues for async processing"""
+        # This gets called by the old training loop, but now it's non-blocking
+        pass  # Weight transfer already started in check_for_updates()
 
     def start_gossip_protocol(self):
         """Start the background gossip thread"""

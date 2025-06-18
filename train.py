@@ -1239,11 +1239,12 @@ def main():
         train_dataset,
         batch_size=batch_size,
         sampler=train_sampler,
-        num_workers=2,  # Increase slightly
+        num_workers=4,  # Increase workers for better prefetching
         pin_memory=True,
         worker_init_fn=lambda wid: random.seed(worker_seed + wid + os.getpid()),  # ← Use worker_seed
         persistent_workers=True,  # Keep workers alive
-        prefetch_factor=2  # Prefetch batches
+        prefetch_factor=4,  # Increase prefetch factor
+        drop_last=True  # Ensure consistent batch sizes
     )
     
     # Create per-rank metrics log file
@@ -1535,11 +1536,19 @@ def main():
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
+            
+            # ✅ STEP 1: Apply any pending weight updates FIRST (off critical path)
+            weight_update_applied = evolutionary_node.apply_pending_update()
+            if weight_update_applied and model_engine.global_rank == 0:
+                print(f"Step {step}: Applied deferred weight update")
+            
+            # ✅ STEP 2: Critical path runs uninterrupted
             # Split into input and target
             inputs, targets = x[:, :-1], x[:, 1:]
             
-            # Move to device
-            inputs, targets = inputs.to(model_engine.device), targets.to(model_engine.device)
+            # Use non-blocking transfers for training data too
+            inputs = inputs.to(model_engine.device, non_blocking=True)
+            targets = targets.to(model_engine.device, non_blocking=True)
             
             # Forward pass (returns loss directly)
             loss = model_engine(inputs, return_loss=True)
@@ -1563,23 +1572,19 @@ def main():
             scaled_loss.backward()
             # ---------------------------------------------
             
-            # ===== EVOLUTIONARY MIXING =====
+            # Optimizer step (no blocking!)
+            model_engine.step()
+            
+            # ✅ STEP 3: Queue weight updates for NEXT iteration (non-blocking)
             # Update evolutionary fitness WITH STEP NUMBER
             evolutionary_node.update_fitness(loss_value, step)
             
-            # Check for incoming weight updates from other nodes
+            # Check for updates - this now starts async transfer in background
             update = evolutionary_node.check_for_updates()
-            if update:
-                evolutionary_node.apply_update(update)
-                # Note: In practice, you might want to reset the optimizer state here
+            # No need to call apply_update() - it's already queued for next iteration
             
             # Let the node decide stochastically using its own per-rank RNG
             evolutionary_node.request_mix()
-            
-            # ===============================
-            
-            # Optimizer step (moved to AFTER mixing)
-            model_engine.step()
             
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
