@@ -122,7 +122,7 @@ class minLM(Module):
                 return_next_prev_hidden = True
             )
 
-            x = min_gru_out + x
+            x = min_gru_out
             next_prev_hiddens.append(next_prev_hidden)
 
             # feedforward
