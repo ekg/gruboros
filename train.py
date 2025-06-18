@@ -1454,7 +1454,7 @@ def main():
 
     # If resuming, calculate tokens already processed
     if resuming:
-        total_tokens_processed_system = resume_step * tokens_per_micro_batch_step
+        total_tokens_processed_system = resume_step * system_wide_tokens_per_step
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
