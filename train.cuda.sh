@@ -95,7 +95,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --train_steps 100000 \
   --validate_every 1000 \
   --save_every 2000 \
-  --lr 0.003 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
@@ -131,6 +131,6 @@ echo "Sequence length: 4096"
 echo "Batch size per GPU: 4"
 echo "Gradient accumulation: 1"
 echo "Global effective batch size: 32 (8 * 4 * 1)"
-echo "Learning rate: 0.003"
+echo "Learning rate: 0.001"
 echo "Training steps: 100,000"
 echo "Output saved to: $OUTPUT_DIR"
