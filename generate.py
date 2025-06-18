@@ -317,7 +317,9 @@ def simple_generation(
     callback=None
 ):
     """
-    Simple, clean text generation for RNN models.
+    Corrected, robust text generation for stateful RNN models.
+    Processes the entire sequence autoregressively in a single loop,
+    fixing the state desynchronization bug.
     
     Args:
         model: The minLM model
@@ -331,31 +333,48 @@ def simple_generation(
     model.eval()
     prompt = prompt.to(device)
     
-    # Step 1: Process the entire prompt to get final hidden state
+    # Get model's hidden dimension details for correct initialization
+    num_layers = model.depth
+    inner_dim = int(model.dim * model.expansion)
+    model_dtype = next(model.parameters()).dtype
+
+    # Start with a ZERO hidden state, the universal starting point
+    current_hidden_states = [
+        torch.zeros(1, 1, inner_dim, device=device, dtype=model_dtype) for _ in range(num_layers)
+    ]
+    
+    # --- Part 1: Unified "Warmup" and Generation ---
+    # The last token processed becomes the input for the next step.
+    # Start with the first token of the prompt.
+    prev_token = prompt[:, 0:1]
+    
+    # First, sequentially process the rest of the prompt to warm up the state
     with torch.no_grad():
-        # Run the full prompt through the model
-        prompt_logits, final_hidden_states = model(prompt, return_prev_hiddens=True)
-    
-    # Step 2: Generate tokens one by one
+        for i in range(1, prompt.shape[1]):
+            # We only care about updating the hidden state, not the logits here
+            _, current_hidden_states = model(
+                prev_token,
+                return_prev_hiddens=True,
+                prev_hiddens=current_hidden_states
+            )
+            prev_token = prompt[:, i:i+1]  # Update to the next prompt token
+            
+    # Now, `prev_token` holds the last token of the prompt, and
+    # `current_hidden_states` is the correct state after seeing all but the last prompt token.
+    # The generation loop will begin by consuming this last prompt token.
+
     generated_tokens = []
-    current_hidden_states = final_hidden_states
-    
-    # Start timing
     start_time = time.time()
     
     with torch.no_grad():
         for step in range(generation_length):
-            if step == 0:
-                # For the first generated token, we use the logits from the prompt
-                next_token_logits = prompt_logits[:, -1:]  # [1, 1, vocab_size]
-            else:
-                # For subsequent tokens, pass the previous generated token through
-                prev_token = torch.tensor([[generated_tokens[-1]]], device=device)
-                next_token_logits, current_hidden_states = model(
-                    prev_token,
-                    return_prev_hiddens=True,
-                    prev_hiddens=current_hidden_states
-                )
+            # The loop is now IDENTICAL for every step.
+            # Pass the single previous token and the current state
+            next_token_logits, current_hidden_states = model(
+                prev_token,
+                return_prev_hiddens=True,
+                prev_hiddens=current_hidden_states
+            )
             
             # Extract logits for sampling [vocab_size]
             logits = next_token_logits[0, -1]
@@ -367,26 +386,27 @@ def simple_generation(
                 # Greedy sampling
                 next_token = logits.argmax().item()
                 generated_tokens.append(next_token)
+                prev_token = torch.tensor([[next_token]], device=device)
+                if callback and (step + 1) % 10 == 0:
+                    elapsed = time.time() - start_time
+                    tokens_per_sec = (step + 1) / elapsed if elapsed > 0 else 0
+                    progress = (step + 1) / generation_length
+                    callback(progress, tokens_per_sec)
                 continue
             
             # Top-k sampling
             if top_k > 0:
-                # Get top-k tokens
-                top_logits, top_indices = torch.topk(logits, min(top_k, logits.size(-1)))
-                
-                # Sample from top-k
-                probs = F.softmax(top_logits, dim=-1)
-                sampled_index = torch.multinomial(probs, 1).item()
-                next_token = top_indices[sampled_index].item()
-            else:
-                # Sample from full distribution
-                probs = F.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, 1).item()
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[-1]] = -float('Inf')
+            
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1).item()
             
             generated_tokens.append(next_token)
+            prev_token = torch.tensor([[next_token]], device=device)
             
             # Progress callback
-            if callback and step % 10 == 0:
+            if callback and (step + 1) % 10 == 0:
                 elapsed = time.time() - start_time
                 tokens_per_sec = (step + 1) / elapsed if elapsed > 0 else 0
                 progress = (step + 1) / generation_length
