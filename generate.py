@@ -335,7 +335,14 @@ def simple_generation(
     
     # Get model's hidden dimension details for correct initialization
     num_layers = model.depth
-    inner_dim = int(model.dim * model.expansion)
+    
+    # Robustly calculate the inner dimension by inspecting the model's layers
+    # instead of assuming `model.expansion` exists.
+    # The `to_hidden_and_gate` layer in minGRU has an output shape of `dim_inner * 2`.
+    # So, `dim_inner` is half the size of that layer's output dimension.
+    min_gru_layer = model.layers[0][2]  # Get the first minGRU layer
+    inner_dim = min_gru_layer.to_hidden_and_gate.weight.shape[0] // 2
+    
     model_dtype = next(model.parameters()).dtype
 
     # Start with a ZERO hidden state, the universal starting point
