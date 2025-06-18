@@ -51,6 +51,9 @@ class EvolutionaryTrainingNode:
         self.weight_ready_event = torch.cuda.Event()  # Synchronization event
         self.weight_transfer_lock = threading.Lock()
         
+        # Replace standard logger with structured gossip logger
+        self.logger = GossipLogger(self.node_id, self.global_rank, self.data_parallel_rank, output_dir)
+        
         # Pre-allocate pinned memory buffers for common model sizes
         self._setup_pinned_buffers()
         
@@ -61,9 +64,6 @@ class EvolutionaryTrainingNode:
         self.gossip_running = False
         self.gossip_thread = None
         self.server_thread = None
-        
-        # Replace standard logger with structured gossip logger
-        self.logger = GossipLogger(self.node_id, self.global_rank, self.data_parallel_rank, output_dir)
     
     def _setup_pinned_buffers(self):
         """Pre-allocate pinned memory for faster transfers"""
