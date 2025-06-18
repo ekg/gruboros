@@ -307,130 +307,178 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
     
     return model
 
-def chunked_generation(
+def simple_generation(
     model,
     prompt: torch.Tensor,
     generation_length: int,
-    chunk_length: int,
     temperature: float = 1.0,
-    filter_thres: int = 40,
-    sampling_method: str = 'top_k',  # 'top_k' or 'top_p'
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+    top_k: int = 40,
+    device: str = 'cuda',
     callback=None,
-    top_p_tokens: int = 40
+    debug=False
 ):
     """
-    Generate text in chunks using RNN hidden states.
+    Simple, clean text generation for RNN models.
     
     Args:
         model: The minLM model
-        prompt: Starting prompt tensor
-        generation_length: Total length to generate
-        chunk_length: Length to process in each forward pass
-        temperature: Temperature for sampling (higher = more random)
-        filter_thres: Threshold for top-k filtering (higher = more diverse)
-        device: Device to run generation on
-        callback: Optional callback function to report progress
-    
-    Returns:
-        Generated tokens
+        prompt: Starting prompt tensor [1, seq_len]
+        generation_length: Number of tokens to generate
+        temperature: Sampling temperature
+        top_k: Top-k sampling parameter
+        device: Device to run on
+        callback: Progress callback function
+        debug: Print debug information
     """
-    # Move prompt to device
+    model.eval()
     prompt = prompt.to(device)
     
-    # Timing variables
+    if debug:
+        print(f"=== GENERATION DEBUG ===")
+        print(f"Prompt shape: {prompt.shape}")
+        print(f"Prompt length: {prompt.shape[1]} tokens")
+        print(f"First 20 tokens: {prompt[0, :20].tolist()}")
+        print(f"Last 20 tokens: {prompt[0, -20:].tolist()}")
+        print(f"Prompt text: '{decode_tokens(prompt[0])}'")
+        print(f"========================")
+    
+    # Step 1: Process the entire prompt to get final hidden state
+    with torch.no_grad():
+        if debug:
+            print("Processing prompt...")
+        
+        # Run the full prompt through the model
+        prompt_logits, final_hidden_states = model(prompt, return_prev_hiddens=True)
+        
+        if debug:
+            print(f"Prompt processing complete:")
+            print(f"  - Prompt logits shape: {prompt_logits.shape}")
+            print(f"  - Hidden states: {len(final_hidden_states) if final_hidden_states else 0} layers")
+            print(f"  - Last token in prompt: '{decode_token(prompt[0, -1].item())}'")
+            
+            # Show what the model thinks should come next after the prompt
+            last_prompt_logits = prompt_logits[0, -1]  # Last position logits
+            top_probs, top_indices = torch.topk(F.softmax(last_prompt_logits, dim=-1), 5)
+            print(f"  - Top 5 predictions after prompt:")
+            for i, (prob, idx) in enumerate(zip(top_probs, top_indices)):
+                char = decode_token(idx.item())
+                print(f"    {i+1}. '{char}' (token {idx.item()}): {prob.item():.4f}")
+    
+    # Step 2: Generate tokens one by one
+    generated_tokens = []
+    current_hidden_states = final_hidden_states
+    
+    # Start timing
     start_time = time.time()
     
-    # Efficient memory management
-    if device.startswith('cuda'):
-        torch.cuda.empty_cache()
-    
-    # Generate tokens
     with torch.no_grad():
-        # Process the prompt to get initial hidden states and logits
-        prompt_logits, prev_hiddens = model(prompt, return_prev_hiddens=True)
-        
-        # IMPORTANT: Use the logits from the last position of the prompt
-        # This ensures we're starting generation from the right point
-        last_logits = prompt_logits[:, -1:]  # Shape: [batch, 1, vocab_size]
-        
-        # Start generation from the prompt's last position
-        generated_tokens = []
-        
         for step in range(generation_length):
             if step == 0:
-                # For the first step, use the logits from prompt processing
-                logits = last_logits[:, -1]  # [batch, vocab_size]
+                # For the first generated token, we use the logits from the prompt
+                next_token_logits = prompt_logits[:, -1:]  # [1, 1, vocab_size]
             else:
-                # For subsequent steps, pass the previous token through the model
-                last_token = generated_tokens[-1].unsqueeze(0)  # [1, 1]
-                step_logits, prev_hiddens = model(
-                    last_token,
+                # For subsequent tokens, pass the previous generated token through
+                prev_token = torch.tensor([[generated_tokens[-1]]], device=device)
+                next_token_logits, current_hidden_states = model(
+                    prev_token,
                     return_prev_hiddens=True,
-                    prev_hiddens=prev_hiddens
+                    prev_hiddens=current_hidden_states
                 )
-                logits = step_logits[:, -1]  # [batch, vocab_size]
             
-            # Apply sampling based on method chosen
-            if sampling_method == 'top_p':
-                # First filter with top-p
-                filtered_logits = top_p(logits, thres=0.9)
-                # Then apply sampling
-                sample = improved_top_k_sampling(filtered_logits, temperature, top_k=top_p_tokens)
+            # Extract logits for sampling [vocab_size]
+            logits = next_token_logits[0, -1]
+            
+            # Apply temperature
+            if temperature > 0:
+                logits = logits / temperature
             else:
-                # Direct top-k sampling
-                sample = improved_top_k_sampling(logits, temperature, top_k=filter_thres)
+                # Greedy sampling
+                next_token = logits.argmax().item()
+                generated_tokens.append(next_token)
+                continue
             
-            generated_tokens.append(sample[0, 0])  # Extract the token
+            # Top-k sampling
+            if top_k > 0:
+                # Get top-k tokens
+                top_logits, top_indices = torch.topk(logits, min(top_k, logits.size(-1)))
+                
+                # Sample from top-k
+                probs = F.softmax(top_logits, dim=-1)
+                sampled_index = torch.multinomial(probs, 1).item()
+                next_token = top_indices[sampled_index].item()
+            else:
+                # Sample from full distribution
+                probs = F.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, 1).item()
             
-            # Update progress regularly
-            if step % 10 == 0 and callback:
-                progress = step / generation_length
+            generated_tokens.append(next_token)
+            
+            # Debug first few generations
+            if debug and step < 5:
+                char = decode_token(next_token)
+                print(f"Step {step}: Generated '{char}' (token {next_token})")
+            
+            # Progress callback
+            if callback and step % 10 == 0:
                 elapsed = time.time() - start_time
-                tokens_per_sec = step / elapsed if elapsed > 0 else 0
+                tokens_per_sec = (step + 1) / elapsed if elapsed > 0 else 0
+                progress = (step + 1) / generation_length
                 callback(progress, tokens_per_sec)
-            
-            # Periodically clear unused memory
-            if step % 100 == 0 and device.startswith('cuda'):
-                torch.cuda.empty_cache()
-        
-        # Convert generated tokens to tensor
-        generated = torch.stack(generated_tokens).unsqueeze(0)  # [1, length]
-        
-    # Clear cache after generation
-    if device.startswith('cuda'):
-        torch.cuda.empty_cache()
-        
-    return generated
+    
+    # Convert to tensor and return
+    generated_tensor = torch.tensor(generated_tokens, device=device).unsqueeze(0)
+    
+    if debug:
+        print(f"=== GENERATION COMPLETE ===")
+        print(f"Generated {len(generated_tokens)} tokens")
+        print(f"Generated text: '{decode_tokens(generated_tokens)}'")
+        print("===========================")
+    
+    return generated_tensor
 
-def load_primer_text(primer_file=None, primer_length=None, val_dataset=None):
+def load_primer_text(primer_file=None, primer_length=None, val_dataset=None, primer_text=None):
     """
-    Load primer text either from a file, or randomly from validation dataset
+    Load primer text with better debugging
     """
-    if primer_file:
+    if primer_text:
+        # Direct text input
+        tokens = [ord(c) for c in primer_text]
+        original_length = len(tokens)
+        
+        if primer_length and len(tokens) > primer_length:
+            print(f"WARNING: Primer text truncated from {original_length} to {primer_length} tokens")
+            print(f"Original: '{primer_text}'")
+            print(f"Truncated: '{primer_text[:primer_length]}'")
+            tokens = tokens[:primer_length]
+        
+        return torch.tensor(tokens, dtype=torch.long)[None, ...]
+    
+    elif primer_file:
         # Load from file
         with open(primer_file, 'r', encoding='utf-8') as f:
             text = f.read()
             
-        # Convert to tensor of byte values
         tokens = [ord(c) for c in text]
-        if primer_length:
+        original_length = len(tokens)
+        
+        if primer_length and len(tokens) > primer_length:
+            print(f"WARNING: Primer file truncated from {original_length} to {primer_length} tokens")
             tokens = tokens[:primer_length]
-        return torch.tensor(tokens, dtype=torch.long)[None, ...]  # Add batch dimension
+        
+        return torch.tensor(tokens, dtype=torch.long)[None, ...]
     
     elif val_dataset:
         # Random sample from validation set
         inp = random.choice(val_dataset)
         if primer_length:
             inp = inp[:primer_length]
-        # Ensure this is a Long tensor
-        return inp.long()[None, ...]  # Add batch dimension and convert to long
+        return inp.long()[None, ...]
     
     else:
-        # Default to a simple prompt if no primer is provided
+        # Default prompt
         text = "The "
         tokens = [ord(c) for c in text]
-        return torch.tensor(tokens, dtype=torch.long)[None, ...]  # Add batch dimension
+        return torch.tensor(tokens, dtype=torch.long)[None, ...]
 
 def parse_size_with_suffix(size_str):
     """
@@ -568,77 +616,57 @@ def main():
         
         val_dataset = TextSamplerDataset(data_val, args.primer_length)
     
-    # Parse numerical arguments with potential suffixes
-    chunk_length = int(parse_size_with_suffix(args.chunk_length))
+    # Parse numerical arguments
     generation_length = int(parse_size_with_suffix(args.generation_length))
     primer_length = int(parse_size_with_suffix(args.primer_length)) if args.primer_length else None
-
-    # If primer_text is provided directly, use that
+    
+    # Load primer - CHECK FOR TRUNCATION
     if args.primer_text:
-        tokens = [ord(c) for c in args.primer_text]
-        if primer_length:
-            tokens = tokens[:primer_length]
-        prompt = torch.tensor(tokens, dtype=torch.long)[None, ...]  # Add batch dimension
+        print(f"Using direct primer text ({len(args.primer_text)} chars)")
+        prompt = load_primer_text(primer_text=args.primer_text, primer_length=primer_length)
     else:
-        # Otherwise get primer text from file or validation dataset
         prompt = load_primer_text(args.primer_file, primer_length, val_dataset)
     
-    # Ensure prompt is a Long tensor before sending to device
+    # Ensure prompt is correct type and on device
     prompt = prompt.long().to(device)
     
-    # Display the primer text
+    # Display the actual prompt being used
     primer_text = decode_tokens(prompt[0])
-    print(f"\nPrimer text ({len(primer_text)} chars):\n{primer_text}")
+    print(f"\nActual primer text ({len(primer_text)} chars):")
+    print(f"'{primer_text}'")
+    print(f"Primer tokens: {prompt.shape[1]}")
     
     # Progress callback
     def progress_callback(progress, tokens_per_sec):
         percent_done = progress * 100
         print(f"Progress: {percent_done:.1f}% | Speed: {tokens_per_sec:.2f} tokens/sec", end="\r")
     
-    print(f"\nGenerating {generation_length} tokens in chunks of {chunk_length}...")
-    if args.use_top_p:
-        print(f"Temperature: {args.temperature}, Nucleus (top-p) sampling with threshold: 0.9, considering top {args.top_p_tokens} tokens")
-    else:
-        print(f"Temperature: {args.temperature}, Top-k sampling with k={args.top_k} tokens")
+    print(f"\nGenerating {generation_length} tokens...")
+    print(f"Temperature: {args.temperature}, Top-k: {args.top_k}")
     
-    # Memory optimization
-    if args.memory_efficient:
-        print("Using memory-efficient generation mode")
-        # Clear CUDA cache before generation
-        if device.startswith('cuda'):
-            torch.cuda.empty_cache()
-    
-    # Generate text
+    # Generate text with the simple function
     start_time = time.time()
-    with torch.no_grad():
-        generated = chunked_generation(
-            model,
-            prompt,
-            generation_length,
-            chunk_length,
-            args.temperature,
-            args.top_k,
-            'top_p' if args.use_top_p else 'top_k',
-            device,
-            progress_callback,
-            top_p_tokens=args.top_p_tokens
-        )
-        
-    # Clear cache after generation
-    if device.startswith('cuda'):
-        torch.cuda.empty_cache()
+    generated = simple_generation(
+        model,
+        prompt,
+        generation_length,
+        args.temperature,
+        args.top_k,
+        device,
+        progress_callback,
+        debug=True  # Enable debug to see what's happening
+    )
     
     total_time = time.time() - start_time
-    total_tokens = generation_length
-    tokens_per_sec = total_tokens / total_time if total_time > 0 else 0
+    tokens_per_sec = generation_length / total_time if total_time > 0 else 0
     
-    # Decode the generated text
+    # Decode and display
     generated_text = decode_tokens(generated[0])
     
-    # Display the generated text
     print(f"\n\nGeneration complete! ({tokens_per_sec:.2f} tokens/sec)")
-    print(f"Generated text ({len(generated_text)} chars):")
-    print(generated_text)
+    print(f"Full output:")
+    print(f"PROMPT: {primer_text}")
+    print(f"GENERATED: {generated_text}")
     
     # Save to file if requested
     if args.output_file:
