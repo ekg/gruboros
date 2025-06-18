@@ -338,88 +338,70 @@ def chunked_generation(
     # Move prompt to device
     prompt = prompt.to(device)
     
-    # Start with the prompt
-    out = prompt.clone()
-    
-    # Track number of tokens to generate
-    remaining_tokens = generation_length
-    
-    # Start with no hidden state
-    prev_hiddens = None
-    
-    # Process the prompt efficiently to get initial hidden state
-    with torch.no_grad():
-        # Process the entire prompt at once to get the initial hidden state
-        _, prev_hiddens = model(out, return_prev_hiddens=True)
-    
     # Timing variables
     start_time = time.time()
-    tokens_generated = 0
     
     # Efficient memory management
-    torch.cuda.empty_cache()
+    if device.startswith('cuda'):
+        torch.cuda.empty_cache()
     
-    # Generate tokens in chunks
+    # Generate tokens
     with torch.no_grad():
-        while remaining_tokens > 0:
-            # Generate tokens efficiently in batches
-            batch_size = min(chunk_length, remaining_tokens)
-            
-            # Generate tokens one at a time, efficiently maintaining RNN state
-            for _ in range(batch_size):
-                # Get logits and updated hidden state
-                logits, next_prev_hiddens = model(
-                    out[:, -1:],  # Only need the last token with RNN state
-                    return_prev_hiddens=True, 
+        # Process the prompt to get initial hidden states and logits
+        prompt_logits, prev_hiddens = model(prompt, return_prev_hiddens=True)
+        
+        # IMPORTANT: Use the logits from the last position of the prompt
+        # This ensures we're starting generation from the right point
+        last_logits = prompt_logits[:, -1:]  # Shape: [batch, 1, vocab_size]
+        
+        # Start generation from the prompt's last position
+        generated_tokens = []
+        
+        for step in range(generation_length):
+            if step == 0:
+                # For the first step, use the logits from prompt processing
+                logits = last_logits[:, -1]  # [batch, vocab_size]
+            else:
+                # For subsequent steps, pass the previous token through the model
+                last_token = generated_tokens[-1].unsqueeze(0)  # [1, 1]
+                step_logits, prev_hiddens = model(
+                    last_token,
+                    return_prev_hiddens=True,
                     prev_hiddens=prev_hiddens
                 )
-                
-                # Get logits for the generated token
-                logits = logits[:, -1]
-                
-                # Update hidden state for next iteration
-                prev_hiddens = next_prev_hiddens
-                
-                # Apply sampling based on method chosen
-                if sampling_method == 'top_p':
-                    # First filter with top-p
-                    filtered_logits = top_p(logits, thres=filter_thres)
-                    # Then apply sampling
-                    sample = improved_top_k_sampling(filtered_logits, temperature, top_k=top_p_tokens)
-                else:
-                    # Direct top-k sampling
-                    sample = improved_top_k_sampling(logits, temperature, top_k=filter_thres)
-                
-                # Append the new token to the output
-                out = torch.cat((out, sample), dim=-1)
-                
-                tokens_generated += 1
-                
-                # Update progress regularly
-                if tokens_generated % 5 == 0 and callback:
-                    progress = tokens_generated / generation_length
-                    elapsed = time.time() - start_time
-                    tokens_per_sec = tokens_generated / elapsed if elapsed > 0 else 0
-                    callback(progress, tokens_per_sec)
+                logits = step_logits[:, -1]  # [batch, vocab_size]
             
-            # Update remaining tokens
-            remaining_tokens -= batch_size
+            # Apply sampling based on method chosen
+            if sampling_method == 'top_p':
+                # First filter with top-p
+                filtered_logits = top_p(logits, thres=0.9)
+                # Then apply sampling
+                sample = improved_top_k_sampling(filtered_logits, temperature, top_k=top_p_tokens)
+            else:
+                # Direct top-k sampling
+                sample = improved_top_k_sampling(logits, temperature, top_k=filter_thres)
             
-            # Calculate and show progress for the whole chunk
-            elapsed = time.time() - start_time
-            tokens_per_sec = tokens_generated / elapsed if elapsed > 0 else 0
+            generated_tokens.append(sample[0, 0])  # Extract the token
             
-            # Call progress callback if provided
-            if callback:
-                progress = (generation_length - remaining_tokens) / generation_length
+            # Update progress regularly
+            if step % 10 == 0 and callback:
+                progress = step / generation_length
+                elapsed = time.time() - start_time
+                tokens_per_sec = step / elapsed if elapsed > 0 else 0
                 callback(progress, tokens_per_sec)
             
             # Periodically clear unused memory
-            if tokens_generated % 100 == 0:
+            if step % 100 == 0 and device.startswith('cuda'):
                 torch.cuda.empty_cache()
-    
-    # Return only the newly generated tokens (excluding the prompt)
-    return out[..., prompt.shape[-1]:]
+        
+        # Convert generated tokens to tensor
+        generated = torch.stack(generated_tokens).unsqueeze(0)  # [1, length]
+        
+    # Clear cache after generation
+    if device.startswith('cuda'):
+        torch.cuda.empty_cache()
+        
+    return generated
 
 def load_primer_text(primer_file=None, primer_length=None, val_dataset=None):
     """
