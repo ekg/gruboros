@@ -27,11 +27,17 @@ class EvolutionaryTrainingNode:
                  global_rank: int, world_size: int, data_parallel_rank: int,
                  tp_size: int, mixing_probability: float = 0.01, 
                  output_dir: Optional[str] = None):
+        # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
         self.global_rank = global_rank
-        self.mixing_rng = random.Random(42 + global_rank * 1000)
+        self.world_size = world_size
+        self.data_parallel_rank = data_parallel_rank
+        self.tp_size = tp_size
         self.mixing_probability = mixing_probability
+        
+        # Now initialize other attributes
+        self.mixing_rng = random.Random(42 + self.global_rank * 1000)
         
         # Thread-safe communication
         self.incoming_updates = queue.Queue()  # Background thread -> Main thread
@@ -49,7 +55,7 @@ class EvolutionaryTrainingNode:
         self._setup_pinned_buffers()
         
         master_addr = os.environ.get('MASTER_ADDR', 'localhost')
-        self.gossip_port = NetworkUtils.get_gossip_port(data_parallel_rank, master_addr)
+        self.gossip_port = NetworkUtils.get_gossip_port(self.data_parallel_rank, master_addr)
         
         # Thread control
         self.gossip_running = False
@@ -57,7 +63,7 @@ class EvolutionaryTrainingNode:
         self.server_thread = None
         
         # Replace standard logger with structured gossip logger
-        self.logger = GossipLogger(node_id, global_rank, data_parallel_rank, output_dir)
+        self.logger = GossipLogger(self.node_id, self.global_rank, self.data_parallel_rank, output_dir)
     
     def _setup_pinned_buffers(self):
         """Pre-allocate pinned memory for faster transfers"""
@@ -72,7 +78,7 @@ class EvolutionaryTrainingNode:
         # Create standard logger for bootstrap discovery
         std_logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
         self.bootstrap_nodes = NetworkUtils.get_bootstrap_nodes(
-            global_rank, world_size, data_parallel_rank, tp_size, std_logger
+            self.global_rank, self.world_size, self.data_parallel_rank, self.tp_size, std_logger
         )
         
         self.mixing_attempts = 0
@@ -81,7 +87,7 @@ class EvolutionaryTrainingNode:
         
         # Log node startup
         self.logger.log_event("NODE_STARTUP", 
-                             message=f"TP_size={tp_size}, mixing_prob={mixing_probability}")
+                             message=f"TP_size={self.tp_size}, mixing_prob={self.mixing_probability}")
         
     def update_fitness(self, loss_value: float, step: int):
         """Called by main thread after each training step"""
