@@ -471,7 +471,7 @@ class EvolutionaryTrainingNode:
             
             # Deserialize
             buffer = io.BytesIO(bytes(received_data))
-            transfer_data = torch.load(buffer, map_location='cpu')
+            transfer_data = torch.load(buffer, map_location='cpu', weights_only=False)
             
             transfer_time = (time.time() - start_time) * 1000
             throughput = expected_size / 1e6 / (transfer_time / 1000)
