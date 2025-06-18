@@ -99,8 +99,8 @@ deepspeed --num_gpus=$NUM_GPUS \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 16 \
-  --grad_accum 4 \
+  --batch_size 8 \
+  --grad_accum 1 \
   --seq_len 8192 \
   --params 16m \
   --tp_size 1 \
@@ -128,9 +128,9 @@ echo "Data parallel size: 8 (8 different models)"
 echo "Each model gets different data samples"
 echo "Evolutionary mixing between the 8 models via gossip"
 echo "Sequence length: 8192"
-echo "Batch size per GPU: 16"
-echo "Gradient accumulation: 4"
-echo "Global effective batch size: 512 (8 * 16 * 4)"
+echo "Batch size per GPU: 8"
+echo "Gradient accumulation: 1"
+echo "Global effective batch size: 64 (8 * 8 * 1)"
 echo "Learning rate: 0.003"
 echo "Training steps: 100,000"
 echo "Output saved to: $OUTPUT_DIR"
