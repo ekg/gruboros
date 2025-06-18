@@ -101,7 +101,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --weight_decay 0.0001 \
   --batch_size 4 \
   --grad_accum 1 \
-  --seq_len 8192 \
+  --seq_len 4096 \
   --params 100m \
   --tp_size 1 \
   --keep_checkpoints 3 \
@@ -127,7 +127,7 @@ echo "Tensor parallel size: 1 (complete model per GPU)"
 echo "Data parallel size: 8 (8 different models)"
 echo "Each model gets different data samples"
 echo "Evolutionary mixing between the 8 models via gossip"
-echo "Sequence length: 8192"
+echo "Sequence length: 4096"
 echo "Batch size per GPU: 4"
 echo "Gradient accumulation: 1"
 echo "Global effective batch size: 32 (8 * 4 * 1)"
