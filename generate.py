@@ -314,8 +314,7 @@ def simple_generation(
     temperature: float = 1.0,
     top_k: int = 40,
     device: str = 'cuda',
-    callback=None,
-    debug=False
+    callback=None
 ):
     """
     Simple, clean text generation for RNN models.
@@ -328,41 +327,14 @@ def simple_generation(
         top_k: Top-k sampling parameter
         device: Device to run on
         callback: Progress callback function
-        debug: Print debug information
     """
     model.eval()
     prompt = prompt.to(device)
     
-    if debug:
-        print(f"=== GENERATION DEBUG ===")
-        print(f"Prompt shape: {prompt.shape}")
-        print(f"Prompt length: {prompt.shape[1]} tokens")
-        print(f"First 20 tokens: {prompt[0, :20].tolist()}")
-        print(f"Last 20 tokens: {prompt[0, -20:].tolist()}")
-        print(f"Prompt text: '{decode_tokens(prompt[0])}'")
-        print(f"========================")
-    
     # Step 1: Process the entire prompt to get final hidden state
     with torch.no_grad():
-        if debug:
-            print("Processing prompt...")
-        
         # Run the full prompt through the model
         prompt_logits, final_hidden_states = model(prompt, return_prev_hiddens=True)
-        
-        if debug:
-            print(f"Prompt processing complete:")
-            print(f"  - Prompt logits shape: {prompt_logits.shape}")
-            print(f"  - Hidden states: {len(final_hidden_states) if final_hidden_states else 0} layers")
-            print(f"  - Last token in prompt: '{decode_token(prompt[0, -1].item())}'")
-            
-            # Show what the model thinks should come next after the prompt
-            last_prompt_logits = prompt_logits[0, -1]  # Last position logits
-            top_probs, top_indices = torch.topk(F.softmax(last_prompt_logits, dim=-1), 5)
-            print(f"  - Top 5 predictions after prompt:")
-            for i, (prob, idx) in enumerate(zip(top_probs, top_indices)):
-                char = decode_token(idx.item())
-                print(f"    {i+1}. '{char}' (token {idx.item()}): {prob.item():.4f}")
     
     # Step 2: Generate tokens one by one
     generated_tokens = []
@@ -413,11 +385,6 @@ def simple_generation(
             
             generated_tokens.append(next_token)
             
-            # Debug first few generations
-            if debug and step < 5:
-                char = decode_token(next_token)
-                print(f"Step {step}: Generated '{char}' (token {next_token})")
-            
             # Progress callback
             if callback and step % 10 == 0:
                 elapsed = time.time() - start_time
@@ -427,12 +394,6 @@ def simple_generation(
     
     # Convert to tensor and return
     generated_tensor = torch.tensor(generated_tokens, device=device).unsqueeze(0)
-    
-    if debug:
-        print(f"=== GENERATION COMPLETE ===")
-        print(f"Generated {len(generated_tokens)} tokens")
-        print(f"Generated text: '{decode_tokens(generated_tokens)}'")
-        print("===========================")
     
     return generated_tensor
 
