@@ -436,17 +436,18 @@ def simple_generation(
     
     return generated_tensor
 
-def load_primer_text(primer_file=None, primer_length=None, val_dataset=None, primer_text=None):
+def load_primer_text(primer_file=None, primer_length=None, val_dataset=None, primer_text=None, explicit_length=False):
     """
     Load primer text with better debugging
     """
     if primer_text:
-        # Direct text input
+        # Direct text input - DON'T truncate unless explicitly requested
         tokens = [ord(c) for c in primer_text]
         original_length = len(tokens)
         
-        if primer_length and len(tokens) > primer_length:
-            print(f"WARNING: Primer text truncated from {original_length} to {primer_length} tokens")
+        # Only truncate if explicitly requested via command line
+        if explicit_length and primer_length and len(tokens) > primer_length:
+            print(f"WARNING: Primer text truncated from {original_length} to {primer_length} tokens (explicitly requested)")
             print(f"Original: '{primer_text}'")
             print(f"Truncated: '{primer_text[:primer_length]}'")
             tokens = tokens[:primer_length]
@@ -454,7 +455,7 @@ def load_primer_text(primer_file=None, primer_length=None, val_dataset=None, pri
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
     
     elif primer_file:
-        # Load from file
+        # Load from file - truncate if requested
         with open(primer_file, 'r', encoding='utf-8') as f:
             text = f.read()
             
@@ -468,7 +469,7 @@ def load_primer_text(primer_file=None, primer_length=None, val_dataset=None, pri
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
     
     elif val_dataset:
-        # Random sample from validation set
+        # Random sample from validation set - use primer_length
         inp = random.choice(val_dataset)
         if primer_length:
             inp = inp[:primer_length]
@@ -538,7 +539,10 @@ def main():
     # Input parameters
     parser.add_argument("--primer_file", type=str, default=None, help="File containing primer text (optional)")
     parser.add_argument("--primer_text", type=str, default=None, help="Direct text to use as primer")
-    parser.add_argument("--primer_length", type=str, default="128", help="Length of primer sequence (default: 128). Can use k/m/g suffix.")
+    parser.add_argument("--primer_length", type=str, default=None, 
+                       help="Length of primer sequence (only for random/file primers, default: no limit for --primer_text). Can use k/m/g suffix.")
+    parser.add_argument("--force_primer_length", action="store_true", 
+                       help="Force truncation of --primer_text to --primer_length (default: False)")
     parser.add_argument("--random_primer", action="store_true", help="Use a random primer from validation set")
     parser.add_argument("--data", type=str, default="./data/enwik8.gz", help="Path to data file for random primer (default: ./data/enwik8.gz)")
     parser.add_argument("--output_file", type=str, default=None, help="Output file to write generated text (optional)")
