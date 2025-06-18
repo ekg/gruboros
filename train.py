@@ -1136,14 +1136,19 @@ def main():
     effective_samples_per_node_update = effective_samples_per_gpu_update  # In this setup (TP within node)
     global_effective_samples_per_update = effective_samples_per_node_update * dp_world_size
     
-    # Track actual tokens processed without gradient accumulation inflation
-    global_samples_per_micro_batch = (micro_batch_per_gpu * dp_world_size)
-    tokens_per_micro_batch_step = global_samples_per_micro_batch * seq_len
+    # Track tokens processed - we have independent model replicas
+    per_model_samples_per_step = micro_batch_per_gpu  # Each model processes this many samples
+    per_model_tokens_per_step = per_model_samples_per_step * seq_len
+    
+    # System-wide: all models combined
+    total_models = dp_world_size  # 8 independent models
+    system_wide_tokens_per_step = per_model_tokens_per_step * total_models
     
     print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
           f"local_rank={args.local_rank}, world_size={args.world_size}")
-    print(f"Parallelism: TP={args.tp_size}, DP={dp_world_size}, "
-          f"Tokens per system step={tokens_per_micro_batch_step:,}")
+    print(f"Parallelism: TP={args.tp_size}, DP={dp_world_size} independent models")
+    print(f"Per-model tokens per step: {per_model_tokens_per_step:,}")
+    print(f"System-wide tokens per step: {system_wide_tokens_per_step:,}")
     
     # Print updated debug info after DeepSpeed initialization
     if local_rank == 0:
@@ -1493,7 +1498,8 @@ def main():
                 f.write(f"  Effective batch size per GPU (after grad_accum): {effective_samples_per_gpu_update}\n")
                 f.write(f"  Effective batch size per node (data parallel replica): {effective_samples_per_node_update}\n")
                 f.write(f"  Global batch size (across all nodes, samples): {global_effective_samples_per_update}\n")
-                f.write(f"  Global batch size (across all nodes, tokens): {tokens_per_micro_batch_step:,}\n")
+                f.write(f"  Global batch size (across all nodes, tokens): {system_wide_tokens_per_step:,}\n")
+                f.write(f"  Per-model batch size (tokens): {per_model_tokens_per_step:,}\n")
     
     # Synchronize all processes before starting training loop
     synchronize_processes()
@@ -1587,7 +1593,7 @@ def main():
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
                 # Update system-wide token tracking using our pre-calculated values
-                total_tokens_processed_system += tokens_per_micro_batch_step
+                total_tokens_processed_system += system_wide_tokens_per_step
                 
                 # Calculate tokens per second across the whole system
                 elapsed = time.time() - start_time
