@@ -96,12 +96,7 @@ class EvolutionaryTrainingNode:
             self.fitness_tracker.update(loss_value)
             new_fitness = self.fitness_tracker.get_fitness()
         
-        # Log fitness updates periodically
-        if step % 100 == 0:
-            self.logger.log_event("FITNESS_UPDATE", 
-                                 step=step, 
-                                 fitness=new_fitness,
-                                 message=f"loss={loss_value:.4f}")
+        # Fitness logging removed to prevent periodic stalls
         
         # Notify gossip worker about this step
         try:
@@ -169,12 +164,7 @@ class EvolutionaryTrainingNode:
             
             self.successful_mixes += 1
             
-            self.logger.log_event("WEIGHT_UPDATE_APPLIED", 
-                                 step=self.current_step,
-                                 fitness=self.pending_update.source_fitness,
-                                 correlation_id=self.pending_update.correlation_id,
-                                 transfer_time_ms=load_time,
-                                 message=f"Deferred loading completed in {load_time:.1f}ms")
+            # Removed verbose logging to prevent stalls
             
             self.pending_update = None
             return True

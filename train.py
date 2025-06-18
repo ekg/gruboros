@@ -1539,8 +1539,6 @@ def main():
             
             # ✅ STEP 1: Apply any pending weight updates FIRST (off critical path)
             weight_update_applied = evolutionary_node.apply_pending_update()
-            if weight_update_applied and model_engine.global_rank == 0:
-                print(f"Step {step}: Applied deferred weight update")
             
             # ✅ STEP 2: Critical path runs uninterrupted
             # Split into input and target
