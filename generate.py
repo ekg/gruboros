@@ -618,8 +618,7 @@ def main():
         args.temperature,
         args.top_k,
         device,
-        progress_callback,
-        debug=True  # Enable debug to see what's happening
+        progress_callback
     )
     
     total_time = time.time() - start_time
