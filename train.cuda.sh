@@ -49,8 +49,11 @@ localhost slots=8
 EOF
 
 # Set environment variables for gossip discovery
-export SLURM_JOB_ID="local"
+export SLURM_JOB_ID="-local"
 export SLURM_JOB_NODELIST="localhost"
+
+# --- FIX 2: Explicitly set RANKS_PER_NODE for robustness ---
+export RANKS_PER_NODE=8
 
 # Gossip protocol will use ports 29501-29508 for ranks 0-7
 echo "Gossip protocol will use ports 29501-29508 for 8 GPU ranks"
