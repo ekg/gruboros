@@ -108,7 +108,7 @@ ranks_per_node=8
 ranks_total=$((ranks_per_node*SLURM_JOB_NUM_NODES))
 echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with $ranks_per_node ranks per node)"
 
-# Set data path
+# Set data path - UPDATE THIS PATH TO YOUR ENWIK8 LOCATION
 DATA="/lustre/orion/bif148/scratch/erikgarrison/enwik8"
 echo "Using data: $DATA"
 
@@ -129,17 +129,17 @@ deepspeed \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
+  --validate_every 1000 \
   --save_every 1000 \
-  --lr 0.005 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 1 \
-  --grad_accum 8 \
-  --seq_len 2048 \
+  --batch_size 4 \
+  --grad_accum 1 \
+  --seq_len 4096 \
   --params 100m \
-  --depth 8 \
-  --tp_size 8 \
+  --tp_size 1 \
   --keep_checkpoints 5 \
   --deepspeed \
   --deepspeed_config ds_config.json \
