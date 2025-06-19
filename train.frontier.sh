@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_frontier-%j.err
 #SBATCH -t 00:30:00
 #SBATCH -p batch
-#SBATCH -N 4                 # Number of nodes
+#SBATCH -N 16                # Number of nodes
 #SBATCH --ntasks-per-node=8   # CRITICAL: 8 GPUs per node
 #SBATCH --gpus-per-node=8     # Explicitly request 8 GPUs per node
 #SBATCH -q debug
@@ -102,7 +102,7 @@ cat "$HOSTFILE_PATH"
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="100m_tweak"
+NAME="100m_evolve"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 
