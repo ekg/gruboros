@@ -79,7 +79,7 @@ class EvolutionaryTrainingNode:
         # Create standard logger for bootstrap discovery
         std_logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
         self.bootstrap_nodes = NetworkUtils.get_bootstrap_nodes(
-            self.global_rank, self.local_rank, self.world_size, self.data_parallel_rank, self.tp_size, std_logger
+            self.global_rank, self.local_rank, std_logger
         )
         
         self.mixing_attempts = 0

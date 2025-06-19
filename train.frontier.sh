@@ -69,6 +69,9 @@ export NCCL_NSOCKS_PERTHREAD=4             # Socket tuning for NCCL
 export NCCL_BUFFSIZE=2097152               # 2MB buffer size
 export NCCL_CUMEM_ENABLE=0                 # Disable CUDA unified memory
 
+# Pass the number of ranks per node to the Python environment
+export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
+
 # Performance tuning
 export FI_CXI_ATS=0
 export NCCL_COLLNET_ENABLE=0

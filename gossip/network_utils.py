@@ -31,40 +31,49 @@ class NetworkUtils:
         return base_port + local_rank
 
     @staticmethod
-    def get_bootstrap_nodes(global_rank: int, local_rank: int, world_size: int, data_parallel_rank: int, 
-                            tp_size: int, logger) -> List[str]:
+    def get_bootstrap_nodes(global_rank: int, local_rank: int, logger) -> List[str]:
         """
-        Smart peer discovery. It constructs peer addresses by finding the peer's
-        hostname and assuming it's listening on a port offset by its local_rank.
-        
-        This assumes symmetric local_rank assignment across nodes.
+        Discovers ALL other processes in the job to create a complete peer list
+        for true all-to-all evolutionary mixing.
         """
-        bootstrap_addresses = []
-        
-        # Discover all potential peer node hostnames
-        peer_nodes = NetworkUtils._discover_peer_nodes(logger)
-        
-        if not peer_nodes:
-            logger.warning("Could not discover peer hostnames via hostfile or SLURM. "
-                           "Gossip protocol may fail to find peers.")
+        # Get my own hostname to identify myself in the list
+        # Use socket.getfqdn() for fully qualified name to be safe
+        try:
+            my_hostname = socket.getfqdn()
+        except:
+            my_hostname = socket.gethostname()
+
+        # Discover all node hostnames in the job from Slurm or hostfile
+        all_nodes = NetworkUtils._discover_peer_nodes(logger)
+        if not all_nodes:
+            logger.error(f"FATAL: Rank {global_rank} could not discover any peer nodes. Gossip will fail.")
             return []
 
-        # The port for our peer will be the base port + our own local_rank.
-        # This assumes that peer processes (e.g., all local_rank 0 processes)
-        # form a communicating group.
-        peer_port = NetworkUtils.get_gossip_port(local_rank)
-        
-        # Get our own hostname to avoid adding ourselves to the peer list
-        my_hostname = socket.gethostname()
+        # Get the number of ranks per node from the environment variable we set
+        try:
+            ranks_per_node = int(os.environ['RANKS_PER_NODE'])
+        except (KeyError, ValueError):
+            logger.warning("RANKS_PER_NODE env var not set or invalid. Falling back to 8 for Frontier.")
+            ranks_per_node = 8
 
-        for node_hostname in peer_nodes:
-            # scontrol can sometimes return the FQDN, so we compare startswith
-            if not node_hostname.startswith(my_hostname):
-                bootstrap_addresses.append(f"{node_hostname}:{peer_port}")
+        bootstrap_addresses = []
 
-        logger.info(f"Rank {global_rank} (local_rank {local_rank}): "
-                    f"Bootstrap peers for port {peer_port}: {bootstrap_addresses}")
-        
+        # Iterate through every node and every possible local_rank on that node
+        for node_hostname in all_nodes:
+            for peer_local_rank in range(ranks_per_node):
+                # Check if this potential peer is me
+                # Use startswith for safety, as scontrol can return short names
+                is_me = node_hostname.startswith(my_hostname.split('.')[0]) and peer_local_rank == local_rank
+
+                if not is_me:
+                    # It's a peer. Calculate its port and add it to our list.
+                    peer_port = NetworkUtils.get_gossip_port(peer_local_rank)
+                    bootstrap_addresses.append(f"{node_hostname}:{peer_port}")
+
+        logger.info(f"Rank {global_rank} (local_rank {local_rank}) discovered {len(bootstrap_addresses)} total peers.")
+        if len(bootstrap_addresses) > 0 and len(bootstrap_addresses) < 10:
+             logger.info(f"Peer sample: {bootstrap_addresses[:10]}")
+             
         return bootstrap_addresses
     
     @staticmethod
@@ -72,7 +81,22 @@ class NetworkUtils:
         """Discover peer node hostnames from SLURM or hostfile"""
         nodes = []
         
-        # Method 1: Use existing DeepSpeed hostfile  
+        # Method 1: SLURM environment (most reliable on HPC)
+        if 'SLURM_JOB_NODELIST' in os.environ:
+            try:
+                # Use scontrol to expand the nodelist into individual hostnames
+                result = subprocess.run(
+                    ['scontrol', 'show', 'hostnames', os.environ['SLURM_JOB_NODELIST']], 
+                    capture_output=True, text=True, check=True
+                )
+                # Use a set to handle potential duplicates then convert to list
+                nodes = sorted(list(set(result.stdout.strip().split('\n'))))
+                logger.info(f"Discovered {len(nodes)} nodes from SLURM_JOB_NODELIST.")
+                return nodes
+            except Exception as e:
+                logger.warning(f"Failed to parse SLURM_JOB_NODELIST via scontrol: {e}")
+
+        # Method 2: Fallback to DeepSpeed hostfile
         slurm_job_id = os.environ.get('SLURM_JOB_ID', '*')
         hostfile_pattern = f"hostfile-job{slurm_job_id}.txt"
         hostfiles = glob.glob(hostfile_pattern)
@@ -80,29 +104,20 @@ class NetworkUtils:
         if hostfiles:
             try:
                 with open(hostfiles[0], 'r') as f:
+                    # Use a set to handle potential duplicates
+                    node_set = set()
                     for line in f:
-                        if 'slots=' in line:
+                        # Handle lines like "hostname slots=8"
+                        if line.strip():
                             hostname = line.split()[0]
-                            if hostname not in nodes:
-                                nodes.append(hostname)
-                logger.info(f"Found {len(nodes)} nodes from hostfile: {hostfiles[0]}")
+                            node_set.add(hostname)
+                nodes = sorted(list(node_set))
+                logger.info(f"Discovered {len(nodes)} nodes from hostfile: {hostfiles[0]}")
                 return nodes
             except Exception as e:
-                logger.warning(f"Failed to read hostfile: {e}")
+                logger.warning(f"Failed to read hostfile '{hostfiles[0]}': {e}")
         
-        # Method 2: SLURM environment
-        if 'SLURM_JOB_NODELIST' in os.environ:
-            try:
-                result = subprocess.run(
-                    ['scontrol', 'show', 'hostnames', os.environ['SLURM_JOB_NODELIST']], 
-                    capture_output=True, text=True
-                )
-                nodes = result.stdout.strip().split('\n')
-                logger.info(f"Found {len(nodes)} nodes from SLURM_JOB_NODELIST")
-                return nodes
-            except Exception as e:
-                logger.warning(f"Failed to parse SLURM_JOB_NODELIST: {e}")
-        
+        logger.error("Could not discover peer nodes from SLURM or hostfile.")
         return []
     
     @staticmethod
