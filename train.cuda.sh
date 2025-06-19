@@ -11,7 +11,7 @@ mkdir -p logs
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="100m_model_8way_dp_gossip"
+NAME="1g_model_8way_dp_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
@@ -49,8 +49,11 @@ localhost slots=8
 EOF
 
 # Set environment variables for gossip discovery
-export SLURM_JOB_ID="local"
+export SLURM_JOB_ID="-local"
 export SLURM_JOB_NODELIST="localhost"
+
+# --- FIX 2: Explicitly set RANKS_PER_NODE for robustness ---
+export RANKS_PER_NODE=8
 
 # Gossip protocol will use ports 29501-29508 for ranks 0-7
 echo "Gossip protocol will use ports 29501-29508 for 8 GPU ranks"
@@ -67,7 +70,7 @@ NUM_GPUS=8
 # ====================== TRAINING LAUNCH ======================
 
 # Data path - MODIFY THIS TO YOUR DATA PATH
-DATA_PATH="/home/erikg/enwik/enwik8"
+DATA_PATH="/mnt/nvme2n1/erikg/pile.txt"
 
 # Verify data path exists
 if [ ! -f "$DATA_PATH" ]; then
@@ -77,7 +80,7 @@ if [ ! -f "$DATA_PATH" ]; then
 fi
 
 echo "Starting 8-way DATA PARALLEL training with evolutionary gossip..."
-echo "Model setup: 8 independent 100M parameter models (one per GPU)"
+echo "Model setup: 8 independent 1G parameter models (one per GPU)"
 echo "Using GPUs: 0,1,2,3,4,5,6,7"
 echo "Tensor Parallel Size: 1 (each GPU has complete model)"
 echo "Data Parallel Size: 8 (8 separate models with different data)"
@@ -95,14 +98,14 @@ deepspeed --num_gpus=$NUM_GPUS \
   --train_steps 100000 \
   --validate_every 1000 \
   --save_every 2000 \
-  --lr 0.001 \
+  --lr 0.0005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 4 \
+  --batch_size 1 \
   --grad_accum 1 \
   --seq_len 4096 \
-  --params 100m \
+  --params 1g \
   --tp_size 1 \
   --keep_checkpoints 3 \
   --deepspeed \
@@ -121,16 +124,16 @@ echo "Cleaned up temporary files."
 
 echo "=== Training Summary ==="
 echo "Configuration: 8-way Data Parallel"
-echo "Model size: 100M parameters PER GPU (8 independent models)"
+echo "Model size: 1G parameters PER GPU (8 independent models)"
 echo "GPUs used: 0,1,2,3,4,5,6,7"
 echo "Tensor parallel size: 1 (complete model per GPU)"
 echo "Data parallel size: 8 (8 different models)"
 echo "Each model gets different data samples"
 echo "Evolutionary mixing between the 8 models via gossip"
 echo "Sequence length: 4096"
-echo "Batch size per GPU: 4"
+echo "Batch size per GPU: 1"
 echo "Gradient accumulation: 1"
-echo "Global effective batch size: 32 (8 * 4 * 1)"
-echo "Learning rate: 0.001"
+echo "Global effective batch size: 8 (8 * 1 * 1)"
+echo "Learning rate: 0.0005"
 echo "Training steps: 100,000"
 echo "Output saved to: $OUTPUT_DIR"
