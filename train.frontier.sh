@@ -102,7 +102,7 @@ cat "$HOSTFILE_PATH"
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1b_tweak"
+NAME="100m_tweak"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 
