@@ -1591,44 +1591,49 @@ def main():
             # Let the node decide stochastically using its own per-rank RNG
             evolutionary_node.request_mix()
             
-            # Log progress
-            if model_engine.global_rank == 0 and batch_idx == 0:
-                # Update system-wide token tracking using our pre-calculated values
-                total_tokens_processed_system += system_wide_tokens_per_step
+            # Log progress and metrics
+            if batch_idx == 0:
+                # This block runs for every rank, every step
                 
-                # Calculate tokens per second across the whole system
-                elapsed = time.time() - start_time
-                tokens_per_sec_system = total_tokens_processed_system / elapsed if elapsed > 0 else 0
-                
-                # Update progress bar with stats in the format key=value
-                formatted_stats = [
-                    f"loss={loss.detach().item():.4f}",
-                    f"lr={model_engine.optimizer.param_groups[0]['lr']:.6f}",
-                    f"tok/s={tokens_per_sec_system:.2f}"
-                ]
-                
-                # Add mixing statistics
-                status = evolutionary_node.get_status()
-                formatted_stats.append(f"mixes={status['mixing_attempts']},{status['successful_mixes']}")
-                
-                # Add EMA fitness info and epoch if available
-                # Always show EMA fitness once we have calculated it at least once
-                if current_ema_fitness is not None:
-                    formatted_stats.append(f"ema_fit={current_ema_fitness:.4f}")
-                    formatted_stats.append(f"best_fit={best_ema_fitness:.4f}")
-                
-                # Add current epoch
-                formatted_stats.append(f"epoch={current_epoch}")
-                
-                # Join all stats with commas for cleaner display
-                postfix = " ".join(formatted_stats)
-                
-                pbar.set_postfix_str(postfix)
-                pbar.update(1)
-                
-                # Get current EMA fitness and log metrics for all ranks
+                # Get current EMA fitness for logging and the progress bar
                 current_ema_fitness = evolutionary_node.get_current_fitness()
+                
+                # Log metrics for EVERY rank on EVERY step
                 log_metrics(step, loss.detach().item(), current_ema_fitness)
+
+                # Update progress bar only on rank 0
+                if model_engine.global_rank == 0:
+                    # Update system-wide token tracking using our pre-calculated values
+                    total_tokens_processed_system += system_wide_tokens_per_step
+                    
+                    # Calculate tokens per second across the whole system
+                    elapsed = time.time() - start_time
+                    tokens_per_sec_system = total_tokens_processed_system / elapsed if elapsed > 0 else 0
+                    
+                    # Update progress bar with stats in the format key=value
+                    formatted_stats = [
+                        f"loss={loss.detach().item():.4f}",
+                        f"lr={model_engine.optimizer.param_groups[0]['lr']:.6f}",
+                        f"tok/s={tokens_per_sec_system:.2f}"
+                    ]
+                    
+                    # Add mixing statistics
+                    status = evolutionary_node.get_status()
+                    formatted_stats.append(f"mixes={status['mixing_attempts']},{status['successful_mixes']}")
+                    
+                    # Add EMA fitness info and epoch if available
+                    if current_ema_fitness is not None:
+                        formatted_stats.append(f"ema_fit={current_ema_fitness:.4f}")
+                        formatted_stats.append(f"best_fit={best_ema_fitness:.4f}")
+                    
+                    # Add current epoch
+                    formatted_stats.append(f"epoch={current_epoch}")
+                    
+                    # Join all stats with commas for cleaner display
+                    postfix = " ".join(formatted_stats)
+                    
+                    pbar.set_postfix_str(postfix)
+                    pbar.update(1)
             
             # Break after one batch per step
             break
@@ -1636,9 +1641,6 @@ def main():
         # Save checkpoint based on EMA fitness periodically
         if args.validate_every > 0 and step > 0 and step % args.validate_every == 0:
             current_ema_fitness = evolutionary_node.get_current_fitness()
-            
-            # Log metrics with EMA fitness for all ranks
-            log_metrics(step, loss_value, current_ema_fitness)
             
             # Determine if this is the best model based on EMA fitness (higher is better)
             is_best = current_ema_fitness > best_ema_fitness
