@@ -109,7 +109,7 @@ ranks_total=$((ranks_per_node*SLURM_JOB_NUM_NODES))
 echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with $ranks_per_node ranks per node)"
 
 # Set data path
-DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/10BT.txt"
+DATA="/lustre/orion/bif148/scratch/erikgarrison/enwik8"
 echo "Using data: $DATA"
 
 # Create log directories
@@ -129,8 +129,7 @@ deepspeed \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
-  --validate_every 256 \
-  --save_every 256 \
+  --save_every 1000 \
   --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
@@ -138,7 +137,7 @@ deepspeed \
   --batch_size 1 \
   --grad_accum 8 \
   --seq_len 2048 \
-  --params 1g \
+  --params 100m \
   --depth 8 \
   --tp_size 8 \
   --keep_checkpoints 5 \
