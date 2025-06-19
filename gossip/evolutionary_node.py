@@ -271,6 +271,7 @@ class EvolutionaryTrainingNode:
         
         try:
             NetworkUtils.optimize_socket(client_sock)
+            client_sock.settimeout(120.0)
             
             # Receive fitness comparison with correlation ID
             data = client_sock.recv(1024).decode()
@@ -358,7 +359,7 @@ class EvolutionaryTrainingNode:
         NetworkUtils.optimize_socket(sock)
         
         try:
-            sock.settimeout(10.0)
+            sock.settimeout(120.0)
             sock.connect((host, port))
             
             # Send our fitness with correlation ID
