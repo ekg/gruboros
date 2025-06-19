@@ -31,6 +31,8 @@ module load craype-accel-amd-gfx90a
 export TORCH_EXTENSIONS_DIR=$PWD/deepspeed_extensions
 export HF_HOME=$PWD/hfdata
 export OMP_NUM_THREADS=1
+export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
+echo "Early export: RANKS_PER_NODE set to: $RANKS_PER_NODE"
 
 # Get the first node of the allocation
 export MASTER_NODE_HOSTNAME=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
@@ -71,6 +73,7 @@ export NCCL_CUMEM_ENABLE=0                 # Disable CUDA unified memory
 
 # Pass the number of ranks per node to the Python environment
 export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
+echo "Setting RANKS_PER_NODE to: $RANKS_PER_NODE"
 
 # Performance tuning
 export FI_CXI_ATS=0
