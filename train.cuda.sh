@@ -11,7 +11,7 @@ mkdir -p logs
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1b_model_8way_dp_gossip"
+NAME="1g_model_8way_dp_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
@@ -77,7 +77,7 @@ if [ ! -f "$DATA_PATH" ]; then
 fi
 
 echo "Starting 8-way DATA PARALLEL training with evolutionary gossip..."
-echo "Model setup: 8 independent 1B parameter models (one per GPU)"
+echo "Model setup: 8 independent 1G parameter models (one per GPU)"
 echo "Using GPUs: 0,1,2,3,4,5,6,7"
 echo "Tensor Parallel Size: 1 (each GPU has complete model)"
 echo "Data Parallel Size: 8 (8 separate models with different data)"
@@ -102,7 +102,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --batch_size 4 \
   --grad_accum 1 \
   --seq_len 4096 \
-  --params 1b \
+  --params 1g \
   --tp_size 1 \
   --keep_checkpoints 3 \
   --deepspeed \
@@ -121,7 +121,7 @@ echo "Cleaned up temporary files."
 
 echo "=== Training Summary ==="
 echo "Configuration: 8-way Data Parallel"
-echo "Model size: 1B parameters PER GPU (8 independent models)"
+echo "Model size: 1G parameters PER GPU (8 independent models)"
 echo "GPUs used: 0,1,2,3,4,5,6,7"
 echo "Tensor parallel size: 1 (complete model per GPU)"
 echo "Data parallel size: 8 (8 different models)"
