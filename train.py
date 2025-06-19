@@ -1100,6 +1100,7 @@ def main():
         node_id=f"node_{model_engine.global_rank}",
         model=model_engine.module,
         global_rank=model_engine.global_rank,
+        local_rank=model_engine.local_rank,
         world_size=model_engine.world_size,
         data_parallel_rank=data_parallel_rank,
         tp_size=args.tp_size,

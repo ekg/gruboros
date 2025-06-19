@@ -24,13 +24,14 @@ class WeightUpdate:
 
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module,
-                 global_rank: int, world_size: int, data_parallel_rank: int,
+                 global_rank: int, local_rank: int, world_size: int, data_parallel_rank: int,
                  tp_size: int, mixing_probability: float = 0.01, 
                  output_dir: Optional[str] = None):
         # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
         self.global_rank = global_rank
+        self.local_rank = local_rank
         self.world_size = world_size
         self.data_parallel_rank = data_parallel_rank
         self.tp_size = tp_size
@@ -52,13 +53,13 @@ class EvolutionaryTrainingNode:
         self.weight_transfer_lock = threading.Lock()
         
         # Replace standard logger with structured gossip logger
-        self.logger = GossipLogger(self.node_id, self.global_rank, self.data_parallel_rank, output_dir)
+        self.logger = GossipLogger(self.node_id, self.global_rank, self.local_rank, self.data_parallel_rank, output_dir)
         
         # Pre-allocate pinned memory buffers for common model sizes
         self._setup_pinned_buffers()
         
-        master_addr = os.environ.get('MASTER_ADDR', 'localhost')
-        self.gossip_port = NetworkUtils.get_gossip_port(self.data_parallel_rank, master_addr)
+        # UPDATE the port calculation to use the new simple method
+        self.gossip_port = NetworkUtils.get_gossip_port(self.local_rank)
         
         # Thread control
         self.gossip_running = False
@@ -78,7 +79,7 @@ class EvolutionaryTrainingNode:
         # Create standard logger for bootstrap discovery
         std_logger = logging.getLogger(f'evolutionary_node_{self.node_id}')
         self.bootstrap_nodes = NetworkUtils.get_bootstrap_nodes(
-            self.global_rank, self.world_size, self.data_parallel_rank, self.tp_size, std_logger
+            self.global_rank, self.local_rank, self.world_size, self.data_parallel_rank, self.tp_size, std_logger
         )
         
         self.mixing_attempts = 0

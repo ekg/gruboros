@@ -8,14 +8,15 @@ from pathlib import Path
 from .network_utils import NetworkUtils
 
 class GossipLogger:
-    def __init__(self, node_id: str, global_rank: int, data_parallel_rank: int, 
+    def __init__(self, node_id: str, global_rank: int, local_rank: int, data_parallel_rank: int, 
                  output_dir: Optional[str] = None):
         self.node_id = node_id
         self.global_rank = global_rank
+        self.local_rank = local_rank
         self.data_parallel_rank = data_parallel_rank
         
         # Get OUR node's actual identity
-        self.local_ip, self.gossip_port = NetworkUtils.get_node_identity(data_parallel_rank)
+        self.local_ip, self.gossip_port = NetworkUtils.get_node_identity(local_rank)
         self.node_identity = f"{self.local_ip}:{self.gossip_port}"
         
         # Create gossip subdirectory in output directory
