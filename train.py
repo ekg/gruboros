@@ -15,7 +15,6 @@ import json
 import datetime
 from datetime import timedelta
 import sys
-import asyncio
 import shutil
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
@@ -87,6 +86,10 @@ os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'  # Enable detailed distributed 
 
 # Import the minLM model
 from mingru.minLM import minLM
+
+# Add imports for evolutionary gossip protocol
+import logging
+from gossip import EvolutionaryTrainingNode
 
 # 1) Deterministic seeding
 SEED = 42
@@ -411,7 +414,7 @@ def get_args():
     parser.add_argument('--resume', type=str, default=None,
                         help='path to checkpoint to resume training from')
     parser.add_argument('--validate_every', type=int, default=50,
-                        help='validate and save checkpoint every N steps')
+                        help='save checkpoint based on EMA fitness every N steps')
     parser.add_argument('--save_every', type=int, default=100,
                         help='additional checkpoints every N steps (optional, validation runs will always save)')
     parser.add_argument('--batches_per_epoch', type=str, default="100",
@@ -1045,6 +1048,13 @@ def main():
     # Update local variable for easier access
     local_rank = args.local_rank
 
+    # [CRITICAL FIX] Re-seed the Python random module for each process
+    # to prevent synchronized mixing attempts. The other seeds (torch, numpy)
+    # remain the same for deterministic weight initialization.
+    random.seed(SEED + model_engine.global_rank)
+    if model_engine.global_rank == 0:
+        print(f"\nRe-seeded Python's random module per-rank to ensure stochastic mixing.\n")
+
     # Get data parallelism world size for token tracking
     dp_world_size = getattr(model_engine, 'data_parallel_world_size', 1)
     if not hasattr(model_engine, 'data_parallel_world_size'):
@@ -1055,6 +1065,60 @@ def main():
     # Calculate data parallel rank (critical for correct TP+DP data loading)
     # With TP within node, this is effectively the node ID
     data_parallel_rank = model_engine.global_rank // args.tp_size
+
+    # ===== EVOLUTIONARY GOSSIP INTEGRATION =====
+    # Create per-rank logging directories
+    if checkpoint_dir:
+        # Create subdirectories for organized logging
+        gossip_dir = os.path.join(checkpoint_dir, "gossip")
+        metrics_dir = os.path.join(checkpoint_dir, "metrics")
+        
+        # Only rank 0 creates the directories initially
+        if model_engine.global_rank == 0:
+            os.makedirs(gossip_dir, exist_ok=True)
+            os.makedirs(metrics_dir, exist_ok=True)
+        
+        # Synchronize to ensure directories are created before other ranks try to use them
+        synchronize_processes()
+    else:
+        gossip_dir = "."
+        metrics_dir = "."
+    
+    # Setup per-rank logging for gossip protocol
+    gossip_log_file = os.path.join(gossip_dir, f"gossip_rank_{model_engine.global_rank:03d}.log")
+    logging.basicConfig(
+        level=logging.INFO, 
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(gossip_log_file),
+            logging.StreamHandler() if model_engine.global_rank == 0 else logging.NullHandler()
+        ]
+    )
+    
+    # Create evolutionary node with probability-based mixing
+    evolutionary_node = EvolutionaryTrainingNode(
+        node_id=f"node_{model_engine.global_rank}",
+        model=model_engine.module,
+        global_rank=model_engine.global_rank,
+        world_size=model_engine.world_size,
+        data_parallel_rank=data_parallel_rank,
+        tp_size=args.tp_size,
+        mixing_probability=0.01,  # 1% chance to attempt a mix each step
+        output_dir=checkpoint_dir  # Pass base directory, let GossipLogger create gossip subdir
+    )
+    
+    # Start gossip protocol
+    evolutionary_node.start_gossip_protocol()
+    
+    if model_engine.global_rank == 0:
+        print("Evolutionary gossip protocol initialized")
+        print(f"Node count: {model_engine.world_size}")
+        print(f"Mixing probability: {evolutionary_node.mixing_probability * 100:.1f}% chance per step")
+        print("Evolutionary strategy: Loser's weights are completely overwritten by winner's.")
+    
+    # Allow gossip protocol to initialize
+    time.sleep(2)
+    # ============================================
     
     # Create worker-specific seeds based on data parallel rank
     # This ensures all GPUs in the same TP group (node) get the same data
@@ -1072,14 +1136,19 @@ def main():
     effective_samples_per_node_update = effective_samples_per_gpu_update  # In this setup (TP within node)
     global_effective_samples_per_update = effective_samples_per_node_update * dp_world_size
     
-    # Track actual tokens processed without gradient accumulation inflation
-    global_samples_per_micro_batch = (micro_batch_per_gpu * dp_world_size)
-    tokens_per_micro_batch_step = global_samples_per_micro_batch * seq_len
+    # Track tokens processed - we have independent model replicas
+    per_model_samples_per_step = micro_batch_per_gpu  # Each model processes this many samples
+    per_model_tokens_per_step = per_model_samples_per_step * seq_len
+    
+    # System-wide: all models combined
+    total_models = dp_world_size  # 8 independent models
+    system_wide_tokens_per_step = per_model_tokens_per_step * total_models
     
     print(f"DeepSpeed initialization successful: global_rank={args.global_rank}, "
           f"local_rank={args.local_rank}, world_size={args.world_size}")
-    print(f"Parallelism: TP={args.tp_size}, DP={dp_world_size}, "
-          f"Tokens per system step={tokens_per_micro_batch_step:,}")
+    print(f"Parallelism: TP={args.tp_size}, DP={dp_world_size} independent models")
+    print(f"Per-model tokens per step: {per_model_tokens_per_step:,}")
+    print(f"System-wide tokens per step: {system_wide_tokens_per_step:,}")
     
     # Print updated debug info after DeepSpeed initialization
     if local_rank == 0:
@@ -1142,70 +1211,53 @@ def main():
         checkpoint_dir=checkpoint_dir if args.log_sample_hashes else None
     )
     
-    # Create a separate validation dataset - use 10% of training batches
-    val_batches = max(5, batches_per_epoch // 10)
-    val_dataset = ContinuousIIDDataset(
-        filepath=args.data,
-        seq_len=seq_len,
-        seed=worker_seed + 100,  # Validation seed still based on DP rank
-        samples_per_epoch=val_batches * batch_size,
-        batch_size=batch_size,
-        log_sample_hashes=False  # Don't log validation samples
-    )
-    
     if args.local_rank == 0:
-        print(f"Dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
+        print(f"Training dataset: {len(train_dataset)} samples per epoch")
     
-    # Create samplers for both datasets using DP rank/world size
+    # Add seeding verification to confirm different data per rank
+    if model_engine.global_rank == 0:
+        print("=== SEEDING VERIFICATION ===")
+        for rank in range(dp_world_size):
+            rank_seed = SEED + rank
+            temp_rng = random.Random(rank_seed)
+            samples = [temp_rng.random() for _ in range(10)]
+            print(f"DP Rank {rank} seed {rank_seed}: first 10 randoms: {samples[:5]}")
+        print("========================")
+
+    # Also verify the actual seeds being used:
+    print(f"RANK {model_engine.global_rank}: worker_seed={worker_seed}, train_sampler seed used")
+    
+    # Create sampler for training dataset using UNIQUE SEEDS PER RANK
     train_sampler = DistributedSampler(
         train_dataset,
         num_replicas=dp_world_size,  # Data parallel world size
         rank=data_parallel_rank,     # Data parallel rank
         shuffle=True,
-        seed=SEED
+        seed=worker_seed  # ← FIXED: Use unique seed per rank
     )
     
-    val_sampler = DistributedSampler(
-        val_dataset,
-        num_replicas=dp_world_size,  # Data parallel world size
-        rank=data_parallel_rank,     # Data parallel rank
-        shuffle=False,
-        seed=SEED
-    )
-    
-    # Initialize datasets with epoch 0
+    # Initialize dataset with epoch 0
     train_dataset.set_epoch(0)
-    val_dataset.set_epoch(0)
     
-    # 6) DataLoaders
+    # 6) DataLoader with per-rank worker seeds
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         sampler=train_sampler,
-        num_workers=2,  # Increase slightly
+        num_workers=4,  # Increase workers for better prefetching
         pin_memory=True,
-        worker_init_fn=lambda wid: random.seed(SEED + wid + os.getpid()),
+        worker_init_fn=lambda wid: random.seed(worker_seed + wid + os.getpid()),  # ← Use worker_seed
         persistent_workers=True,  # Keep workers alive
-        prefetch_factor=2  # Prefetch batches
+        prefetch_factor=4,  # Increase prefetch factor
+        drop_last=True  # Ensure consistent batch sizes
     )
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        sampler=val_sampler,
-        num_workers=2,
-        pin_memory=True,
-        worker_init_fn=lambda wid: random.seed(SEED + 100 + wid + os.getpid()),
-        persistent_workers=True,
-        prefetch_factor=2
-    )
-    
-    # Create metrics log file
-    if model_engine.global_rank == 0 and checkpoint_dir:
-        metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
+    # Create per-rank metrics log file
+    if checkpoint_dir:
+        metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{model_engine.global_rank:03d}.tsv")
         with open(metrics_log_path, 'w') as f:
             header = [
-                "step", "time_elapsed_s", "train_loss", "val_loss", 
+                "rank", "step", "time_elapsed_s", "train_loss", "ema_fitness", 
                 "total_tokens_processed_system", "tokens_per_sec_system", "learning_rate", "global_effective_batch_size_samples"
             ]
             f.write('\t'.join(header) + '\n')
@@ -1230,7 +1282,7 @@ def main():
                 print(f"best.pt exists as a regular file, not a symlink")
 
     # Helper function to save checkpoint - now with symlinks for both best and latest
-    def save_checkpoint(step, train_loss, val_loss=None, is_best=False):
+    def save_checkpoint(step, train_loss, ema_fitness=None, is_best=False):
         if model_engine.global_rank != 0 or not checkpoint_dir:
             return
         
@@ -1241,7 +1293,7 @@ def main():
             'step': step,
             'model_state_dict': model_engine.module.state_dict(),
             'train_loss': train_loss,
-            'val_loss': val_loss,
+            'ema_fitness': ema_fitness,
             'timestamp': datetime.datetime.now().isoformat(),
             'model_config': model_config,
             'args': vars(args)
@@ -1255,9 +1307,9 @@ def main():
             checkpoint['optimizer_state_dict'] = optimizer.state_dict()
         
         # Create a standardized filename with step and loss info
-        # Always include validation loss in filename if available
-        if val_loss is not None:
-            filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}-val_{val_loss:.4f}.pt"
+        # Always include EMA fitness in filename if available
+        if ema_fitness is not None:
+            filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}-fitness_{ema_fitness:.4f}.pt"
         else:
             filename = f"minlm-step-{step:05d}-loss-{train_loss:.4f}.pt"
         checkpoint_path = os.path.join(checkpoint_dir, filename)
@@ -1363,95 +1415,27 @@ def main():
         
         return checkpoint_path
     
-    # Helper function for validation
-    def validate():
-        model_engine.eval()
-        total_loss = 0.0
-        batch_count = 0
-        val_token_count = 0
-        validation_start = time.time()
-        
-        # Switch ScheduleFree to eval mode
-        if args.schedulefree:
-            if hasattr(model_engine.optimizer, 'optimizer'):
-                model_engine.optimizer.optimizer.eval()
-            else:
-                # Try direct access approach
-                try:
-                    model_engine.optimizer.eval()
-                except:
-                    print("Warning: Cannot access underlying optimizer for eval mode in ScheduleFree.")
-        
-        # Don't display validation progress meter
-        
-        with torch.no_grad():
-            # With continuous IID sampling, we no longer need to update epochs
-            # val_sampler still needs epoch updates for proper distributed sampling
-            val_sampler.set_epoch(current_epoch)
-            
-            for x in val_loader:
-                inputs, targets = x[:, :-1], x[:, 1:]
-                inputs, targets = inputs.to(model_engine.device), targets.to(model_engine.device)
-                
-                # Forward pass
-                loss = model_engine(inputs, return_loss=True)
-                
-                # Accumulate loss
-                total_loss += loss.item()
-                batch_count += 1
-                val_token_count += inputs.numel()
-                
-                # Update progress bar
-                if model_engine.global_rank == 0:
-                    # Skip validation progress updates
-                    pass
-                
-                # Limit validation to a few batches for speed
-                if batch_count >= 5:
-                    break
-        
-        # No validation bar to close
-        
-        # Calculate average
-        avg_loss = total_loss / max(1, batch_count)
-        
-        # Synchronize all processes after validation to prevent some processes 
-        # from continuing while others are still validating
-        synchronize_processes()
-        
-        # Switch back to train mode
-        model_engine.train()
-        if args.schedulefree:
-            if hasattr(model_engine.optimizer, 'optimizer'):
-                model_engine.optimizer.optimizer.train()
-            else:
-                # Try direct access approach
-                try:
-                    model_engine.optimizer.train()
-                except:
-                    print("Warning: Cannot access underlying optimizer for train mode in ScheduleFree.")
-        
-        return avg_loss
     
-    # Helper function to log metrics
-    def log_metrics(step, train_loss, val_loss=None):
-        if model_engine.global_rank != 0 or not checkpoint_dir:
+    # Helper function to log metrics (now per-rank)
+    def log_metrics(step, train_loss, ema_fitness=None):
+        if not checkpoint_dir:
             return
         
-        metrics_log_path = os.path.join(checkpoint_dir, "training_metrics.tsv")
+        metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{model_engine.global_rank:03d}.tsv")
         elapsed = time.time() - start_time
     
         # Calculate system-wide tokens processed and tokens per second
-        total_tokens_processed_system = step * tokens_per_micro_batch_step
+        total_tokens_processed_system = step * system_wide_tokens_per_step
         tokens_per_sec_system = total_tokens_processed_system / elapsed if elapsed > 0 else 0
     
         current_lr = model_engine.optimizer.param_groups[0]['lr']
     
         values = [
+            str(model_engine.global_rank),  # Add rank as first column
             str(step),
             f"{elapsed:.2f}",
             f"{train_loss:.6f}",
-            str(val_loss if val_loss is not None else "NA"),
+            f"{ema_fitness:.6f}" if ema_fitness is not None else "NA",
             str(total_tokens_processed_system),
             f"{tokens_per_sec_system:.2f}",
             f"{current_lr:.8f}",
@@ -1463,15 +1447,14 @@ def main():
     
     # 7) Training loop
     start_time = time.time()
-    best_val_loss = float('inf')
-    current_val_loss = None  # Track most recent validation loss
+    best_ema_fitness = 0.0  # Track best EMA fitness (higher is better)
+    current_ema_fitness = None  # Track most recent EMA fitness
     total_tokens_processed = 0  # Single-GPU tracking (legacy)
     total_tokens_processed_system = 0  # System-wide token tracking
-    val_loss_for_checkpoint = None  # Initialize to None at start
 
     # If resuming, calculate tokens already processed
     if resuming:
-        total_tokens_processed_system = resume_step * tokens_per_micro_batch_step
+        total_tokens_processed_system = resume_step * system_wide_tokens_per_step
     
     # Adjust starting step if resuming
     start_step = resume_step if resuming else 0
@@ -1491,7 +1474,7 @@ def main():
         print(f"- Micro-batch size: {batch_size} per GPU")
         print(f"- Effective batch size per GPU: {effective_samples_per_gpu_update}")
         print(f"- Effective batch size per node: {effective_samples_per_node_update}")
-        print(f"- Global batch size: {global_effective_samples_per_update} samples ({tokens_per_micro_batch_step:,} tokens)")
+        print(f"- Global batch size: {global_effective_samples_per_update} samples ({system_wide_tokens_per_step:,} tokens)")
         
         # Log the configuration summary
         if checkpoint_dir:
@@ -1515,7 +1498,8 @@ def main():
                 f.write(f"  Effective batch size per GPU (after grad_accum): {effective_samples_per_gpu_update}\n")
                 f.write(f"  Effective batch size per node (data parallel replica): {effective_samples_per_node_update}\n")
                 f.write(f"  Global batch size (across all nodes, samples): {global_effective_samples_per_update}\n")
-                f.write(f"  Global batch size (across all nodes, tokens): {tokens_per_micro_batch_step:,}\n")
+                f.write(f"  Global batch size (across all nodes, tokens): {system_wide_tokens_per_step:,}\n")
+                f.write(f"  Per-model batch size (tokens): {per_model_tokens_per_step:,}\n")
     
     # Synchronize all processes before starting training loop
     synchronize_processes()
@@ -1558,28 +1542,58 @@ def main():
         
         # Iterate through data loader for this step
         for batch_idx, x in enumerate(train_loader):
+            
+            # ✅ STEP 1: Apply any pending weight updates FIRST (off critical path)
+            weight_update_applied = evolutionary_node.apply_pending_update()
+            
+            # ✅ STEP 2: Critical path runs uninterrupted
             # Split into input and target
             inputs, targets = x[:, :-1], x[:, 1:]
             
-            # Move to device
-            inputs, targets = inputs.to(model_engine.device), targets.to(model_engine.device)
+            # Use non-blocking transfers for training data too
+            inputs = inputs.to(model_engine.device, non_blocking=True)
+            targets = targets.to(model_engine.device, non_blocking=True)
             
             # Forward pass (returns loss directly)
             loss = model_engine(inputs, return_loss=True)
             
-            # Backward pass
-            model_engine.backward(loss)
-            
-            # Get the loss value for logging/checkpointing before the optimizer step
+            # Get the loss value for logging. This is the unscaled loss for the micro-batch.
             loss_value = loss.detach().item()
+
+            # --- DISABLE DEEPSPEED GRADIENT ALL-REDUCE ---
+            # To enable our evolutionary gossip strategy, we must prevent DeepSpeed
+            # from averaging gradients across all data-parallel ranks. We do this by
+            # bypassing `model_engine.backward()` and calling the standard torch
+            # `.backward()` on our own.
             
-            # Optimizer step
+            # We must manually scale the loss for gradient accumulation, a task
+            # that `model_engine.backward()` would normally handle.
+            scaled_loss = loss / model_engine.gradient_accumulation_steps()
+            
+            # This computes gradients locally without any cross-GPU/node communication.
+            # It correctly preserves the necessary all-reduce for Tensor Parallelism
+            # while disabling the unwanted all-reduce for Data Parallelism.
+            scaled_loss.backward()
+            # ---------------------------------------------
+            
+            # Optimizer step (no blocking!)
             model_engine.step()
+            
+            # ✅ STEP 3: Queue weight updates for NEXT iteration (non-blocking)
+            # Update evolutionary fitness WITH STEP NUMBER
+            evolutionary_node.update_fitness(loss_value, step)
+            
+            # Check for updates - this now starts async transfer in background
+            update = evolutionary_node.check_for_updates()
+            # No need to call apply_update() - it's already queued for next iteration
+            
+            # Let the node decide stochastically using its own per-rank RNG
+            evolutionary_node.request_mix()
             
             # Log progress
             if model_engine.global_rank == 0 and batch_idx == 0:
                 # Update system-wide token tracking using our pre-calculated values
-                total_tokens_processed_system += tokens_per_micro_batch_step
+                total_tokens_processed_system += system_wide_tokens_per_step
                 
                 # Calculate tokens per second across the whole system
                 elapsed = time.time() - start_time
@@ -1592,11 +1606,15 @@ def main():
                     f"tok/s={tokens_per_sec_system:.2f}"
                 ]
                 
-                # Add validation info and epoch if available
-                # Always show validation loss once we have calculated it at least once
-                if current_val_loss is not None:
-                    formatted_stats.append(f"val={current_val_loss:.4f}")
-                    formatted_stats.append(f"best={best_val_loss:.4f}")
+                # Add mixing statistics
+                status = evolutionary_node.get_status()
+                formatted_stats.append(f"mixes={status['mixing_attempts']},{status['successful_mixes']}")
+                
+                # Add EMA fitness info and epoch if available
+                # Always show EMA fitness once we have calculated it at least once
+                if current_ema_fitness is not None:
+                    formatted_stats.append(f"ema_fit={current_ema_fitness:.4f}")
+                    formatted_stats.append(f"best_fit={best_ema_fitness:.4f}")
                 
                 # Add current epoch
                 formatted_stats.append(f"epoch={current_epoch}")
@@ -1607,50 +1625,49 @@ def main():
                 pbar.set_postfix_str(postfix)
                 pbar.update(1)
                 
-                # Log metrics for training
-                log_metrics(step, loss.detach().item())
+                # Get current EMA fitness and log metrics for all ranks
+                current_ema_fitness = evolutionary_node.get_current_fitness()
+                log_metrics(step, loss.detach().item(), current_ema_fitness)
             
             # Break after one batch per step
             break
         
-        # Validate periodically
+        # Save checkpoint based on EMA fitness periodically
         if args.validate_every > 0 and step > 0 and step % args.validate_every == 0:
-            val_loss = validate()
-            val_loss_for_checkpoint = val_loss
-            current_val_loss = val_loss  # Store for display in progress bar
+            current_ema_fitness = evolutionary_node.get_current_fitness()
             
-            if model_engine.global_rank == 0:
-                # Log metrics with validation
-                log_metrics(step, loss_value, val_loss)
+            # Log metrics with EMA fitness for all ranks
+            log_metrics(step, loss_value, current_ema_fitness)
             
-            # Determine if this is the best model based on validation loss
-            is_best = val_loss < best_val_loss
+            # Determine if this is the best model based on EMA fitness (higher is better)
+            is_best = current_ema_fitness > best_ema_fitness
             if is_best:
-                best_val_loss = val_loss
+                best_ema_fitness = current_ema_fitness
             
-            # Always save checkpoint after validation, but silently
-            save_path = save_checkpoint(step, loss_value, val_loss, is_best=is_best)
+            # Always save checkpoint based on EMA fitness
+            save_path = save_checkpoint(step, loss_value, current_ema_fitness, is_best=is_best)
             
         
-        # Save additional checkpoints periodically (if not already saved by validation)
+        # Save additional checkpoints periodically (if not already saved by EMA fitness check)
         if args.save_every > 0 and step > 0 and step % args.save_every == 0:
-            # Skip if we just saved during validation
+            # Skip if we just saved during EMA fitness check
             if not (args.validate_every > 0 and step % args.validate_every == 0):
                 # Save checkpoint without affecting best model status
-                save_path = save_checkpoint(step, loss_value, None, is_best=False)
+                current_ema_fitness = evolutionary_node.get_current_fitness()
+                save_path = save_checkpoint(step, loss_value, current_ema_fitness, is_best=False)
                 
     
-    # Final validation
-    final_val_loss = validate()
+    # Get final EMA fitness
+    final_ema_fitness = evolutionary_node.get_current_fitness()
     
     # Save final checkpoint and make it the best if it's better than previous best
     if model_engine.global_rank == 0:
-        # Save the final checkpoint with validation loss and check if it's the best one
-        is_final_best = final_val_loss < best_val_loss
+        # Save the final checkpoint with EMA fitness and check if it's the best one
+        is_final_best = final_ema_fitness > best_ema_fitness
         if is_final_best:
-            best_val_loss = final_val_loss
+            best_ema_fitness = final_ema_fitness
         
-        final_path = save_checkpoint(train_steps + start_step, loss_value, final_val_loss, is_best=is_final_best)
+        final_path = save_checkpoint(train_steps + start_step, loss_value, final_ema_fitness, is_best=is_final_best)
         
         # Ensure best.pt exists as final fallback
         best_path = os.path.join(checkpoint_dir, "best.pt")
@@ -1677,19 +1694,48 @@ def main():
         
         # Print training summary
         print(f"\nTraining completed in {total_time:.2f}s")
-        print(f"Final validation loss: {final_val_loss:.4f}")
+        print(f"Final EMA fitness: {final_ema_fitness:.4f}")
+        print(f"Best EMA fitness: {best_ema_fitness:.4f}")
         print(f"Processed {total_tokens_processed_system:,} system-wide tokens")
         print(f"System throughput: {tokens_per_sec_system:.2f} tokens/sec")
         print(f"Final model saved to: {final_path}")
         
+        # Cleanup evolutionary node
+        evolutionary_node.stop_gossip_protocol()
+        print("Evolutionary gossip protocol stopped")
+        
         # Append final statistics to model summary
+        # Write per-rank final statistics
         if checkpoint_dir:
-            with open(os.path.join(checkpoint_dir, "model_summary.txt"), "a") as f:
-                f.write("\n----- Final Training Statistics -----\n")
+            rank_summary_path = os.path.join(metrics_dir, f"final_summary_rank_{model_engine.global_rank:03d}.txt")
+            with open(rank_summary_path, "w") as f:
+                f.write(f"Rank {model_engine.global_rank} Final Training Statistics\n")
+                f.write(f"========================================\n")
                 f.write(f"Total training time: {total_time:.2f} seconds\n")
                 f.write(f"Total system tokens processed: {total_tokens_processed_system:,}\n")
                 f.write(f"Average system tokens per second: {tokens_per_sec_system:.2f}\n")
-                f.write(f"Final validation loss: {final_val_loss:.4f}\n")
+                f.write(f"Final EMA fitness: {final_ema_fitness:.4f}\n")
+                f.write(f"Best EMA fitness: {best_ema_fitness:.4f}\n")
+                
+                # Add evolutionary statistics
+                final_status = evolutionary_node.get_status()
+                f.write(f"\n----- Evolutionary Gossip Statistics (Rank {model_engine.global_rank}) -----\n")
+                f.write(f"Final fitness: {final_status['fitness']:.4f}\n")
+                f.write(f"Total mixing attempts: {final_status['mixing_attempts']}\n")
+                f.write(f"Successful mixes: {final_status['successful_mixes']}\n")
+                f.write(f"Mixing success rate: {final_status['successful_mixes']/max(1,final_status['mixing_attempts'])*100:.1f}%\n")
+                f.write(f"Evolutionary strategy: Complete weight cloning (winner overwrites loser)\n")
+            
+            # Also update the main model summary (rank 0 only)
+            if model_engine.global_rank == 0:
+                with open(os.path.join(checkpoint_dir, "model_summary.txt"), "a") as f:
+                    f.write("\n----- Final Training Statistics (Rank 0) -----\n")
+                    f.write(f"Total training time: {total_time:.2f} seconds\n")
+                    f.write(f"Total system tokens processed: {total_tokens_processed_system:,}\n")
+                    f.write(f"Average system tokens per second: {tokens_per_sec_system:.2f}\n")
+                    f.write(f"Final EMA fitness: {final_ema_fitness:.4f}\n")
+                    f.write(f"Best EMA fitness: {best_ema_fitness:.4f}\n")
+                    f.write(f"NOTE: Per-rank detailed logs available in metrics/ and gossip/ subdirectories\n")
 
 if __name__ == "__main__":
     main()

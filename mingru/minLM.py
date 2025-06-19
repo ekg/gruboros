@@ -152,8 +152,8 @@ class minLM(Module):
         
     def _initialize_weights(self):
         """
-        Initialize weights with carefully scaled standard deviations
-        to prevent gradient explosion with mixed precision training.
+        Initialize weights with zero initialization for final layers in residual blocks.
+        This ensures each block starts as an identity function, preventing training instability.
         """
         # Calculate base standard deviation based on model dimension
         std = 0.02 / math.sqrt(self.dim)
@@ -164,33 +164,39 @@ class minLM(Module):
         # Initialize output projection carefully
         nn.init.normal_(self.to_logits.weight, mean=0.0, std=std)
         
-        # Initialize internal layers with scaled std based on depth
-        for i, layer in enumerate(self.layers):
-            # Scale down as we go deeper (prevents gradient explosion)
-            layer_scale = std / math.sqrt(max(1, i / 2 + 1))
-            
+        # Initialize internal layers
+        for layer in self.layers:
             # Initialize minGRU/minLSTM weights
             min_rnn = layer[2]
             
             # Handle minGRU initialization
             if hasattr(min_rnn, 'to_hidden_and_gate'):
-                nn.init.normal_(min_rnn.to_hidden_and_gate.weight, mean=0.0, std=layer_scale)
+                # Input-facing layer gets normal initialization
+                nn.init.normal_(min_rnn.to_hidden_and_gate.weight, mean=0.0, std=std)
+                # Output-facing layer gets zero initialization for identity function
                 if hasattr(min_rnn, 'to_out') and isinstance(min_rnn.to_out, nn.Linear):
-                    nn.init.normal_(min_rnn.to_out.weight, mean=0.0, std=layer_scale)
+                    nn.init.constant_(min_rnn.to_out.weight, 0.)
+                    if min_rnn.to_out.bias is not None:
+                        nn.init.constant_(min_rnn.to_out.bias, 0.)
             
             # Handle minLSTM initialization
             if hasattr(min_rnn, 'to_hidden_and_f_i_gate'):
-                nn.init.normal_(min_rnn.to_hidden_and_f_i_gate.weight, mean=0.0, std=layer_scale)
+                nn.init.normal_(min_rnn.to_hidden_and_f_i_gate.weight, mean=0.0, std=std)
                 if hasattr(min_rnn, 'to_output_gate'):
-                    nn.init.normal_(min_rnn.to_output_gate.weight, mean=0.0, std=layer_scale)
+                    nn.init.normal_(min_rnn.to_output_gate.weight, mean=0.0, std=std)
                 if hasattr(min_rnn, 'to_out') and isinstance(min_rnn.to_out, nn.Linear):
-                    nn.init.normal_(min_rnn.to_out.weight, mean=0.0, std=layer_scale)
+                    nn.init.constant_(min_rnn.to_out.weight, 0.)
+                    if min_rnn.to_out.bias is not None:
+                        nn.init.constant_(min_rnn.to_out.bias, 0.)
             
             # Initialize feedforward layers
             ff = layer[4]
             if isinstance(ff, nn.Sequential):
-                if len(ff) >= 3:
-                    if isinstance(ff[0], nn.Linear):
-                        nn.init.normal_(ff[0].weight, mean=0.0, std=layer_scale)
-                    if isinstance(ff[2], nn.Linear):
-                        nn.init.normal_(ff[2].weight, mean=0.0, std=layer_scale)
+                # First FF layer gets normal initialization
+                if len(ff) > 0 and isinstance(ff[0], nn.Linear):
+                    nn.init.normal_(ff[0].weight, mean=0.0, std=std)
+                # Final FF layer gets zero initialization for identity function
+                if len(ff) > 2 and isinstance(ff[2], nn.Linear):
+                    nn.init.constant_(ff[2].weight, 0.)
+                    if ff[2].bias is not None:
+                        nn.init.constant_(ff[2].bias, 0.)
