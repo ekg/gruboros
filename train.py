@@ -1452,6 +1452,7 @@ def main():
     current_ema_fitness = None  # Track most recent EMA fitness
     total_tokens_processed = 0  # Single-GPU tracking (legacy)
     total_tokens_processed_system = 0  # System-wide token tracking
+    loss_value = 0.0  # Initialize loss_value to prevent UnboundLocalError
 
     # If resuming, calculate tokens already processed
     if resuming:
