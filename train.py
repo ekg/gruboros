@@ -399,8 +399,6 @@ def get_args():
                        help='(Ignored) Legacy DeepSpeed config path')
     parser.add_argument('--gradient_clipping', type=float, default=None,
                        help='(Ignored) Legacy gradient clipping')
-    parser.add_argument('--tp_size', type=int, default=1,
-                       help='(Ignored) Legacy tensor parallel size')
     
     # Training arguments
     parser.add_argument('--train_steps', type=str, default="100",
