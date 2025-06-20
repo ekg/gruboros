@@ -1,4 +1,5 @@
 {
+  "_comment": "This DeepSpeed config is no longer used in Pure Gossip mode. Kept for reference only.",
   "train_micro_batch_size_per_gpu": "auto",
   "gradient_accumulation_steps": "auto",
   "steps_per_print": 100,
