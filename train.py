@@ -927,12 +927,6 @@ def main():
                    "SLURM_JOB_ID", "SLURM_NTASKS", "SLURM_NODEID", "SLURM_PROCID", "SLURM_LOCALID"]:
         print(f"  {env_var}={os.environ.get(env_var, 'Not set')}")
         
-    # Skip DeepSpeed config file in Pure Gossip mode
-    if hasattr(args, 'deepspeed_config') and args.deepspeed_config:
-        if global_rank == 0:
-            print(f"WARNING: --deepspeed_config argument ignored in Pure Gossip mode")
-        args.deepspeed_config = None
-    
     # Legacy DeepSpeed initialization code removed - using Pure Gossip approach
     if False:  # This entire block is now disabled
         # Load the config file to modify it in-memory
