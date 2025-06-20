@@ -498,11 +498,11 @@ class EvolutionaryTrainingNode:
             }
             
             buffer = io.BytesIO()
-            torch.save(transfer_data, buffer, _use_new_zipfile_serialization=False)
+            torch.save(transfer_data, buffer, _use_new_zipfile_serialization=True)
             weights_bytes = buffer.getvalue()
             
-            # Send length prefix then data
-            sock.send(struct.pack('!I', len(weights_bytes)))
+            # Send length prefix then data using 64-bit integer
+            sock.send(struct.pack('!Q', len(weights_bytes)))
             
             chunk_size = 1024 * 1024  # 1MB chunks
             bytes_sent = 0
@@ -535,15 +535,15 @@ class EvolutionaryTrainingNode:
         start_time = time.time()
         
         try:
-            # Receive length prefix
+            # Receive 8-byte length prefix
             length_data = b''
-            while len(length_data) < 4:
-                chunk = sock.recv(4 - len(length_data))
+            while len(length_data) < 8:
+                chunk = sock.recv(8 - len(length_data))
                 if not chunk:
                     return None, None, None, None
                 length_data += chunk
             
-            expected_size = struct.unpack('!I', length_data)[0]
+            expected_size = struct.unpack('!Q', length_data)[0]
             
             # Receive data
             received_data = bytearray()
