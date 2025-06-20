@@ -1,97 +1,38 @@
 #!/bin/bash
+set -e -x
 
-# Enable error handling
-set -e
-set -x
-
-# ====================== ENVIRONMENT SETUP ======================
-
-# Create log directory
-mkdir -p logs
-
-# Generate timestamped output directory
+# --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_model_8way_puregossip"
+NAME="1g_8gpu_pure_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
-echo "Generated Output Directory: ${OUTPUT_DIR}"
-mkdir -p ./outputs
-
-# ====================== CUDA & DISTRIBUTED CONFIGURATION ======================
-
-# NVIDIA/CUDA specific settings - USE GPUs 0-7
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-
-# Force using gloo backend for data parallel + gossip
-export TORCH_DISTRIBUTED_DEBUG=OFF
-export TORCH_DISTRIBUTED_DETAIL=0
-export TORCH_EXTENSIONS_DIR=$PWD/torch_extensions
-
-# Explicitly disable NCCL for local testing
-export NCCL_P2P_DISABLE=1
-export USE_NCCL=0
-
-# Set the PyTorch distributed backend to gloo
-export TORCH_DISTRIBUTED_BACKEND="gloo"
-
-# Prevent timeout issues during initialization
-export NCCL_TIMEOUT=3600
-export TORCH_DISTRIBUTED_TIMEOUT=3600
-
-# Performance tuning
-export OMP_NUM_THREADS=4
-
-# ====================== LOCAL GOSSIP PROTOCOL SETUP ======================
-
-# Create hostfile for local 8-GPU data parallel testing
-echo "Creating local hostfile for gossip protocol..."
-cat > hostfile-job-local.txt << EOF
-localhost slots=8
-EOF
-
-# Set environment variables for gossip discovery
-export SLURM_JOB_ID="-local"
-export SLURM_JOB_NODELIST="localhost"
-
-# --- FIX 2: Explicitly set RANKS_PER_NODE for robustness ---
-export RANKS_PER_NODE=8
-
-# Gossip protocol will use ports 29501-29508 for ranks 0-7
-echo "Gossip protocol will use ports 29501-29508 for 8 GPU ranks"
-
-# ====================== DISTRIBUTED TRAINING SETUP ======================
-
-# Set up master address and port for DeepSpeed
-export MASTER_ADDR=127.0.0.1
-export MASTER_PORT=29500  # DeepSpeed uses this, gossip uses 29501+
-
-# Number of GPUs
-NUM_GPUS=8
-
-# ====================== TRAINING LAUNCH ======================
-
-# Data path - MODIFY THIS TO YOUR DATA PATH
+mkdir -p logs "$OUTPUT_DIR"
 DATA_PATH="/mnt/nvme2n1/erikg/pile.txt"
-
-# Verify data path exists
 if [ ! -f "$DATA_PATH" ]; then
     echo "ERROR: Data file not found at $DATA_PATH"
-    echo "Please update DATA_PATH in train.cuda.sh to point to your data file"
     exit 1
 fi
 
-echo "Starting 8-way PURE GOSSIP training..."
-echo "Model setup: 8 independent 1G parameter models (one per GPU)"
-echo "Data path: $DATA_PATH"
-echo "Output directory: $OUTPUT_DIR"
-# Launch training with DeepSpeed LAUNCHER (pure gossip training)
+# --- Distributed Settings for Launcher & Script ---
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export OMP_NUM_THREADS=4
+export RANKS_PER_NODE=8
+export MASTER_ADDR=127.0.0.1
+export MASTER_PORT=29500
+export TORCH_DISTRIBUTED_TIMEOUT=3600s
+# Use GLOO for peer discovery.
+export TORCH_DISTRIBUTED_BACKEND="gloo"
+echo "Using GLOO backend for initial process group."
+NUM_GPUS=8
+
+# --- Launch Training ---
+echo "Starting Pure Gossip training on 8 GPUs. DeepSpeed is used ONLY as a launcher."
 deepspeed --num_gpus=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
   train.py \
-  --cuda \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --train_steps 100000 \
+  --train_steps 100k \
   --validate_every 1000 \
   --save_every 2000 \
   --lr 0.0001 \
@@ -100,28 +41,9 @@ deepspeed --num_gpus=$NUM_GPUS \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 1 \
-  --seq_len 4096 \
+  --seq_len 4k \
   --params 1g \
-  --keep_checkpoints 3
+  --keep_checkpoints 3 \
+  --cuda
 
 echo "Training finished."
-
-# ====================== CLEANUP ======================
-
-# Clean up temporary files
-rm -f hostfile-job-local.txt
-
-echo "Cleaned up temporary files."
-
-# ====================== POST-TRAINING SUMMARY ======================
-
-echo "=== Training Summary ==="
-echo "Configuration: 8-way Pure Gossip (No DeepSpeed coordination)"
-echo "Model size: 1G parameters PER GPU (8 independent models)"
-echo "GPUs used: 0,1,2,3,4,5,6,7"
-echo "Each model evolves independently with stochastic gossip mixing"
-echo "Sequence length: 4096"
-echo "Batch size per GPU: 1"
-echo "Learning rate: 0.0001"
-echo "Training steps: 100,000"
-echo "Output saved to: $OUTPUT_DIR"
