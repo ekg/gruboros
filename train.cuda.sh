@@ -41,7 +41,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 1 \
-  --seq_len 4k \
+  --seq_len 2k \
   --params 1g \
   --keep_checkpoints 3 \
   --cuda

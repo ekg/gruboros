@@ -60,7 +60,7 @@ deepspeed \
   --weight_decay 0.0001 \
   --batch_size 4 \
   --grad_accum 1 \
-  --seq_len 4k \
+  --seq_len 2k \
   --params 100m \
   --keep_checkpoints 5 \
   --rocm

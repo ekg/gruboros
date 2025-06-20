@@ -141,7 +141,7 @@ def get_args():
     parser.add_argument('--params', type=str, default="100m", help='target parameter count (e.g., 15m, 1g)')
     parser.add_argument('--dim', type=str, default=None, help='model hidden dimension (overrides params calculation)')
     parser.add_argument('--depth', type=int, default=None, help='number of layers (overrides params calculation)')
-    parser.add_argument('--seq_len', type=str, default="4k", help='sequence length')
+    parser.add_argument('--seq_len', type=str, default="2k", help='sequence length')
     parser.add_argument('--batch_size', type=str, default="4", help='batch size per GPU')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
