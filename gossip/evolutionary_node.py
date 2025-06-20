@@ -271,7 +271,7 @@ class EvolutionaryTrainingNode:
         
         try:
             NetworkUtils.optimize_socket(client_sock)
-            client_sock.settimeout(120.0)
+            client_sock.settimeout(5.0)  # Short timeout for initial fitness exchange
             
             # Receive fitness comparison with correlation ID
             data = client_sock.recv(1024).decode()
@@ -299,11 +299,15 @@ class EvolutionaryTrainingNode:
             if our_fitness > peer_fitness:
                 # We win - send our weights
                 client_sock.send(b"SENDING_WEIGHTS")
+                # Extend timeout for weight transfer
+                client_sock.settimeout(120.0)
                 self._send_our_weights_to_peer(client_sock, correlation_id)
                 
             else:
                 # We lose - receive their weights
                 client_sock.send(b"SEND_ME_WEIGHTS")
+                # Extend timeout for weight transfer
+                client_sock.settimeout(120.0)
                 new_weights, source_fitness, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
                 
                 if new_weights:
@@ -359,7 +363,7 @@ class EvolutionaryTrainingNode:
         NetworkUtils.optimize_socket(sock)
         
         try:
-            sock.settimeout(120.0)
+            sock.settimeout(3.0)  # Short timeout for initial connection
             sock.connect((host, port))
             
             # Send our fitness with correlation ID
@@ -367,7 +371,12 @@ class EvolutionaryTrainingNode:
             message = f"FITNESS:{our_fitness:.6f}:CID:{correlation_id}".encode()
             sock.send(message)
             
+            # Keep short timeout for fitness comparison response
+            sock.settimeout(2.0)
             response = sock.recv(1024)
+            
+            # Extend timeout for weight transfers
+            sock.settimeout(120.0)
             
             if response == b"SENDING_WEIGHTS":
                 new_weights, source_fitness, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)

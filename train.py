@@ -392,13 +392,13 @@ def get_args():
     parser.add_argument('--master_addr', type=str, default=None,
                         help='Master node address (overrides environment variable)')
     
-    # DeepSpeed arguments
+    # Legacy DeepSpeed arguments (ignored in Pure Gossip mode)
     parser.add_argument('--deepspeed', action='store_true',
-                       help='Enable DeepSpeed')
+                       help='(Ignored) Legacy DeepSpeed flag')
     parser.add_argument('--deepspeed_config', type=str, default=None,
-                       help='Path to DeepSpeed configuration file')
+                       help='(Ignored) Legacy DeepSpeed config path')
     parser.add_argument('--gradient_clipping', type=float, default=None,
-                       help='Gradient clipping value for DeepSpeed')
+                       help='(Ignored) Legacy gradient clipping')
     
     # Training arguments
     parser.add_argument('--train_steps', type=str, default="100",
@@ -925,8 +925,8 @@ def main():
                    "SLURM_JOB_ID", "SLURM_NTASKS", "SLURM_NODEID", "SLURM_PROCID", "SLURM_LOCALID"]:
         print(f"  {env_var}={os.environ.get(env_var, 'Not set')}")
         
-    # If using a config file, make a direct modification to relevant DeepSpeed fields in-memory
-    if args.deepspeed_config:
+    # Legacy DeepSpeed initialization code removed - using Pure Gossip approach
+    if False:  # This entire block is now disabled
         # Load the config file to modify it in-memory
         with open(args.deepspeed_config, 'r') as f:
             ds_config = json.load(f)
@@ -1047,6 +1047,12 @@ def main():
     
     # Update local variable for easier access
     local_rank = args.local_rank
+
+    # Skip DeepSpeed config file in Pure Gossip mode
+    if hasattr(args, 'deepspeed_config') and args.deepspeed_config:
+        if model_engine.global_rank == 0:
+            print(f"WARNING: --deepspeed_config argument ignored in Pure Gossip mode")
+        args.deepspeed_config = None
 
     # [CRITICAL FIX] Re-seed the Python random module for each process
     # to prevent synchronized mixing attempts. The other seeds (torch, numpy)
