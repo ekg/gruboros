@@ -105,7 +105,7 @@ cat "$HOSTFILE_PATH"
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="100m_evolve"
+NAME="100m_evolve_puregossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 
@@ -125,8 +125,8 @@ mkdir -p ./outputs
 # Print SLURM environment for debugging
 env | grep SLURM
 
-# COMBINED APPROACH: Using both hostfile and explicit parameters
-echo "Starting DeepSpeed with combined approach (hostfile + direct parameters)..."
+# Launch with deepspeed LAUNCHER (pure gossip training)
+echo "Starting training with pure gossip model (no deepspeed coordination)..."
 deepspeed \
   --hostfile="$HOSTFILE_PATH" \
   --master_addr="$MASTER_ADDR" \
@@ -145,10 +145,7 @@ deepspeed \
   --grad_accum 1 \
   --seq_len 4096 \
   --params 100m \
-  --tp_size 1 \
   --keep_checkpoints 5 \
-  --deepspeed \
-  --deepspeed_config ds_config.json \
   --rocm
 
 echo "Training finished."

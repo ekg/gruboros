@@ -11,7 +11,7 @@ mkdir -p logs
 
 # Generate timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_model_8way_dp_gossip"
+NAME="1g_model_8way_puregossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 echo "Generated Output Directory: ${OUTPUT_DIR}"
 mkdir -p ./outputs
@@ -79,15 +79,11 @@ if [ ! -f "$DATA_PATH" ]; then
     exit 1
 fi
 
-echo "Starting 8-way DATA PARALLEL training with evolutionary gossip..."
+echo "Starting 8-way PURE GOSSIP training..."
 echo "Model setup: 8 independent 1G parameter models (one per GPU)"
-echo "Using GPUs: 0,1,2,3,4,5,6,7"
-echo "Tensor Parallel Size: 1 (each GPU has complete model)"
-echo "Data Parallel Size: 8 (8 separate models with different data)"
 echo "Data path: $DATA_PATH"
 echo "Output directory: $OUTPUT_DIR"
-echo "Hostfile created: hostfile-job-local.txt"
-# Launch training with DeepSpeed - DATA PARALLEL CONFIGURATION
+# Launch training with DeepSpeed LAUNCHER (pure gossip training)
 deepspeed --num_gpus=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
@@ -106,10 +102,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --grad_accum 1 \
   --seq_len 4096 \
   --params 1g \
-  --tp_size 1 \
-  --keep_checkpoints 3 \
-  --deepspeed \
-  --deepspeed_config ds_config.json
+  --keep_checkpoints 3
 
 echo "Training finished."
 
@@ -123,17 +116,12 @@ echo "Cleaned up temporary files."
 # ====================== POST-TRAINING SUMMARY ======================
 
 echo "=== Training Summary ==="
-echo "Configuration: 8-way Data Parallel"
+echo "Configuration: 8-way Pure Gossip (No DeepSpeed coordination)"
 echo "Model size: 1G parameters PER GPU (8 independent models)"
 echo "GPUs used: 0,1,2,3,4,5,6,7"
-echo "Tensor parallel size: 1 (complete model per GPU)"
-echo "Data parallel size: 8 (8 different models)"
-echo "Each model gets different data samples"
-echo "Evolutionary mixing between the 8 models via gossip"
+echo "Each model evolves independently with stochastic gossip mixing"
 echo "Sequence length: 4096"
 echo "Batch size per GPU: 1"
-echo "Gradient accumulation: 1"
-echo "Global effective batch size: 8 (8 * 1 * 1)"
 echo "Learning rate: 0.0001"
 echo "Training steps: 100,000"
 echo "Output saved to: $OUTPUT_DIR"
