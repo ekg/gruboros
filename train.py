@@ -242,6 +242,16 @@ def main():
         os.makedirs(os.path.join(checkpoint_dir, "metrics"), exist_ok=True)
     if world_size > 1: dist.barrier()
 
+    # Create per-rank metrics log file
+    metrics_dir = os.path.join(checkpoint_dir, "metrics")
+    metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{global_rank:03d}.tsv")
+    with open(metrics_log_path, 'w') as f:
+        header = [
+            "rank", "step", "time_elapsed_s", "train_loss", "ema_fitness", 
+            "total_tokens_processed", "tokens_per_sec", "learning_rate"
+        ]
+        f.write('\t'.join(header) + '\n')
+
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{global_rank}", model=model, global_rank=global_rank,
         local_rank=local_rank, world_size=world_size, data_parallel_rank=global_rank,
@@ -253,7 +263,30 @@ def main():
     start_time = time.time()
     best_ema_fitness = 0.0
     loss_value = 0.0
+    total_tokens_processed = 0
     pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
+
+    # Helper function to log metrics (per-rank)
+    def log_metrics(step, train_loss, ema_fitness=None):
+        nonlocal total_tokens_processed
+        elapsed = time.time() - start_time
+        total_tokens_processed = step * batch_size * seq_len
+        tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
+        current_lr = optimizer.param_groups[0]['lr']
+
+        values = [
+            str(global_rank),
+            str(step),
+            f"{elapsed:.2f}",
+            f"{train_loss:.6f}",
+            f"{ema_fitness:.6f}" if ema_fitness is not None else "NA",
+            str(total_tokens_processed),
+            f"{tokens_per_sec:.2f}",
+            f"{current_lr:.8f}"
+        ]
+
+        with open(metrics_log_path, 'a') as f:
+            f.write('\t'.join(values) + '\n')
 
     for step in range(resume_step, train_steps):
         train_sampler.set_epoch(step)
@@ -278,6 +311,10 @@ def main():
         evolutionary_node.update_fitness(loss_value, step)
         evolutionary_node.check_for_updates()
         evolutionary_node.request_mix()
+
+        # Log metrics for ALL ranks
+        current_ema_fitness = evolutionary_node.get_current_fitness()
+        log_metrics(step, loss_value, current_ema_fitness)
 
         if global_rank == 0:
             status = evolutionary_node.get_status()
