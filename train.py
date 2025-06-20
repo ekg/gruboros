@@ -1050,6 +1050,12 @@ def main():
     # Update local variable for easier access
     local_rank = args.local_rank
 
+    # Skip DeepSpeed config file in Pure Gossip mode
+    if hasattr(args, 'deepspeed_config') and args.deepspeed_config:
+        if model_engine.global_rank == 0:
+            print(f"WARNING: --deepspeed_config argument ignored in Pure Gossip mode")
+        args.deepspeed_config = None
+
     # [CRITICAL FIX] Re-seed the Python random module for each process
     # to prevent synchronized mixing attempts. The other seeds (torch, numpy)
     # remain the same for deterministic weight initialization.
