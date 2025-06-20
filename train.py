@@ -150,11 +150,11 @@ def get_args():
     parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True)
     parser.add_argument('--sf_beta', type=float, default=0.9)
     parser.add_argument('--sf_beta2', type=float, default=0.999)
-    parser.add_argument('--gossip_merge_method', type=str, default='clonal', choices=['clonal', 'recombination'],
+    parser.add_argument('--gossip_merge_method', type=str, default='recombination', choices=['clonal', 'recombination'],
                         help='Method for merging models after gossip: clonal (overwrite) or recombination (mix).')
     parser.add_argument('--gossip_recombination_alpha', type=float, default=0.5,
                         help='Interpolation factor for recombination (0=loser, 1=winner).')
-    parser.add_argument('--gossip_optimizer_recombination', type=str, default='reset', choices=['reset', 'interpolate'],
+    parser.add_argument('--gossip_optimizer_recombination', type=str, default='interpolate', choices=['reset', 'interpolate'],
                         help='How to handle optimizer state during recombination: reset it or interpolate it.')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')

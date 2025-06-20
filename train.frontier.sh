@@ -63,6 +63,9 @@ deepspeed \
   --seq_len 2k \
   --params 100m \
   --keep_checkpoints 5 \
+  --gossip_merge_method recombination \
+  --gossip_recombination_alpha 0.5 \
+  --gossip_optimizer_recombination interpolate \
   --rocm
 
 echo "Training finished."

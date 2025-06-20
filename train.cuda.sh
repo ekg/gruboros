@@ -44,6 +44,9 @@ deepspeed --num_gpus=$NUM_GPUS \
   --seq_len 2k \
   --params 1g \
   --keep_checkpoints 3 \
+  --gossip_merge_method recombination \
+  --gossip_recombination_alpha 0.5 \
+  --gossip_optimizer_recombination interpolate \
   --cuda
 
 echo "Training finished."
