@@ -150,6 +150,12 @@ def get_args():
     parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True)
     parser.add_argument('--sf_beta', type=float, default=0.9)
     parser.add_argument('--sf_beta2', type=float, default=0.999)
+    parser.add_argument('--gossip_merge_method', type=str, default='clonal', choices=['clonal', 'recombination'],
+                        help='Method for merging models after gossip: clonal (overwrite) or recombination (mix).')
+    parser.add_argument('--gossip_recombination_alpha', type=float, default=0.5,
+                        help='Interpolation factor for recombination (0=loser, 1=winner).')
+    parser.add_argument('--gossip_optimizer_recombination', type=str, default='reset', choices=['reset', 'interpolate'],
+                        help='How to handle optimizer state during recombination: reset it or interpolate it.')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -253,9 +259,12 @@ def main():
         f.write('\t'.join(header) + '\n')
 
     evolutionary_node = EvolutionaryTrainingNode(
-        node_id=f"node_{global_rank}", model=model, global_rank=global_rank,
+        node_id=f"node_{global_rank}", model=model, optimizer=optimizer, global_rank=global_rank,
         local_rank=local_rank, world_size=world_size, data_parallel_rank=global_rank,
-        tp_size=1, mixing_probability=0.01, output_dir=checkpoint_dir
+        tp_size=1, mixing_probability=0.01, output_dir=checkpoint_dir,
+        merge_method=args.gossip_merge_method,
+        recombination_alpha=args.gossip_recombination_alpha,
+        optimizer_recombination=args.gossip_optimizer_recombination
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")
@@ -295,7 +304,16 @@ def main():
         batch = next(iter(train_loader))
 
         # Apply pending gossip update before the step
-        evolutionary_node.apply_pending_update()
+        was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
+        
+        if needs_optimizer_reset:
+            # Re-create the optimizer to reset its state
+            if global_rank == 0:
+                print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
+            optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+            if args.schedulefree: optimizer.train()
+            # Update the node's reference to the new optimizer
+            evolutionary_node.optimizer = optimizer
         
         inputs, targets = batch[:, :-1].to(device, non_blocking=True), batch[:, 1:].to(device, non_blocking=True)
         
