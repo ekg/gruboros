@@ -364,12 +364,13 @@ class EvolutionaryTrainingNode:
                 client_sock.send(b"SEND_ME_WEIGHTS")
                 # Extend timeout for weight transfer
                 client_sock.settimeout(120.0)
-                new_weights, source_fitness, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
+                new_weights, new_optimizer_state, source_fitness, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
                 
                 if new_weights:
                     # Queue the update for main thread (don't apply here!)
                     update = WeightUpdate(
                         state_dict=new_weights,
+                        optimizer_state_dict=new_optimizer_state,
                         source_node=peer_addr,
                         source_fitness=source_fitness,
                         source_ema_loss=source_ema_loss,
