@@ -240,7 +240,37 @@ def main():
 
     train_dataset = ContinuousIIDDataset(args.data, seq_len, seed=SEED + global_rank, samples_per_epoch=batches_per_epoch * batch_size, batch_size=batch_size, global_rank=global_rank)
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=global_rank, shuffle=True, seed=SEED)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, num_workers=os.cpu_count() // (world_size * 2), pin_memory=True, persistent_workers=True, prefetch_factor=4, drop_last=True)
+    
+    # Calculate DataLoader workers based on hardware topology
+    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', 1))
+    cpus_available = os.cpu_count() or 1
+    cpus_per_rank = cpus_available // ranks_per_node
+    num_workers = max(0, cpus_per_rank - 1)  # Reserve 1 CPU for main thread
+    
+    if num_workers > 0:
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            sampler=train_sampler, 
+            num_workers=num_workers, 
+            pin_memory=True, 
+            persistent_workers=True, 
+            prefetch_factor=4, 
+            drop_last=True
+        )
+    else:
+        # Fallback for single-CPU environments
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            sampler=train_sampler, 
+            num_workers=0, 
+            pin_memory=True, 
+            drop_last=True
+        )
+    
+    if global_rank == 0:
+        print(f"DataLoader configuration: {num_workers} workers per rank ({cpus_per_rank} CPUs per rank, {ranks_per_node} ranks per node)")
     
     # --- 4. GOSSIP AND TRAINING LOOP ---
     if global_rank == 0:

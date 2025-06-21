@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_gossip-%j.err
 #SBATCH -t 00:30:00
 #SBATCH -p batch
-#SBATCH -N 8
+#SBATCH -N 64
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH -q debug
