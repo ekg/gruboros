@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_gossip-%j.err
 #SBATCH -t 00:30:00
 #SBATCH -p batch
-#SBATCH -N 8
+#SBATCH -N 64
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH -q debug
@@ -52,8 +52,8 @@ deepspeed \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 100k \
-  --validate_every 1000 \
-  --save_every 2000 \
+  --validate_every 200 \
+  --save_every 200 \
   --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
