@@ -239,10 +239,18 @@ def main():
     if args.schedulefree: optimizer.train()
 
     train_dataset = ContinuousIIDDataset(args.data, seq_len, seed=SEED + global_rank, samples_per_epoch=batches_per_epoch * batch_size, batch_size=batch_size, global_rank=global_rank)
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=global_rank, shuffle=True, seed=SEED)
+    
+    # --- REMOVE DistributedSampler ---
+    # The core of the bug is a conceptual mismatch. DistributedSampler is designed to PARTITION
+    # a dataset into non-overlapping chunks for data-parallel training.
+    # However, our ContinuousIIDDataset is already designed for IID sampling; each rank
+    # has its own random seed and can sample from the entire dataset independently.
+    # Forcing it through a partitioning sampler is incorrect and causes the crash when
+    # len(dataset) < world_size. The correct approach is to not use a sampler at all.
+    train_sampler = None
     
     # Calculate DataLoader workers based on hardware topology
-    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', 1))
+    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size))
     cpus_available = os.cpu_count() or 1
     cpus_per_rank = cpus_available // ranks_per_node
     num_workers = max(0, cpus_per_rank - 1)  # Reserve 1 CPU for main thread
@@ -252,6 +260,7 @@ def main():
             train_dataset, 
             batch_size=batch_size, 
             sampler=train_sampler, 
+            shuffle=(train_sampler is None),  # Shuffle is needed if no sampler is provided
             num_workers=num_workers, 
             pin_memory=True, 
             persistent_workers=True, 
@@ -264,6 +273,7 @@ def main():
             train_dataset, 
             batch_size=batch_size, 
             sampler=train_sampler, 
+            shuffle=(train_sampler is None),  # Shuffle is needed if no sampler is provided
             num_workers=0, 
             pin_memory=True, 
             drop_last=True
@@ -339,7 +349,8 @@ def main():
             f.write('\t'.join(values) + '\n')
 
     for step in range(resume_step, train_steps):
-        train_sampler.set_epoch(step)
+        if train_sampler is not None:
+            train_sampler.set_epoch(step)
         
         # We only need one batch per step from the loader
         batch = next(iter(train_loader))
