@@ -364,7 +364,7 @@ def main():
         loss = model(inputs, return_loss=True)
         loss.backward()
         optimizer.step()
-        loss_value = loss.item()
+        loss_value = loss.detach().item()
         
         # Update fitness and let gossip protocol run in the background
         evolutionary_node.update_fitness(loss_value, step)
