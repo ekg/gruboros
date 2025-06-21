@@ -94,6 +94,10 @@ class EvolutionaryTrainingNode:
         self.successful_mixes = 0
         self.current_step = 0
         
+        # --- Initialize peer_list in the constructor to prevent race conditions ---
+        # The gossip worker thread populates this, but the main thread may access it before population.
+        self.peer_list: Dict[str, dict] = {}
+        
         # Log node startup
         self.logger.log_event("NODE_STARTUP", 
                              message=f"TP_size={self.tp_size}, mixing_prob={self.mixing_probability}")
@@ -248,8 +252,7 @@ class EvolutionaryTrainingNode:
         # Wait a bit for server to start
         time.sleep(2)
         
-        # Discover peers
-        self.peer_list = {}
+        # Discover and populate peers (the attribute is already initialized)
         for bootstrap_addr in self.bootstrap_nodes:
             self.peer_list[bootstrap_addr] = {}
         
