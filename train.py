@@ -250,34 +250,36 @@ def main():
     train_sampler = None
     
     # Calculate DataLoader workers based on hardware topology
-    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size))
-    cpus_available = os.cpu_count() or 1
-    cpus_per_rank = cpus_available // ranks_per_node
-    num_workers = max(0, cpus_per_rank - 1)  # Reserve 1 CPU for main thread
+    # Fallback to world_size if RANKS_PER_NODE is not set (e.g., local run).
+    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size if world_size > 0 else 1))
     
-    if num_workers > 0:
-        train_loader = DataLoader(
-            train_dataset, 
-            batch_size=batch_size, 
-            sampler=train_sampler, 
-            shuffle=(train_sampler is None),  # Shuffle is needed if no sampler is provided
-            num_workers=num_workers, 
-            pin_memory=True, 
-            persistent_workers=True, 
-            prefetch_factor=4, 
-            drop_last=True
-        )
+    # Calculate available CPUs per rank.
+    cpus_available = os.cpu_count() or 1
+    # If running on a single process, ranks_per_node can be larger than cpus_available,
+    # so we take the min to avoid nonsensical division.
+    if ranks_per_node > 0 and ranks_per_node <= cpus_available:
+        cpus_per_rank = cpus_available // ranks_per_node
     else:
-        # Fallback for single-CPU environments
-        train_loader = DataLoader(
-            train_dataset, 
-            batch_size=batch_size, 
-            sampler=train_sampler, 
-            shuffle=(train_sampler is None),  # Shuffle is needed if no sampler is provided
-            num_workers=0, 
-            pin_memory=True, 
-            drop_last=True
-        )
+        # This case should not happen with Slurm, but as a fallback.
+        cpus_per_rank = 1
+    
+    num_workers = max(0, cpus_per_rank - 1)  # Reserve 1 CPU for main thread
+    persistent_workers = num_workers > 0
+    prefetch_factor = 4 if num_workers > 0 else None
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        sampler=None,
+        # Set shuffle=False. The randomness is handled entirely inside our
+        # ContinuousIIDDataset via its per-rank random seed. This ensures NO coordination.
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
+        drop_last=True
+    )
     
     if global_rank == 0:
         print(f"DataLoader configuration: {num_workers} workers per rank ({cpus_per_rank} CPUs per rank, {ranks_per_node} ranks per node)")
@@ -349,8 +351,10 @@ def main():
             f.write('\t'.join(values) + '\n')
 
     for step in range(resume_step, train_steps):
-        if train_sampler is not None:
-            train_sampler.set_epoch(step)
+        # The set_epoch call is only necessary for DistributedSampler to ensure
+        # different shuffling across epochs. Since we are not using it, this is removed.
+        # if train_sampler is not None:
+        #     train_sampler.set_epoch(step)
         
         # We only need one batch per step from the loader
         batch = next(iter(train_loader))
