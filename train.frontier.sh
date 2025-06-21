@@ -1,154 +1,72 @@
 #!/bin/bash
 
 #SBATCH -A BIF148
-#SBATCH -J minLM_frontier
-#SBATCH -o logs/minLM_frontier-%j.out
-#SBATCH -e logs/minLM_frontier-%j.err
+#SBATCH -J minLM_gossip
+#SBATCH -o logs/minLM_gossip-%j.out
+#SBATCH -e logs/minLM_gossip-%j.err
 #SBATCH -t 00:30:00
 #SBATCH -p batch
-#SBATCH -N 8                 # Number of nodes
-#SBATCH --ntasks-per-node=8   # CRITICAL: 8 GPUs per node
-#SBATCH --gpus-per-node=8     # Explicitly request 8 GPUs per node
+#SBATCH -N 8
+#SBATCH --ntasks-per-node=8
+#SBATCH --gpus-per-node=8
 #SBATCH -q debug
 
-# Enable command echoing for better debugging
 set -x
 
-# Setup Python environment
+# --- Environment Setup ---
 eval "$(micromamba shell hook --shell bash)"
 micromamba activate gruboros
-
-# Preload libraries needed on OLCF systems
 export LD_PRELOAD="/usr/lib64/libcrypto.so /usr/lib64/libssh.so.4 /usr/lib64/libssl.so.1.1"
+module load PrgEnv-gnu gcc/11.2.0 rocm/6.2.4 craype-accel-amd-gfx90a
 
-# Load necessary modules
-module load PrgEnv-gnu
-module load gcc/11.2.0
-module load rocm/6.2.4
-module load craype-accel-amd-gfx90a
-
-# Export general settings
-export TORCH_EXTENSIONS_DIR=$PWD/deepspeed_extensions
-export HF_HOME=$PWD/hfdata
+# --- Distributed Settings for Launcher & Script ---
 export OMP_NUM_THREADS=1
 export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
-echo "Early export: RANKS_PER_NODE set to: $RANKS_PER_NODE"
-
-# Get the first node of the allocation
 export MASTER_NODE_HOSTNAME=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-
-# Get the IP address of the hsn0 interface on the MASTER_NODE_HOSTNAME
-# This command is run ON THE MASTER_NODE_HOSTNAME via srun
 export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 addr show hsn0 | grep -oP 'inet \K[\d.]+')
-if [ -z "$MASTER_ADDR" ]; then
-  echo "Failed to get MASTER_ADDR for hsn0. Trying hsn1..."
-  export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 addr show hsn1 | grep -oP 'inet \K[\d.]+')
-fi
-if [ -z "$MASTER_ADDR" ]; then
-  echo "CRITICAL: Failed to determine MASTER_ADDR. Exiting."
-  exit 1
-fi
-echo "Using MASTER_NODE_HOSTNAME: $MASTER_NODE_HOSTNAME"
-echo "Determined MASTER_ADDR (IP of hsn0/hsn1 on master): $MASTER_ADDR"
-
 export MASTER_PORT=3442
-export TORCH_DISTRIBUTED_TIMEOUT=3600s    # 1 hr timeout for initialization
+export TORCH_DISTRIBUTED_TIMEOUT=7200s
+# Use GLOO for peer discovery, our gossip protocol uses its own TCP sockets.
+export TORCH_DISTRIBUTED_BACKEND="gloo"
+echo "Using GLOO backend for initial process group."
 
-# NCCL/RCCL settings optimized for Frontier's Slingshot fabric
-export UCX_TLS=rc,sm
-export NCCL_DEBUG=INFO                     # Set to INFO to diagnose distribution issues
-export RCCL_DEBUG=INFO                     # ROCm-specific debug info
-export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export NCCL_ASYNC_ERROR_HANDLING=1         # Both error flags for redundancy
-export NCCL_TIMEOUT=1800000                # 30 min timeout in ms (was 10000000)
-export NCCL_IB_TIMEOUT=22
-export NCCL_SOCKET_IFNAME=hsn0             # Primary high-speed network interface
-export NCCL_CROSS_NIC=1                    # Enable multi-rail
-export NCCL_NET_GDR_LEVEL=3                # RDMA via OFI
-export NCCL_MIN_NCHANNELS=32               # MI250X tuning
-export NCCL_NTHREADS=4                     # Thread tuning for NCCL
-export NCCL_NSOCKS_PERTHREAD=4             # Socket tuning for NCCL
-export NCCL_BUFFSIZE=2097152               # 2MB buffer size
-export NCCL_CUMEM_ENABLE=0                 # Disable CUDA unified memory
-
-# Pass the number of ranks per node to the Python environment
-export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
-echo "Setting RANKS_PER_NODE to: $RANKS_PER_NODE"
-
-# Performance tuning
-export FI_CXI_ATS=0
-export NCCL_COLLNET_ENABLE=0
-export NCCL_P2P_NET_CHUNKSIZE=1M
-export NCCL_P2P_PCI_RELAXED_ORDERING=1
-
-# MIOPEN cache paths per node to avoid contention
-export MIOPEN_USER_DB_PATH="/tmp/${USER:-user}-miopen-cache-${SLURM_NODEID}"
-export MIOPEN_SYSTEM_DB_PATH="$MIOPEN_USER_DB_PATH"
-mkdir -p "$MIOPEN_USER_DB_PATH" # Ensure the directory exists
-
-# Create hostfile for DeepSpeed from Slurm allocation
+# --- Create Hostfile for DeepSpeed LAUNCHER ---
 HOSTFILE_NAME="hostfile-job$SLURM_JOB_ID.txt"
-HOSTFILE_PATH="$PWD/$HOSTFILE_NAME" # Use full path
-GPUS_PER_NODE=8
+scontrol show hostnames $SLURM_JOB_NODELIST | while IFS= read -r host; do echo "$host slots=$RANKS_PER_NODE"; done > "$HOSTFILE_NAME"
+echo "Launcher hostfile created at $HOSTFILE_NAME"
 
-# Get the list of nodes from Slurm
-scontrol show hostnames $SLURM_JOB_NODELIST > "$PWD/slurm_hosts-job$SLURM_JOB_ID.txt"
-
-# Create a proper hostfile with slots information
-rm -f "$HOSTFILE_PATH"  # Remove existing hostfile if present
-while IFS= read -r host; do
-    echo "$host slots=$GPUS_PER_NODE" >> "$HOSTFILE_PATH"
-done < "$PWD/slurm_hosts-job$SLURM_JOB_ID.txt"
-
-echo "Created hostfile with contents:"
-cat "$HOSTFILE_PATH"
-
-# Generate timestamped output directory
+# --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="100m_evolve_puregossip"
+NAME="100m_pure_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
-echo "Generated Output Directory: ${OUTPUT_DIR}"
-
-# Calculate total ranks for debugging
-ranks_per_node=8
-ranks_total=$((ranks_per_node*SLURM_JOB_NUM_NODES))
-echo "Total ranks: $ranks_total (expected to use $SLURM_JOB_NUM_NODES nodes with $ranks_per_node ranks per node)"
-
-# Set data path - UPDATE THIS PATH TO YOUR ENWIK8 LOCATION
 DATA="/lustre/orion/bif148/scratch/erikgarrison/enwik8"
-echo "Using data: $DATA"
+mkdir -p logs "$OUTPUT_DIR"
 
-# Create log directories
-mkdir -p logs
-mkdir -p ./outputs
-
-# Print SLURM environment for debugging
-env | grep SLURM
-
-# Launch with deepspeed LAUNCHER (pure gossip training)
-echo "Starting training with pure gossip model (no deepspeed coordination)..."
+# --- Launch Training ---
+echo "Starting Pure Gossip training. DeepSpeed is used ONLY as a launcher."
 deepspeed \
-  --hostfile="$HOSTFILE_PATH" \
+  --hostfile="$HOSTFILE_NAME" \
   --master_addr="$MASTER_ADDR" \
   --master_port="$MASTER_PORT" \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
-  --train_steps 100000 \
+  --train_steps 100k \
   --validate_every 1000 \
-  --save_every 1000 \
+  --save_every 2000 \
   --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 4 \
   --grad_accum 1 \
-  --seq_len 4096 \
+  --seq_len 2k \
   --params 100m \
   --keep_checkpoints 5 \
+  --gossip_merge_method recombination \
+  --gossip_recombination_alpha 0.5 \
+  --gossip_optimizer_recombination interpolate \
   --rocm
 
 echo "Training finished."
-
-# Clean up temporary files
-rm -f "$PWD/slurm_hosts-job$SLURM_JOB_ID.txt" "$HOSTFILE_PATH"
+rm -f "$HOSTFILE_NAME"

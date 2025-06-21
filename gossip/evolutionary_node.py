@@ -17,25 +17,33 @@ from .structured_logger import GossipLogger
 @dataclass
 class WeightUpdate:
     state_dict: dict
+    optimizer_state_dict: Optional[dict]  # Added optimizer state transfer
     source_node: str
     source_fitness: float  # Added fitness transfer
     source_ema_loss: Optional[float]  # Added EMA loss transfer
     correlation_id: str    # Added correlation tracking
 
 class EvolutionaryTrainingNode:
-    def __init__(self, node_id: str, model: torch.nn.Module,
+    def __init__(self, node_id: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
                  global_rank: int, local_rank: int, world_size: int, data_parallel_rank: int,
                  tp_size: int, mixing_probability: float = 0.01, 
-                 output_dir: Optional[str] = None):
+                 output_dir: Optional[str] = None,
+                 merge_method: str = 'clonal',
+                 recombination_alpha: float = 0.5,
+                 optimizer_recombination: str = 'reset'):
         # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
+        self.optimizer = optimizer  # Store optimizer reference
         self.global_rank = global_rank
         self.local_rank = local_rank
         self.world_size = world_size
         self.data_parallel_rank = data_parallel_rank
         self.tp_size = tp_size
         self.mixing_probability = mixing_probability
+        self.merge_method = merge_method
+        self.recombination_alpha = recombination_alpha
+        self.optimizer_recombination = optimizer_recombination
         
         # Now initialize other attributes
         self.mixing_rng = random.Random(42 + self.global_rank * 1000)
@@ -141,20 +149,70 @@ class EvolutionaryTrainingNode:
             # Store for later application
             self.pending_update = update
     
-    def apply_pending_update(self) -> bool:
-        """Apply any pending weight update (call at start of training step)"""
+    def apply_pending_update(self) -> tuple[bool, bool]:
+        """
+        Apply any pending weight update.
+        Returns:
+            Tuple[bool, bool]: (was_update_applied, needs_optimizer_reset)
+        """
         if self.pending_update is None:
-            return False
-        
+            return False, False
+
         with self.weight_transfer_lock:
             # Wait for async transfer to complete
             torch.cuda.current_stream().wait_event(self.weight_ready_event)
-            
-            # Now apply the update (this is the only blocking part, but it's fast)
+
             start_time = time.time()
-            self.model.load_state_dict(self.pending_update.state_dict)
-            load_time = (time.time() - start_time) * 1000
+            needs_optimizer_reset = False
             
+            # Core recombination logic
+            if self.merge_method == 'recombination':
+                winner_model_state = self.pending_update.state_dict
+                alpha = self.recombination_alpha
+
+                # 1. Interpolate model parameters
+                with torch.no_grad():
+                    for name, loser_param in self.model.named_parameters():
+                        if name in winner_model_state and loser_param.dtype.is_floating_point:
+                            winner_param = winner_model_state[name].to(loser_param.device)
+                            loser_param.mul_(1.0 - alpha).add_(winner_param, alpha=alpha)
+
+                # 2. Handle optimizer state based on strategy
+                if self.optimizer_recombination == 'interpolate' and self.pending_update.optimizer_state_dict:
+                    # Interpolate the optimizer state
+                    winner_optim_state = self.pending_update.optimizer_state_dict['state']
+                    loser_optim_state = self.optimizer.state
+
+                    with torch.no_grad():
+                        for p_id, winner_p_state in winner_optim_state.items():
+                            if p_id in loser_optim_state:
+                                loser_p_state = loser_optim_state[p_id]
+                                # Interpolate 'exp_avg' and 'exp_avg_sq'
+                                for key in ['exp_avg', 'exp_avg_sq']:
+                                    if key in loser_p_state and key in winner_p_state:
+                                        loser_tensor = loser_p_state[key]
+                                        winner_tensor = winner_p_state[key].to(loser_tensor.device)
+                                        loser_tensor.mul_(1.0 - alpha).add_(winner_tensor, alpha=alpha)
+
+                elif self.optimizer_recombination == 'reset':
+                    # Signal the main loop to reset the optimizer
+                    needs_optimizer_reset = True
+            
+            else:  # clonal
+                # Overwrite model and optimizer state completely
+                self.model.load_state_dict(self.pending_update.state_dict)
+                if self.pending_update.optimizer_state_dict:
+                    # Move optimizer state tensors to the correct device before loading
+                    winner_optim_state = self.pending_update.optimizer_state_dict
+                    device = next(self.model.parameters()).device
+                    for state in winner_optim_state['state'].values():
+                        for key, value in state.items():
+                            if torch.is_tensor(value):
+                                state[key] = value.to(device)
+                    self.optimizer.load_state_dict(winner_optim_state)
+
+            load_time = (time.time() - start_time) * 1000
+
             # Inherit fitness
             with self.fitness_lock:
                 source_ema_loss = getattr(self.pending_update, 'source_ema_loss', None)
@@ -165,10 +223,8 @@ class EvolutionaryTrainingNode:
             
             self.successful_mixes += 1
             
-            # Removed verbose logging to prevent stalls
-            
             self.pending_update = None
-            return True
+            return True, needs_optimizer_reset
     
     def apply_update(self, update: WeightUpdate):
         """Legacy method - now just queues for async processing"""
@@ -308,12 +364,13 @@ class EvolutionaryTrainingNode:
                 client_sock.send(b"SEND_ME_WEIGHTS")
                 # Extend timeout for weight transfer
                 client_sock.settimeout(120.0)
-                new_weights, source_fitness, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
+                new_weights, new_optimizer_state, source_fitness, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
                 
                 if new_weights:
                     # Queue the update for main thread (don't apply here!)
                     update = WeightUpdate(
                         state_dict=new_weights,
+                        optimizer_state_dict=new_optimizer_state,
                         source_node=peer_addr,
                         source_fitness=source_fitness,
                         source_ema_loss=source_ema_loss,
@@ -379,10 +436,11 @@ class EvolutionaryTrainingNode:
             sock.settimeout(120.0)
             
             if response == b"SENDING_WEIGHTS":
-                new_weights, source_fitness, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)
+                new_weights, new_optimizer_state, source_fitness, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)
                 if new_weights:
                     update = WeightUpdate(
                         state_dict=new_weights,
+                        optimizer_state_dict=new_optimizer_state,
                         source_node=peer_address,
                         source_fitness=source_fitness,
                         source_ema_loss=source_ema_loss,
@@ -405,29 +463,46 @@ class EvolutionaryTrainingNode:
             sock.close()
     
     def _send_our_weights_to_peer(self, sock, correlation_id: str):
-        """Send weights with performance monitoring"""
+        """Send weights AND optimizer state with performance monitoring"""
         start_time = time.time()
         
         try:
-            state_dict = self.model.state_dict()
-            cpu_state_dict = {name: param.cpu() for name, param in state_dict.items()}
+            # Get model state and move to CPU
+            model_cpu_state = {name: param.cpu() for name, param in self.model.state_dict().items()}
+            
+            # Get optimizer state and move its tensors to CPU
+            optimizer_cpu_state = {}
+            if hasattr(self.optimizer, 'state_dict'):
+                opt_state_dict = self.optimizer.state_dict()
+                optimizer_cpu_state = {
+                    'state': {},
+                    'param_groups': opt_state_dict['param_groups']
+                }
+                for param_id, param_state in opt_state_dict['state'].items():
+                    optimizer_cpu_state['state'][param_id] = {}
+                    for key, value in param_state.items():
+                        if torch.is_tensor(value):
+                            optimizer_cpu_state['state'][param_id][key] = value.cpu()
+                        else:
+                            optimizer_cpu_state['state'][param_id][key] = value
             
             # Include fitness and raw EMA loss in the transfer
             our_fitness = self.get_current_fitness()
             our_ema_loss = self.fitness_tracker.get_recent_loss()
             transfer_data = {
-                'state_dict': cpu_state_dict,
+                'model_state_dict': model_cpu_state,
+                'optimizer_state_dict': optimizer_cpu_state,
                 'fitness': our_fitness,
                 'ema_loss': our_ema_loss,
                 'correlation_id': correlation_id
             }
             
             buffer = io.BytesIO()
-            torch.save(transfer_data, buffer)
+            torch.save(transfer_data, buffer, _use_new_zipfile_serialization=True)
             weights_bytes = buffer.getvalue()
             
-            # Send length prefix then data
-            sock.send(struct.pack('!I', len(weights_bytes)))
+            # Send length prefix then data using 64-bit integer
+            sock.send(struct.pack('!Q', len(weights_bytes)))
             
             chunk_size = 1024 * 1024  # 1MB chunks
             bytes_sent = 0
@@ -455,20 +530,20 @@ class EvolutionaryTrainingNode:
                                  correlation_id=correlation_id,
                                  message=str(e))
     
-    def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[dict], Optional[float], Optional[float]]:
-        """Receive weights with performance monitoring"""
+    def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[dict], Optional[dict], Optional[float], Optional[float]]:
+        """Receive weights and optimizer state with performance monitoring"""
         start_time = time.time()
         
         try:
-            # Receive length prefix
+            # Receive 8-byte length prefix
             length_data = b''
-            while len(length_data) < 4:
-                chunk = sock.recv(4 - len(length_data))
+            while len(length_data) < 8:
+                chunk = sock.recv(8 - len(length_data))
                 if not chunk:
-                    return None, None
+                    return None, None, None, None
                 length_data += chunk
             
-            expected_size = struct.unpack('!I', length_data)[0]
+            expected_size = struct.unpack('!Q', length_data)[0]
             
             # Receive data
             received_data = bytearray()
@@ -477,7 +552,7 @@ class EvolutionaryTrainingNode:
                 chunk_size = min(1024 * 1024, remaining)
                 chunk = sock.recv(chunk_size)
                 if not chunk:
-                    return None, None
+                    return None, None, None, None
                 received_data.extend(chunk)
             
             # Deserialize
@@ -487,6 +562,8 @@ class EvolutionaryTrainingNode:
             transfer_time = (time.time() - start_time) * 1000
             throughput = expected_size / 1e6 / (transfer_time / 1000)
             
+            source_model_state = transfer_data.get('model_state_dict')
+            source_optimizer_state = transfer_data.get('optimizer_state_dict')
             source_fitness = transfer_data.get('fitness', 0.0)
             source_ema_loss = transfer_data.get('ema_loss', None)
             
@@ -498,14 +575,14 @@ class EvolutionaryTrainingNode:
                                  fitness=source_fitness,
                                  message=f"Throughput: {throughput:.2f} MB/s")
             
-            return transfer_data['state_dict'], source_fitness, source_ema_loss
+            return source_model_state, source_optimizer_state, source_fitness, source_ema_loss
             
         except Exception as e:
             self.logger.log_event("WEIGHT_RECEIVE_ERROR", 
                                  step=self.current_step,
                                  correlation_id=correlation_id,
                                  message=str(e))
-            return None, None, None
+            return None, None, None, None
     
     def stop_gossip_protocol(self):
         """Stop the gossip protocol"""
