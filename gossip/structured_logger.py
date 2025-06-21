@@ -25,7 +25,10 @@ class GossipLogger:
         else:
             log_dir = Path("gossip")  # Fallback
         
-        log_dir.mkdir(exist_ok=True)
+        # --- REMOVED THE RACE CONDITION ---
+        # The directory is now created by rank 0 in train.py and synchronized
+        # with a barrier. We no longer need to do this here.
+        # log_dir.mkdir(exist_ok=True)  <--- REMOVED
         
         # Create per-node log file with simple name
         safe_identity = self.node_identity.replace(':', '_').replace('.', '_')

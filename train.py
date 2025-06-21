@@ -244,9 +244,20 @@ def main():
     
     # --- 4. GOSSIP AND TRAINING LOOP ---
     if global_rank == 0:
+        # --- CENTRALIZED DIRECTORY CREATION ---
+        # Rank 0 is responsible for creating ALL necessary subdirectories.
+        print("Rank 0: Creating output subdirectories...")
         os.makedirs(os.path.join(checkpoint_dir, "gossip"), exist_ok=True)
         os.makedirs(os.path.join(checkpoint_dir, "metrics"), exist_ok=True)
-    if world_size > 1: dist.barrier()
+        print("Rank 0: Directory creation complete.")
+
+    # --- SYNCHRONIZATION BARRIER ---
+    # All ranks wait here until rank 0 has finished creating the directories.
+    # This prevents race conditions on the filesystem.
+    if world_size > 1:
+        print(f"Rank {global_rank}: Waiting at directory barrier...")
+        dist.barrier()
+        print(f"Rank {global_rank}: Passed directory barrier.")
 
     # Create per-rank metrics log file
     metrics_dir = os.path.join(checkpoint_dir, "metrics")
