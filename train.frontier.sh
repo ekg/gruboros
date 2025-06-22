@@ -65,7 +65,7 @@ deepspeed \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.02 \
+  --gossip_mixing_rate 0.005 \
   --rocm
 
 echo "Training finished."
