@@ -24,24 +24,17 @@ class FitnessTracker:
             logger.debug(f"Fitness update: loss={loss_value:.4f}, fitness={current_fitness:.4f}, ema_loss={self.ema_loss:.4f}")
     
     def get_fitness(self) -> float:
-        """Calculate fitness as inverse of EMA loss"""
-        if self.ema_loss is None:
-            return 1.0
-        return 1.0 / (self.ema_loss + 1e-6)
+        """Return EMA loss directly (lower is better)"""
+        return self.ema_loss if self.ema_loss is not None else float('inf')
     
     def get_recent_loss(self) -> float:
         """Get current EMA loss"""
         return self.ema_loss if self.ema_loss is not None else float('inf')
     
-    def inherit_fitness(self, source_fitness: float, source_ema_loss: Optional[float] = None):
-        """Inherit fitness from source model when completely overwritten"""
-        if source_ema_loss is not None:
-            # Directly inherit the EMA loss (preserves learning history)
-            self.ema_loss = source_ema_loss
-        else:
-            # Fallback: convert fitness back to loss
-            self.ema_loss = 1.0 / (source_fitness + 1e-6) - 1e-6
+    def inherit_fitness(self, source_ema_loss: float):
+        """Inherit EMA loss from source model when completely overwritten"""
+        self.ema_loss = source_ema_loss
         
         import logging
         logger = logging.getLogger('fitness_tracker')
-        logger.debug(f"Inherited fitness {source_fitness:.4f} (ema_loss={self.ema_loss:.4f})")
+        logger.debug(f"Inherited ema_loss {source_ema_loss:.4f}")

@@ -19,8 +19,7 @@ class WeightUpdate:
     state_dict: dict
     optimizer_state_dict: Optional[dict]  # Added optimizer state transfer
     source_node: str
-    source_fitness: float  # Added fitness transfer
-    source_ema_loss: Optional[float]  # Added EMA loss transfer
+    source_ema_loss: float  # Added EMA loss transfer
     correlation_id: str    # Added correlation tracking
 
 class EvolutionaryTrainingNode:
@@ -219,11 +218,7 @@ class EvolutionaryTrainingNode:
 
             # Inherit fitness
             with self.fitness_lock:
-                source_ema_loss = getattr(self.pending_update, 'source_ema_loss', None)
-                self.fitness_tracker.inherit_fitness(
-                    self.pending_update.source_fitness, 
-                    source_ema_loss
-                )
+                self.fitness_tracker.inherit_fitness(self.pending_update.source_ema_loss)
             
             self.successful_mixes += 1
             
@@ -334,10 +329,10 @@ class EvolutionaryTrainingNode:
             
             # Receive fitness comparison with correlation ID
             data = client_sock.recv(1024).decode()
-            if not data.startswith("FITNESS:"):
+            if not data.startswith("EMA_LOSS:"):
                 return
             
-            # Parse: FITNESS:0.123456:CID:abc12345
+            # Parse: EMA_LOSS:2.345678:CID:abc12345
             parts = data.split(":")
             if len(parts) >= 4 and parts[2] == "CID":
                 peer_fitness = float(parts[1])
@@ -350,12 +345,12 @@ class EvolutionaryTrainingNode:
             
             self.logger.log_event("INCOMING_FITNESS_COMPARISON", 
                                  step=self.current_step,
-                                 fitness=our_fitness,
+                                 fitness=our_ema_loss,
                                  correlation_id=correlation_id,
                                  peer_addr=peer_addr,
                                  message=f"peer_fitness={peer_fitness:.4f}")
             
-            if our_fitness > peer_fitness:
+            if our_fitness < peer_fitness:
                 # We win - send our weights
                 client_sock.send(b"SENDING_WEIGHTS")
                 # Extend timeout for weight transfer
@@ -375,7 +370,6 @@ class EvolutionaryTrainingNode:
                         state_dict=new_weights,
                         optimizer_state_dict=new_optimizer_state,
                         source_node=peer_addr,
-                        source_fitness=source_fitness,
                         source_ema_loss=source_ema_loss,
                         correlation_id=correlation_id
                     )
@@ -384,7 +378,7 @@ class EvolutionaryTrainingNode:
                                          step=self.current_step,
                                          correlation_id=correlation_id,
                                          peer_addr=peer_addr,
-                                         fitness=source_fitness)
+                                         fitness=source_ema_loss)
                 
         except Exception as e:
             self.logger.log_event("INCOMING_REQUEST_ERROR", 
@@ -428,7 +422,7 @@ class EvolutionaryTrainingNode:
             
             # Send our fitness with correlation ID
             our_fitness = self.get_current_fitness()
-            message = f"FITNESS:{our_fitness:.6f}:CID:{correlation_id}".encode()
+            message = f"EMA_LOSS:{our_fitness:.6f}:CID:{correlation_id}".encode()
             sock.send(message)
             
             # Keep short timeout for fitness comparison response
@@ -445,7 +439,6 @@ class EvolutionaryTrainingNode:
                         state_dict=new_weights,
                         optimizer_state_dict=new_optimizer_state,
                         source_node=peer_address,
-                        source_fitness=source_fitness,
                         source_ema_loss=source_ema_loss,
                         correlation_id=correlation_id
                     )
@@ -489,13 +482,11 @@ class EvolutionaryTrainingNode:
                         else:
                             optimizer_cpu_state['state'][param_id][key] = value
             
-            # Include fitness and raw EMA loss in the transfer
-            our_fitness = self.get_current_fitness()
-            our_ema_loss = self.fitness_tracker.get_recent_loss()
+            # Include EMA loss in the transfer
+            our_ema_loss = self.get_current_fitness()
             transfer_data = {
                 'model_state_dict': model_cpu_state,
                 'optimizer_state_dict': optimizer_cpu_state,
-                'fitness': our_fitness,
                 'ema_loss': our_ema_loss,
                 'correlation_id': correlation_id
             }
@@ -567,18 +558,17 @@ class EvolutionaryTrainingNode:
             
             source_model_state = transfer_data.get('model_state_dict')
             source_optimizer_state = transfer_data.get('optimizer_state_dict')
-            source_fitness = transfer_data.get('fitness', 0.0)
-            source_ema_loss = transfer_data.get('ema_loss', None)
+            source_ema_loss = transfer_data.get('ema_loss', float('inf'))
             
             self.logger.log_event("WEIGHT_RECEIVE_COMPLETE",
                                  step=self.current_step,
                                  correlation_id=correlation_id,
                                  data_size_bytes=expected_size,
                                  transfer_time_ms=transfer_time,
-                                 fitness=source_fitness,
+                                 fitness=source_ema_loss,
                                  message=f"Throughput: {throughput:.2f} MB/s")
             
-            return source_model_state, source_optimizer_state, source_fitness, source_ema_loss
+            return source_model_state, source_optimizer_state, source_ema_loss, source_ema_loss
             
         except Exception as e:
             self.logger.log_event("WEIGHT_RECEIVE_ERROR", 
@@ -606,7 +596,6 @@ class EvolutionaryTrainingNode:
         return {
             'node_id': self.node_id,
             'fitness': self.get_current_fitness(),
-            'recent_loss': self.fitness_tracker.get_recent_loss(),
             'peer_count': len(self.peer_list),
             'mixing_attempts': self.mixing_attempts,
             'successful_mixes': self.successful_mixes,

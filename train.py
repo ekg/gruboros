@@ -308,7 +308,7 @@ def main():
     metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{global_rank:03d}.tsv")
     with open(metrics_log_path, 'w') as f:
         header = [
-            "rank", "step", "time_elapsed_s", "train_loss", "ema_fitness", 
+            "rank", "step", "time_elapsed_s", "train_loss", "ema_loss", 
             "total_tokens_processed", "tokens_per_sec", "learning_rate"
         ]
         f.write('\t'.join(header) + '\n')
@@ -325,13 +325,13 @@ def main():
     if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")
 
     start_time = time.time()
-    best_ema_fitness = 0.0
+    best_ema_fitness = float('inf')
     loss_value = 0.0
     total_tokens_processed = 0
     pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
 
     # Helper function to log metrics (per-rank)
-    def log_metrics(step, train_loss, ema_fitness=None):
+    def log_metrics(step, train_loss, ema_loss=None):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         total_tokens_processed = step * batch_size * seq_len
@@ -343,7 +343,7 @@ def main():
             str(step),
             f"{elapsed:.2f}",
             f"{train_loss:.6f}",
-            f"{ema_fitness:.6f}" if ema_fitness is not None else "NA",
+            f"{ema_loss:.6f}" if ema_loss is not None else "NA",
             str(total_tokens_processed),
             f"{tokens_per_sec:.2f}",
             f"{current_lr:.8f}"
@@ -394,17 +394,17 @@ def main():
 
         if global_rank == 0:
             status = evolutionary_node.get_status()
-            pbar.set_postfix_str(f"loss={loss_value:.4f} ema_fit={status['fitness']:.4f} mixes={status['successful_mixes']}")
+            pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
         # Rank 0 handles all checkpointing
         if global_rank == 0 and step > 0 and step % args.validate_every == 0:
             current_ema_fitness = evolutionary_node.get_current_fitness()
-            is_best = current_ema_fitness > best_ema_fitness
+            is_best = current_ema_fitness < best_ema_fitness
             if is_best: best_ema_fitness = current_ema_fitness
 
-            checkpoint_data = {'step': step, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'ema_fitness': current_ema_fitness, 'model_config': model_config}
-            filename = f"step-{step:06d}-fit-{current_ema_fitness:.4f}.pt"
+            checkpoint_data = {'step': step, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'ema_loss': current_ema_fitness, 'model_config': model_config}
+            filename = f"step-{step:06d}-loss-{current_ema_fitness:.4f}.pt"
             filepath = os.path.join(checkpoint_dir, filename)
             torch.save(checkpoint_data, filepath)
             

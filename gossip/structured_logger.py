@@ -38,7 +38,7 @@ class GossipLogger:
         if not self.log_file.exists():
             header = [
                 "unix_timestamp", "node_identity", "global_rank", "dp_rank",
-                "event_type", "step", "fitness", "correlation_id", 
+                "event_type", "step", "ema_loss", "correlation_id", 
                 "peer_addr", "data_size_mb", "transfer_time_ms", "message"
             ]
             with open(self.log_file, 'w') as f:
