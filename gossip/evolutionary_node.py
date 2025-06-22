@@ -345,7 +345,7 @@ class EvolutionaryTrainingNode:
             
             self.logger.log_event("INCOMING_FITNESS_COMPARISON", 
                                  step=self.current_step,
-                                 fitness=our_ema_loss,
+                                 fitness=our_fitness,
                                  correlation_id=correlation_id,
                                  peer_addr=peer_addr,
                                  message=f"peer_fitness={peer_fitness:.4f}")
@@ -515,7 +515,7 @@ class EvolutionaryTrainingNode:
                                  correlation_id=correlation_id,
                                  data_size_bytes=len(weights_bytes),
                                  transfer_time_ms=transfer_time,
-                                 fitness=our_fitness,
+                                 fitness=our_ema_loss,
                                  message=f"Throughput: {throughput:.2f} MB/s")
             
         except Exception as e:
