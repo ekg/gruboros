@@ -96,9 +96,9 @@ class minLM(Module):
 
         x = self.token_emb(x)
 
-        # handle previous hiddens, for recurrent decoding
-
-        if exists(prev_hiddens):
+        # handle previous hiddens for single-step autoregressive decoding
+        # This logic is ONLY for inference, not for training with loss calculation.
+        if exists(prev_hiddens) and not return_loss:
             x = x[:, -1:]
 
         next_prev_hiddens = []
