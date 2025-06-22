@@ -34,13 +34,13 @@ deepspeed --num_gpus=$NUM_GPUS \
   --output "$OUTPUT_DIR" \
   --train_steps 100k \
   --save_every 500 \
-  --lr 0.005 \
+  --lr 0.01 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 1 \
+  --batch_size 4 \
   --grad_accum 1 \
-  --seq_len 4k \
+  --seq_len 2k \
   --params 300m \
   --keep_checkpoints 3 \
   --gossip_merge_method recombination \
