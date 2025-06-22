@@ -156,6 +156,8 @@ def get_args():
                         help='Interpolation factor for recombination (0=loser, 1=winner).')
     parser.add_argument('--gossip_optimizer_recombination', type=str, default='interpolate', choices=['reset', 'interpolate'],
                         help='How to handle optimizer state during recombination: reset it or interpolate it.')
+    parser.add_argument('--gossip_mixing_rate', type=float, default=0.01,
+                        help='Probability of attempting evolutionary mixing each step (0.0-1.0).')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -314,7 +316,7 @@ def main():
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{global_rank}", model=model, optimizer=optimizer, global_rank=global_rank,
         local_rank=local_rank, world_size=world_size, data_parallel_rank=global_rank,
-        tp_size=1, mixing_probability=0.01, output_dir=checkpoint_dir,
+        tp_size=1, mixing_probability=args.gossip_mixing_rate, output_dir=checkpoint_dir,
         merge_method=args.gossip_merge_method,
         recombination_alpha=args.gossip_recombination_alpha,
         optimizer_recombination=args.gossip_optimizer_recombination
