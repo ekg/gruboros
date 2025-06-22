@@ -537,7 +537,13 @@ def main():
                 steps = sorted(list(set(c['step'] for c in parsed_checkpoints)), reverse=True)
                 if len(steps) > args.keep_checkpoints:
                     steps_to_delete = steps[args.keep_checkpoints:]
+                    best_step = best_ckpt['step']  # Preserve the best checkpoint
+                    
                     for step_del in steps_to_delete:
+                        # Skip deleting the best checkpoint even if it's old
+                        if step_del == best_step:
+                            continue
+                            
                         for ckpt in parsed_checkpoints:
                             if ckpt['step'] == step_del:
                                 os.remove(ckpt['path'])
