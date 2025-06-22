@@ -39,7 +39,7 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="100m_16k_context"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
-DATA="/lustre/orion/bif148/scratch/erikgarrison/enwik8"
+DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 mkdir -p logs "$OUTPUT_DIR"
 
 # --- Launch Training ---
