@@ -17,11 +17,147 @@ import shutil
 import glob
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
+import fcntl
+import contextlib
 
 # Import the minLM model and gossip protocol
 from mingru.minLM import minLM
 import logging
 from gossip import EvolutionaryTrainingNode
+
+@contextlib.contextmanager
+def file_lock(lock_path, timeout=30):
+    """Simple file-based lock with timeout"""
+    lock_file = None
+    try:
+        lock_file = open(lock_path, 'w')
+        # Try to acquire lock with timeout
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                yield lock_file
+                return
+            except BlockingIOError:
+                time.sleep(0.1)
+        raise TimeoutError(f"Could not acquire lock {lock_path} within {timeout}s")
+    finally:
+        if lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+            except:
+                pass
+
+def update_symlinks_and_cleanup(checkpoint_dir, args):
+    """Update latest.pt, best.pt symlinks and cleanup old checkpoints"""
+    try:
+        # Find all checkpoints
+        all_checkpoints = glob.glob(os.path.join(checkpoint_dir, "step-*.pt"))
+        if not all_checkpoints:
+            return True
+
+        # Parse checkpoints
+        parsed_checkpoints = []
+        for f in all_checkpoints:
+            basename = os.path.basename(f)
+            match = re.search(r'step-(\d+)-rank-(\d+)-loss-([\d.]+)\.pt', basename)
+            if match:
+                parsed_checkpoints.append({
+                    'path': f,
+                    'step': int(match.group(1)),
+                    'rank': int(match.group(2)),
+                    'loss': float(match.group(3)),
+                })
+
+        if not parsed_checkpoints:
+            return True
+        
+        # Update latest.pt
+        latest_ckpt = max(parsed_checkpoints, key=lambda x: x['step'])
+        latest_path = os.path.join(checkpoint_dir, "latest.pt")
+        if os.path.lexists(latest_path): 
+            os.remove(latest_path)
+        os.symlink(os.path.basename(latest_ckpt['path']), latest_path)
+
+        # Update best.pt
+        best_ckpt = min(parsed_checkpoints, key=lambda x: x['loss'])
+        best_path = os.path.join(checkpoint_dir, "best.pt")
+        if os.path.lexists(best_path): 
+            os.remove(best_path)
+        os.symlink(os.path.basename(best_ckpt['path']), best_path)
+
+        # Cleanup old checkpoints
+        steps = sorted(list(set(c['step'] for c in parsed_checkpoints)), reverse=True)
+        if len(steps) > args.keep_checkpoints:
+            steps_to_delete = steps[args.keep_checkpoints:]
+            best_step = best_ckpt['step']  # Preserve the best checkpoint
+            
+            for step_del in steps_to_delete:
+                if step_del == best_step:
+                    continue
+                    
+                for ckpt in parsed_checkpoints:
+                    if ckpt['step'] == step_del:
+                        os.remove(ckpt['path'])
+                        print(f"Cleaned up old checkpoint: {os.path.basename(ckpt['path'])}")
+        
+        return True
+    except Exception as e:
+        print(f"Symlink update failed: {e}")
+        return False
+
+def attempt_save_with_coordination(step, current_ema_fitness, checkpoint_dir, metrics_dir, args, model, optimizer, model_config, global_rank):
+    """Coordinated save attempt - only one rank can save per trigger"""
+    save_lock_path = os.path.join(checkpoint_dir, ".save_coordination.lock")
+    
+    try:
+        with file_lock(save_lock_path, timeout=5):  # Short timeout for save coordination
+            print(f"Rank {global_rank} acquired save coordination lock")
+            
+            # Now that we have the lock, re-check if we're still the best
+            # (metrics might have been updated by other ranks while we waited)
+            all_losses = [current_ema_fitness]
+            
+            for filepath in glob.glob(os.path.join(metrics_dir, "training_metrics_rank_*.tsv")):
+                last_line = _read_last_line(filepath)
+                if last_line and "rank" not in last_line:
+                    try:
+                        parts = last_line.split('\t')
+                        if len(parts) > 4 and parts[4] != "NA":
+                            all_losses.append(float(parts[4]))
+                    except (ValueError, IndexError):
+                        continue
+            
+            min_loss = min(all_losses) if all_losses else float('inf')
+            
+            # Are we still the best?
+            if current_ema_fitness <= min_loss + 1e-6:
+                print(f"Rank {global_rank} confirmed as best ({current_ema_fitness:.4f}) - SAVING!")
+                
+                checkpoint_data = {
+                    'step': step, 'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(), 
+                    'ema_loss': current_ema_fitness,
+                    'model_config': model_config, 'saved_by_rank': global_rank
+                }
+                filename = f"step-{step:06d}-rank-{global_rank:03d}-loss-{current_ema_fitness:.4f}.pt"
+                filepath = os.path.join(checkpoint_dir, filename)
+                torch.save(checkpoint_data, filepath)
+                
+                # Update symlinks immediately (we already have coordination)
+                success = update_symlinks_and_cleanup(checkpoint_dir, args)
+                if success:
+                    print(f"Rank {global_rank} updated symlinks after save")
+                
+                return True
+            else:
+                print(f"Rank {global_rank} no longer best ({current_ema_fitness:.4f} vs {min_loss:.4f}) - another rank was better")
+                return False
+                
+    except TimeoutError:
+        print(f"Rank {global_rank} could not acquire save coordination lock - another rank is saving")
+        return False
 
 # --- 1. SETUP AND CONFIGURATION ---
 
@@ -418,97 +554,12 @@ def main():
             pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        # Simple two-stage: "Should we save?" + "Am I the best?"
+        # Coordinated save trigger
         if step > 0 and random.random() < (1.0 / args.save_every):
             print(f"Step {step}: Save trigger activated!")
-            
-            # Find the best performer
             current_ema_fitness = evolutionary_node.get_current_fitness()
-            all_losses = [current_ema_fitness]  # Include our own loss
-            
-            for filepath in glob.glob(os.path.join(metrics_dir, "training_metrics_rank_*.tsv")):
-                last_line = _read_last_line(filepath)
-                if last_line and "rank" not in last_line:
-                    try:
-                        parts = last_line.split('\t')
-                        if len(parts) > 4 and parts[4] != "NA":
-                            all_losses.append(float(parts[4]))
-                    except (ValueError, IndexError):
-                        continue
-            
-            min_loss = min(all_losses) if all_losses else float('inf')
-            
-            # Are we the best? (with small epsilon for float comparison)
-            if current_ema_fitness <= min_loss + 1e-6:
-                print(f"Rank {global_rank} is the best ({current_ema_fitness:.4f}) - SAVING!")
-                
-                checkpoint_data = {
-                    'step': step, 'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(), 
-                    'ema_loss': current_ema_fitness,
-                    'model_config': model_config, 'saved_by_rank': global_rank
-                }
-                filename = f"step-{step:06d}-rank-{global_rank:03d}-loss-{current_ema_fitness:.4f}.pt"
-                filepath = os.path.join(checkpoint_dir, filename)
-                torch.save(checkpoint_data, filepath)
-            else:
-                print(f"Rank {global_rank} not the best ({current_ema_fitness:.4f} vs {min_loss:.4f}) - skipping save")
+            attempt_save_with_coordination(step, current_ema_fitness, checkpoint_dir, metrics_dir, args, model, optimizer, model_config, global_rank)
 
-        # --- RANK 0: HOUSEKEEPING (Symlinks & Cleanup) ---
-        # This remains a deterministic, non-blocking task for Rank 0. It runs periodically
-        # to keep convenience symlinks fresh and is tied to the same `save_every` interval.
-        if global_rank == 0 and step > 0 and step % args.save_every == 0:
-            try:
-                # Find all checkpoints
-                all_checkpoints = glob.glob(os.path.join(checkpoint_dir, "step-*.pt"))
-                if not all_checkpoints:
-                    continue
-
-                # Parse checkpoints to find the best and latest
-                parsed_checkpoints = []
-                for f in all_checkpoints:
-                    basename = os.path.basename(f)
-                    match = re.search(r'step-(\d+)-rank-(\d+)-loss-([\d.]+)\.pt', basename)
-                    if match:
-                        parsed_checkpoints.append({
-                            'path': f,
-                            'step': int(match.group(1)),
-                            'rank': int(match.group(2)),
-                            'loss': float(match.group(3)),
-                        })
-
-                if not parsed_checkpoints:
-                    continue
-                
-                # Update latest.pt
-                latest_ckpt = max(parsed_checkpoints, key=lambda x: x['step'])
-                latest_path = os.path.join(checkpoint_dir, "latest.pt")
-                if os.path.lexists(latest_path): os.remove(latest_path)
-                os.symlink(os.path.basename(latest_ckpt['path']), latest_path)
-
-                # Update best.pt
-                best_ckpt = min(parsed_checkpoints, key=lambda x: x['loss'])
-                best_path = os.path.join(checkpoint_dir, "best.pt")
-                if os.path.lexists(best_path): os.remove(best_path)
-                os.symlink(os.path.basename(best_ckpt['path']), best_path)
-
-                # Cleanup old checkpoints
-                steps = sorted(list(set(c['step'] for c in parsed_checkpoints)), reverse=True)
-                if len(steps) > args.keep_checkpoints:
-                    steps_to_delete = steps[args.keep_checkpoints:]
-                    best_step = best_ckpt['step']  # Preserve the best checkpoint
-                    
-                    for step_del in steps_to_delete:
-                        # Skip deleting the best checkpoint even if it's old
-                        if step_del == best_step:
-                            continue
-                            
-                        for ckpt in parsed_checkpoints:
-                            if ckpt['step'] == step_del:
-                                os.remove(ckpt['path'])
-                                print(f"Rank 0 cleaned up old checkpoint: {os.path.basename(ckpt['path'])}")
-            except Exception as e:
-                print(f"Rank 0 housekeeping failed: {e}")
 
     pbar.close()
     evolutionary_node.stop_gossip_protocol()
