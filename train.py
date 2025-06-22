@@ -111,42 +111,51 @@ def _read_last_line(filepath):
     except (IOError, OSError):
         return None
 
-def calculate_save_probability(metrics_dir: str, my_ema_loss: float, world_size: int, steepness_factor: float = 5.0) -> float:
+def calculate_fitness_share(metrics_dir: str, my_ema_loss: float, steepness_factor: float) -> float:
     """
-    Scans peer metric logs to calculate a probability of saving a checkpoint.
-    The probability is close to 1 if this rank is the best, and decays
-    exponentially as its fitness gets worse relative to the best.
+    Scans peer metric logs to calculate this rank's "share" of the total
+    population fitness. The sum of all shares across all ranks is 1.0.
+
+    Returns:
+        float: This rank's fitness share (a value between 0.0 and 1.0).
     """
     if my_ema_loss is None or my_ema_loss == float('inf'):
-        return 0.0 # Never save if our own loss is invalid.
+        return 0.0
 
     metric_files = glob.glob(os.path.join(metrics_dir, "training_metrics_rank_*.tsv"))
     if not metric_files:
-        return 1.0 # If we are the first, save.
+        return 1.0  # If we are the only one, we have 100% of the fitness share.
 
-    all_losses = [my_ema_loss]
+    all_losses = {os.path.basename(f): my_ema_loss for f in metric_files}
     for filepath in metric_files:
         last_line = _read_last_line(filepath)
-        if not last_line or "rank" in last_line:
-            continue
+        if not last_line or "rank" in last_line: continue
         try:
             parts = last_line.split('\t')
-            # Header: "rank", ..., "ema_loss"
             if len(parts) > 4 and parts[4] != "NA":
-                all_losses.append(float(parts[4]))
+                all_losses[os.path.basename(filepath)] = float(parts[4])
         except (ValueError, IndexError):
             continue
-
-    if not all_losses:
-        return 1.0
-
-    min_loss = min(all_losses)
     
-    # Probability = exp(-k * (my_loss - min_loss))
-    # This ensures P=1 for the best model, and drops off for others.
-    # The `min_loss` term normalizes the loss, making it relative.
-    probability = math.exp(-steepness_factor * (my_ema_loss - min_loss))
-    return probability
+    if not all_losses: return 1.0
+
+    min_loss = min(all_losses.values())
+    
+    # Calculate un-normalized fitness scores (F_i) for all ranks
+    unnormalized_scores = {
+        rank: math.exp(-steepness_factor * (loss - min_loss))
+        for rank, loss in all_losses.items()
+    }
+    
+    # Calculate the sum of all fitness scores
+    total_fitness_sum = sum(unnormalized_scores.values())
+
+    if total_fitness_sum < 1e-9: return 0.0 # Avoid division by zero
+
+    my_unnormalized_score = math.exp(-steepness_factor * (my_ema_loss - min_loss))
+    
+    # Return this rank's normalized share
+    return my_unnormalized_score / total_fitness_sum
 
 class ContinuousIIDDataset(Dataset):
     def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=10000, batch_size=1, global_rank=0):
@@ -194,8 +203,7 @@ def get_args():
     parser.add_argument('--data', type=str, required=True, help='path to training data file')
     parser.add_argument('--output', type=str, default=None, help='directory to save checkpoints')
     parser.add_argument('--resume', type=str, default=None, help='path to checkpoint to resume')
-    parser.add_argument('--validate_every', type=int, default=1000, help='save checkpoint based on EMA fitness every N steps')
-    parser.add_argument('--save_every', type=int, default=2000, help='additional checkpoints every N steps')
+    parser.add_argument('--save_every', type=int, default=2000, help='Target average interval (in steps) for one checkpoint to be saved across the entire population.')
     parser.add_argument('--batches_per_epoch', type=str, default="100", help='batches per epoch for dataloader length')
     parser.add_argument('--params', type=str, default="100m", help='target parameter count (e.g., 15m, 1g)')
     parser.add_argument('--dim', type=str, default=None, help='model hidden dimension (overrides params calculation)')
@@ -217,6 +225,8 @@ def get_args():
                         help='How to handle optimizer state during recombination: reset it or interpolate it.')
     parser.add_argument('--gossip_mixing_rate', type=float, default=0.01,
                         help='Probability of attempting evolutionary mixing each step (0.0-1.0).')
+    parser.add_argument('--save_elitism', type=float, default=5.0,
+                        help='Controls how sharply the save probability is focused on the best models. Higher is more elitist.')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -455,37 +465,40 @@ def main():
             pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        # --- DISTRIBUTED & PROBABILISTIC CHECKPOINTING ---
-        # No more `if global_rank == 0`. Every rank evaluates this independently.
-        # No `dist.barrier()`. Saving is fully asynchronous.
-        save_checkpoint = step > 0 and step % args.validate_every == 0
-        if save_checkpoint:
-            current_ema_fitness = evolutionary_node.get_current_fitness()
-            
-            # Each rank independently calculates its probability of saving.
-            save_prob = calculate_save_probability(metrics_dir, current_ema_fitness, world_size)
+        # --- TWO-STAGE, GLOBALLY NORMALIZED PROBABILISTIC CHECKPOINTING ---
+        
+        # Stage 1: Global Trigger
+        # A cheap check to see if *any* save should occur in the population on this step.
+        # The probability is set so that on average, a trigger happens once every `save_every` steps.
+        if step > 0 and random.random() < (1.0 / args.save_every):
 
-            if random.random() < save_prob:
-                print(f"Rank {global_rank} DECIDED to save (prob={save_prob:.3f}, loss={current_ema_fitness:.4f})")
+            # Stage 2: Contention Phase
+            # This rank now "contends" to be the one that saves.
+            # This is the expensive part (reading logs) that only runs if Stage 1 passes.
+            current_ema_fitness = evolutionary_node.get_current_fitness()
+            fitness_share = calculate_fitness_share(
+                metrics_dir,
+                current_ema_fitness,
+                steepness_factor=args.save_elitism
+            )
+
+            # The second draw: probability is this rank's share of the total population fitness.
+            if random.random() < fitness_share:
+                print(f"Rank {global_rank} WON contention and will save (share={fitness_share:.3f}, loss={current_ema_fitness:.4f})")
                 
                 checkpoint_data = {
-                    'step': step, 
-                    'model_state_dict': model.state_dict(), 
-                    'optimizer_state_dict': optimizer.state_dict(), 
-                    'ema_loss': current_ema_fitness, 
-                    'model_config': model_config,
-                    'saved_by_rank': global_rank # Add metadata
+                    'step': step, 'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(), 'ema_loss': current_ema_fitness,
+                    'model_config': model_config, 'saved_by_rank': global_rank
                 }
-                
-                # Filename now includes rank to prevent conflicts.
                 filename = f"step-{step:06d}-rank-{global_rank:03d}-loss-{current_ema_fitness:.4f}.pt"
                 filepath = os.path.join(checkpoint_dir, filename)
                 torch.save(checkpoint_data, filepath)
 
         # --- RANK 0: HOUSEKEEPING (Symlinks & Cleanup) ---
-        # This is a separate, non-blocking task for convenience.
-        # It ensures `latest.pt` and `best.pt` point to valid files for resuming.
-        if global_rank == 0 and save_checkpoint:
+        # This remains a deterministic, non-blocking task for Rank 0. It runs periodically
+        # to keep convenience symlinks fresh and is tied to the same `save_every` interval.
+        if global_rank == 0 and step > 0 and step % args.save_every == 0:
             try:
                 # Find all checkpoints
                 all_checkpoints = glob.glob(os.path.join(checkpoint_dir, "step-*.pt"))
