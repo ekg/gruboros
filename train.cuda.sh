@@ -35,7 +35,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --train_steps 100k \
   --validate_every 500 \
   --save_every 500 \
-  --lr 0.0001 \
+  --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
