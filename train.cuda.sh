@@ -3,10 +3,10 @@ set -e -x
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_8gpu_pure_gossip"
+NAME="300m_8gpu_pure_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 mkdir -p logs "$OUTPUT_DIR"
-DATA_PATH="/mnt/nvme2n1/erikg/pile.txt"
+DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/10BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
     echo "ERROR: Data file not found at $DATA_PATH"
     exit 1
@@ -41,8 +41,8 @@ deepspeed --num_gpus=$NUM_GPUS \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 1 \
-  --seq_len 2k \
-  --params 1g \
+  --seq_len 4k \
+  --params 300m \
   --keep_checkpoints 3 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
