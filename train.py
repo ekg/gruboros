@@ -14,6 +14,7 @@ import datetime
 from datetime import timedelta
 import sys
 import shutil
+import glob
 from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 
@@ -88,6 +89,64 @@ def get_parameter_count_str(config):
     if params >= 1e9: return f"{params/1e9:.1f}B"
     if params >= 1e6: return f"{params/1e6:.1f}M"
     return f"{params/1e3:.1f}K"
+
+def _read_last_line(filepath):
+    """Robustly reads the last non-empty line of a file."""
+    try:
+        with open(filepath, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() == 0: return None
+            f.seek(-2, os.SEEK_END)
+            while f.tell() > 0 and f.read(1) != b'\n':
+                f.seek(-2, os.SEEK_CUR)
+            last_line = f.readline().decode('utf-8').strip()
+            if not last_line: # Handle files ending with multiple newlines
+                f.seek(0)
+                lines = f.readlines()
+                for line in reversed(lines):
+                    decoded_line = line.decode('utf-8').strip()
+                    if decoded_line: return decoded_line
+                return None
+            return last_line
+    except (IOError, OSError):
+        return None
+
+def calculate_save_probability(metrics_dir: str, my_ema_loss: float, world_size: int, steepness_factor: float = 5.0) -> float:
+    """
+    Scans peer metric logs to calculate a probability of saving a checkpoint.
+    The probability is close to 1 if this rank is the best, and decays
+    exponentially as its fitness gets worse relative to the best.
+    """
+    if my_ema_loss is None or my_ema_loss == float('inf'):
+        return 0.0 # Never save if our own loss is invalid.
+
+    metric_files = glob.glob(os.path.join(metrics_dir, "training_metrics_rank_*.tsv"))
+    if not metric_files:
+        return 1.0 # If we are the first, save.
+
+    all_losses = [my_ema_loss]
+    for filepath in metric_files:
+        last_line = _read_last_line(filepath)
+        if not last_line or "rank" in last_line:
+            continue
+        try:
+            parts = last_line.split('\t')
+            # Header: "rank", ..., "ema_loss"
+            if len(parts) > 4 and parts[4] != "NA":
+                all_losses.append(float(parts[4]))
+        except (ValueError, IndexError):
+            continue
+
+    if not all_losses:
+        return 1.0
+
+    min_loss = min(all_losses)
+    
+    # Probability = exp(-k * (my_loss - min_loss))
+    # This ensures P=1 for the best model, and drops off for others.
+    # The `min_loss` term normalizes the loss, making it relative.
+    probability = math.exp(-steepness_factor * (my_ema_loss - min_loss))
+    return probability
 
 class ContinuousIIDDataset(Dataset):
     def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=10000, batch_size=1, global_rank=0):
@@ -325,7 +384,6 @@ def main():
     if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")
 
     start_time = time.time()
-    best_ema_fitness = float('inf')
     loss_value = 0.0
     total_tokens_processed = 0
     pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
@@ -397,25 +455,82 @@ def main():
             pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        # Rank 0 handles all checkpointing
-        if global_rank == 0 and step > 0 and step % args.validate_every == 0:
+        # --- DISTRIBUTED & PROBABILISTIC CHECKPOINTING ---
+        # No more `if global_rank == 0`. Every rank evaluates this independently.
+        # No `dist.barrier()`. Saving is fully asynchronous.
+        save_checkpoint = step > 0 and step % args.validate_every == 0
+        if save_checkpoint:
             current_ema_fitness = evolutionary_node.get_current_fitness()
-            is_best = current_ema_fitness < best_ema_fitness
-            if is_best: best_ema_fitness = current_ema_fitness
-
-            checkpoint_data = {'step': step, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'ema_loss': current_ema_fitness, 'model_config': model_config}
-            filename = f"step-{step:06d}-loss-{current_ema_fitness:.4f}.pt"
-            filepath = os.path.join(checkpoint_dir, filename)
-            torch.save(checkpoint_data, filepath)
             
-            latest_path = os.path.join(checkpoint_dir, "latest.pt")
-            if os.path.lexists(latest_path): os.remove(latest_path)
-            os.symlink(os.path.basename(filepath), latest_path)
+            # Each rank independently calculates its probability of saving.
+            save_prob = calculate_save_probability(metrics_dir, current_ema_fitness, world_size)
 
-            if is_best:
+            if random.random() < save_prob:
+                print(f"Rank {global_rank} DECIDED to save (prob={save_prob:.3f}, loss={current_ema_fitness:.4f})")
+                
+                checkpoint_data = {
+                    'step': step, 
+                    'model_state_dict': model.state_dict(), 
+                    'optimizer_state_dict': optimizer.state_dict(), 
+                    'ema_loss': current_ema_fitness, 
+                    'model_config': model_config,
+                    'saved_by_rank': global_rank # Add metadata
+                }
+                
+                # Filename now includes rank to prevent conflicts.
+                filename = f"step-{step:06d}-rank-{global_rank:03d}-loss-{current_ema_fitness:.4f}.pt"
+                filepath = os.path.join(checkpoint_dir, filename)
+                torch.save(checkpoint_data, filepath)
+
+        # --- RANK 0: HOUSEKEEPING (Symlinks & Cleanup) ---
+        # This is a separate, non-blocking task for convenience.
+        # It ensures `latest.pt` and `best.pt` point to valid files for resuming.
+        if global_rank == 0 and save_checkpoint:
+            try:
+                # Find all checkpoints
+                all_checkpoints = glob.glob(os.path.join(checkpoint_dir, "step-*.pt"))
+                if not all_checkpoints:
+                    continue
+
+                # Parse checkpoints to find the best and latest
+                parsed_checkpoints = []
+                for f in all_checkpoints:
+                    basename = os.path.basename(f)
+                    match = re.search(r'step-(\d+)-rank-(\d+)-loss-([\d.]+)\.pt', basename)
+                    if match:
+                        parsed_checkpoints.append({
+                            'path': f,
+                            'step': int(match.group(1)),
+                            'rank': int(match.group(2)),
+                            'loss': float(match.group(3)),
+                        })
+
+                if not parsed_checkpoints:
+                    continue
+                
+                # Update latest.pt
+                latest_ckpt = max(parsed_checkpoints, key=lambda x: x['step'])
+                latest_path = os.path.join(checkpoint_dir, "latest.pt")
+                if os.path.lexists(latest_path): os.remove(latest_path)
+                os.symlink(os.path.basename(latest_ckpt['path']), latest_path)
+
+                # Update best.pt
+                best_ckpt = min(parsed_checkpoints, key=lambda x: x['loss'])
                 best_path = os.path.join(checkpoint_dir, "best.pt")
                 if os.path.lexists(best_path): os.remove(best_path)
-                os.symlink(os.path.basename(filepath), best_path)
+                os.symlink(os.path.basename(best_ckpt['path']), best_path)
+
+                # Cleanup old checkpoints
+                steps = sorted(list(set(c['step'] for c in parsed_checkpoints)), reverse=True)
+                if len(steps) > args.keep_checkpoints:
+                    steps_to_delete = steps[args.keep_checkpoints:]
+                    for step_del in steps_to_delete:
+                        for ckpt in parsed_checkpoints:
+                            if ckpt['step'] == step_del:
+                                os.remove(ckpt['path'])
+                                print(f"Rank 0 cleaned up old checkpoint: {os.path.basename(ckpt['path'])}")
+            except Exception as e:
+                print(f"Rank 0 housekeeping failed: {e}")
 
     pbar.close()
     evolutionary_node.stop_gossip_protocol()
