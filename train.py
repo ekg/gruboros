@@ -111,51 +111,6 @@ def _read_last_line(filepath):
     except (IOError, OSError):
         return None
 
-def calculate_fitness_share(metrics_dir: str, my_ema_loss: float, steepness_factor: float) -> float:
-    """
-    Scans peer metric logs to calculate this rank's "share" of the total
-    population fitness. The sum of all shares across all ranks is 1.0.
-
-    Returns:
-        float: This rank's fitness share (a value between 0.0 and 1.0).
-    """
-    if my_ema_loss is None or my_ema_loss == float('inf'):
-        return 0.0
-
-    metric_files = glob.glob(os.path.join(metrics_dir, "training_metrics_rank_*.tsv"))
-    if not metric_files:
-        return 1.0  # If we are the only one, we have 100% of the fitness share.
-
-    all_losses = {os.path.basename(f): my_ema_loss for f in metric_files}
-    for filepath in metric_files:
-        last_line = _read_last_line(filepath)
-        if not last_line or "rank" in last_line: continue
-        try:
-            parts = last_line.split('\t')
-            if len(parts) > 4 and parts[4] != "NA":
-                all_losses[os.path.basename(filepath)] = float(parts[4])
-        except (ValueError, IndexError):
-            continue
-    
-    if not all_losses: return 1.0
-
-    min_loss = min(all_losses.values())
-    
-    # Calculate un-normalized fitness scores (F_i) for all ranks
-    unnormalized_scores = {
-        rank: math.exp(-steepness_factor * (loss - min_loss))
-        for rank, loss in all_losses.items()
-    }
-    
-    # Calculate the sum of all fitness scores
-    total_fitness_sum = sum(unnormalized_scores.values())
-
-    if total_fitness_sum < 1e-9: return 0.0 # Avoid division by zero
-
-    my_unnormalized_score = math.exp(-steepness_factor * (my_ema_loss - min_loss))
-    
-    # Return this rank's normalized share
-    return my_unnormalized_score / total_fitness_sum
 
 class ContinuousIIDDataset(Dataset):
     def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=10000, batch_size=1, global_rank=0):
@@ -225,8 +180,6 @@ def get_args():
                         help='How to handle optimizer state during recombination: reset it or interpolate it.')
     parser.add_argument('--gossip_mixing_rate', type=float, default=0.01,
                         help='Probability of attempting evolutionary mixing each step (0.0-1.0).')
-    parser.add_argument('--save_elitism', type=float, default=5.0,
-                        help='Controls how sharply the save probability is focused on the best models. Higher is more elitist.')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -465,35 +418,41 @@ def main():
             pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        # --- TWO-STAGE, GLOBALLY NORMALIZED PROBABILISTIC CHECKPOINTING ---
-        
-        # Stage 1: Global Trigger
-        # A cheap check to see if *any* save should occur in the population on this step.
-        # The probability is set so that on average, a trigger happens once every `save_every` steps.
+        # Simple two-stage: "Should we save?" + "Am I the best?"
         if step > 0 and random.random() < (1.0 / args.save_every):
-
-            # Stage 2: Contention Phase
-            # This rank now "contends" to be the one that saves.
-            # This is the expensive part (reading logs) that only runs if Stage 1 passes.
+            print(f"Step {step}: Save trigger activated!")
+            
+            # Find the best performer
             current_ema_fitness = evolutionary_node.get_current_fitness()
-            fitness_share = calculate_fitness_share(
-                metrics_dir,
-                current_ema_fitness,
-                steepness_factor=args.save_elitism
-            )
-
-            # The second draw: probability is this rank's share of the total population fitness.
-            if random.random() < fitness_share:
-                print(f"Rank {global_rank} WON contention and will save (share={fitness_share:.3f}, loss={current_ema_fitness:.4f})")
+            all_losses = [current_ema_fitness]  # Include our own loss
+            
+            for filepath in glob.glob(os.path.join(metrics_dir, "training_metrics_rank_*.tsv")):
+                last_line = _read_last_line(filepath)
+                if last_line and "rank" not in last_line:
+                    try:
+                        parts = last_line.split('\t')
+                        if len(parts) > 4 and parts[4] != "NA":
+                            all_losses.append(float(parts[4]))
+                    except (ValueError, IndexError):
+                        continue
+            
+            min_loss = min(all_losses) if all_losses else float('inf')
+            
+            # Are we the best? (with small epsilon for float comparison)
+            if current_ema_fitness <= min_loss + 1e-6:
+                print(f"Rank {global_rank} is the best ({current_ema_fitness:.4f}) - SAVING!")
                 
                 checkpoint_data = {
                     'step': step, 'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(), 'ema_loss': current_ema_fitness,
+                    'optimizer_state_dict': optimizer.state_dict(), 
+                    'ema_loss': current_ema_fitness,
                     'model_config': model_config, 'saved_by_rank': global_rank
                 }
                 filename = f"step-{step:06d}-rank-{global_rank:03d}-loss-{current_ema_fitness:.4f}.pt"
                 filepath = os.path.join(checkpoint_dir, filename)
                 torch.save(checkpoint_data, filepath)
+            else:
+                print(f"Rank {global_rank} not the best ({current_ema_fitness:.4f} vs {min_loss:.4f}) - skipping save")
 
         # --- RANK 0: HOUSEKEEPING (Symlinks & Cleanup) ---
         # This remains a deterministic, non-blocking task for Rank 0. It runs periodically
