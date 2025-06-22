@@ -6,7 +6,7 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="300m_8gpu_pure_gossip"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 mkdir -p logs "$OUTPUT_DIR"
-DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/10BT.txt"
+DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
     echo "ERROR: Data file not found at $DATA_PATH"
     exit 1
