@@ -54,7 +54,7 @@ deepspeed \
   --train_steps 100k \
   --validate_every 200 \
   --save_every 200 \
-  --lr 0.001 \
+  --lr 0.003 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
