@@ -249,26 +249,36 @@ def _read_last_line(filepath):
 
 
 class ContinuousIIDDataset(Dataset):
-    def __init__(self, filepath, seq_len, seed=42, samples_per_epoch=10000, batch_size=1, global_rank=0):
+    def __init__(self, filepath, chunk_size, context_chunks=1, seed=42, samples_per_epoch=10000, batch_size=1, global_rank=0):
         super().__init__()
-        self.filepath, self.seq_len, self.seed = filepath, seq_len, seed
-        self.mmap = np.memmap(filepath, dtype=np.uint8, mode='r')
-        self.max_start = len(self.mmap) - seq_len - 1
+        self.filepath = filepath
+        self.chunk_size = chunk_size
+        self.context_chunks = context_chunks
+        self.total_seq_len = self.chunk_size * self.context_chunks
+        self.seed = seed
         self.samples_per_epoch = samples_per_epoch
+
+        self.mmap = np.memmap(filepath, dtype=np.uint8, mode='r')
+        self.max_start = len(self.mmap) - self.total_seq_len - 1
         self.rng = random.Random(self.seed)
+
         if global_rank == 0:
             print(f"ContinuousIIDDataset: Using file {filepath} ({len(self.mmap):,} bytes)")
-            print(f"Training with {samples_per_epoch // batch_size} batches per epoch")
+            print(f"Training with {samples_per_epoch // batch_size} meta-steps per epoch.")
+            print(f"Effective sequence length: {self.total_seq_len} ({self.context_chunks} chunks of {self.chunk_size})")
 
     def __len__(self):
         return self.samples_per_epoch
 
     def __getitem__(self, idx):
         file_pos = int(self.rng.random() * self.max_start)
-        data = self.mmap[file_pos:file_pos + self.seq_len + 1]
+        # Fetch one long, contiguous sequence for TBPTT
+        data = self.mmap[file_pos : file_pos + self.total_seq_len + 1]
         tensor = torch.tensor(data, dtype=torch.long)
-        if tensor.size(0) < self.seq_len + 1:
-            padding = torch.zeros(self.seq_len + 1 - tensor.size(0), dtype=torch.long)
+        
+        # This padding should rarely, if ever, be needed with correct max_start calculation
+        if tensor.size(0) < self.total_seq_len + 1:
+            padding = torch.zeros(self.total_seq_len + 1 - tensor.size(0), dtype=torch.long)
             tensor = torch.cat([tensor, padding])
         return tensor
 
@@ -299,7 +309,8 @@ def get_args():
     parser.add_argument('--params', type=str, default="100m", help='target parameter count (e.g., 15m, 1g)')
     parser.add_argument('--dim', type=str, default=None, help='model hidden dimension (overrides params calculation)')
     parser.add_argument('--depth', type=int, default=None, help='number of layers (overrides params calculation)')
-    parser.add_argument('--seq_len', type=str, default="2k", help='sequence length')
+    parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
+    parser.add_argument('--context_chunks', type=int, default=1, help='Number of consecutive chunks to process for TBPTT. Effective seq_len = chunk_size * context_chunks.')
     parser.add_argument('--batch_size', type=str, default="4", help='batch size per GPU')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
@@ -346,7 +357,7 @@ def main():
 
     # --- 3. MODEL, OPTIMIZER, AND DATA SETUP ---
     train_steps = int(parse_size_with_suffix(args.train_steps))
-    seq_len = int(parse_size_with_suffix(args.seq_len))
+    chunk_size = int(parse_size_with_suffix(args.chunk_size))
     batch_size = int(parse_size_with_suffix(args.batch_size))
     batches_per_epoch = int(parse_size_with_suffix(args.batches_per_epoch))
 
@@ -398,7 +409,15 @@ def main():
     
     if args.schedulefree: optimizer.train()
 
-    train_dataset = ContinuousIIDDataset(args.data, seq_len, seed=SEED + global_rank, samples_per_epoch=batches_per_epoch * batch_size, batch_size=batch_size, global_rank=global_rank)
+    train_dataset = ContinuousIIDDataset(
+        args.data,
+        chunk_size=chunk_size,
+        context_chunks=args.context_chunks,
+        seed=SEED + global_rank,
+        samples_per_epoch=batches_per_epoch * batch_size,
+        batch_size=batch_size,
+        global_rank=global_rank
+    )
     
     # --- REMOVE DistributedSampler ---
     # The core of the bug is a conceptual mismatch. DistributedSampler is designed to PARTITION
@@ -491,7 +510,8 @@ def main():
     def log_metrics(step, train_loss, ema_loss=None):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
-        total_tokens_processed = step * batch_size * seq_len
+        # Note: total_tokens_processed is now based on meta-steps
+        total_tokens_processed = step * batch_size * chunk_size * args.context_chunks
         tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
         current_lr = optimizer.param_groups[0]['lr']
 
@@ -510,42 +530,57 @@ def main():
             f.write('\t'.join(values) + '\n')
 
     for step in range(resume_step, train_steps):
-        # The set_epoch call is only necessary for DistributedSampler to ensure
-        # different shuffling across epochs. Since we are not using it, this is removed.
-        # if train_sampler is not None:
-        #     train_sampler.set_epoch(step)
-        
-        # We only need one batch per step from the loader
-        batch = next(iter(train_loader))
+        # A "step" is now a full pass over `context_chunks`
+        long_batch = next(iter(train_loader))
 
-        # Apply pending gossip update before the step
         was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
         
         if needs_optimizer_reset:
-            # Re-create the optimizer to reset its state
             if global_rank == 0:
                 print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
             optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
             if args.schedulefree: optimizer.train()
-            # Update the node's reference to the new optimizer
             evolutionary_node.optimizer = optimizer
-        
-        inputs, targets = batch[:, :-1].to(device, non_blocking=True), batch[:, 1:].to(device, non_blocking=True)
-        
-        # Note: Gradient accumulation is simplified here for clarity. 
-        # A full implementation would loop `grad_accum` times before optimizer.step().
+
         optimizer.zero_grad()
-        loss = model(inputs, return_loss=True)
-        loss.backward()
-        optimizer.step()
-        loss_value = loss.detach().item()
+
+        hidden_state = None
+        total_loss = 0.0
+
+        # --- TBPTT Inner Loop ---
+        for i in range(args.context_chunks):
+            start_idx = i * chunk_size
+            end_idx = start_idx + chunk_size + 1
+            chunk = long_batch[:, start_idx:end_idx].to(device, non_blocking=True)
+            
+            # The model needs to return loss AND the next hidden state
+            loss, next_hidden_state = model(
+                chunk,
+                return_loss=True,
+                return_prev_hiddens=True,
+                prev_hiddens=hidden_state
+            )
+
+            # Normalize loss to maintain stable gradient magnitudes
+            # This is equivalent to averaging the loss over all chunks
+            normalized_loss = loss / args.context_chunks
+            normalized_loss.backward()
+            
+            total_loss += normalized_loss.detach().item()
+
+            # --- This is the "Truncated" part of TBPTT ---
+            # We detach the hidden state from the computation graph so that
+            # gradients do not flow back to the previous chunk.
+            if next_hidden_state:
+                hidden_state = [h.detach() for h in next_hidden_state]
         
-        # Update fitness and let gossip protocol run in the background
+        optimizer.step()
+        loss_value = total_loss # This is now the average loss over the effective sequence
+        
         evolutionary_node.update_fitness(loss_value, step)
         evolutionary_node.check_for_updates()
         evolutionary_node.request_mix()
 
-        # Log metrics for ALL ranks
         current_ema_fitness = evolutionary_node.get_current_fitness()
         log_metrics(step, loss_value, current_ema_fitness)
 
@@ -554,7 +589,6 @@ def main():
             pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        # Coordinated save trigger
         if step > 0 and random.random() < (1.0 / args.save_every):
             print(f"Step {step}: Save trigger activated!")
             current_ema_fitness = evolutionary_node.get_current_fitness()

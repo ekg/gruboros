@@ -148,7 +148,11 @@ class minLM(Module):
             labels
         )
 
-        return loss
+        # Modified return logic for TBPTT
+        if not return_prev_hiddens:
+            return loss
+        
+        return loss, next_prev_hiddens
         
     def _initialize_weights(self):
         """

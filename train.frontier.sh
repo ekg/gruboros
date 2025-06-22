@@ -37,7 +37,7 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="100m_pure_gossip"
+NAME="100m_16k_context"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 DATA="/lustre/orion/bif148/scratch/erikgarrison/enwik8"
 mkdir -p logs "$OUTPUT_DIR"
@@ -59,7 +59,8 @@ deepspeed \
   --weight_decay 0.0001 \
   --batch_size 4 \
   --grad_accum 1 \
-  --seq_len 2k \
+  --chunk_size 2k \
+  --context_chunks 8 \
   --params 100m \
   --keep_checkpoints 5 \
   --gossip_merge_method recombination \
