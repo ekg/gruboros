@@ -437,6 +437,8 @@ def get_args():
                         help='Probability of attempting evolutionary mixing each step (0.0-1.0).')
     parser.add_argument('--gossip_temp_dir', type=str, default=None,
                         help='Directory for temporary gossip payloads. Defaults to $SCRATCH or /tmp.')
+    parser.add_argument('--gossip_fitness_decay', type=float, default=0.95,
+                        help='Decay factor for the EMA loss used as fitness (e.g., 0.9 to 0.995).')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -617,7 +619,8 @@ def main():
         merge_method=args.gossip_merge_method,
         recombination_alpha=args.gossip_recombination_alpha,
         optimizer_recombination=args.gossip_optimizer_recombination,
-        gossip_temp_dir=args.gossip_temp_dir
+        gossip_temp_dir=args.gossip_temp_dir,
+        fitness_decay_factor=args.gossip_fitness_decay
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")

@@ -32,7 +32,8 @@ class EvolutionaryTrainingNode:
                  merge_method: str = 'clonal',
                  recombination_alpha: float = 0.5,
                  optimizer_recombination: str = 'reset',
-                 gossip_temp_dir: Optional[str] = None):
+                 gossip_temp_dir: Optional[str] = None,
+                 fitness_decay_factor: float = 0.95):
         # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
@@ -53,7 +54,7 @@ class EvolutionaryTrainingNode:
         # Thread-safe communication
         self.incoming_updates = queue.Queue()  # Background thread -> Main thread
         self.step_notifications = queue.Queue()  # Main thread -> Background thread
-        self.fitness_tracker = FitnessTracker()
+        self.fitness_tracker = FitnessTracker(decay_factor=fitness_decay_factor)
         self.fitness_lock = threading.Lock()
         
         # NEW: Add async weight management

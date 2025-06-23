@@ -2,7 +2,7 @@ import numpy as np
 from typing import Optional
 
 class FitnessTracker:
-    def __init__(self, decay_factor: float = 0.995):
+    def __init__(self, decay_factor: float = 0.95):
         self.ema_loss: Optional[float] = None  # Rolling exponential moving average
         self.alpha = 1.0 - decay_factor  # Convert to EMA alpha
         self.step_count = 0
