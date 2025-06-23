@@ -39,7 +39,9 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1g_16k_context_final"
-OUTPUT_DIR="/lustre/orion/bif148/scratch/$(whoami)/outputs/gruboros_${TIMESTAMP}_${NAME}"
+# --- FIX: Use a relative path for the output directory ---
+# This ensures outputs are created within the project directory, next to 'logs'.
+OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 
 # Use the node-local NVMe for the temporary gossip directory
@@ -48,9 +50,10 @@ GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
 # --- *** FIX: PRE-CREATE ALL DIRECTORIES *** ---
 # This eliminates any possible race condition inside the Python script.
-mkdir -p logs
-mkdir -p "${OUTPUT_DIR}/gossip"
-mkdir -p "${OUTPUT_DIR}/metrics"
+mkdir -p logs # For SLURM logs
+mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}/gossip" # For gossip logs
+mkdir -p "${OUTPUT_DIR}/metrics" # For training metrics
 echo "Pre-created all output directories at ${OUTPUT_DIR}"
 
 # Use srun to create the temp directory on the NVMe of *every allocated node*
