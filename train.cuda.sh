@@ -3,7 +3,7 @@ set -e -x
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_8gpu_8k_context_1024chunk"
+NAME="1g_8gpu_16k_context_2048chunk"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
@@ -46,7 +46,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 1 \
-  --chunk_size 1024 \
+  --chunk_size 2048 \
   --context_chunks 8 \
   --params 1g \
   --keep_checkpoints 3 \
