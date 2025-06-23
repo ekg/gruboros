@@ -39,13 +39,15 @@ class CheckpointManager:
         self.thread = None
         self._stop_event = threading.Event()
         self.active = (global_rank == 0)
+        # Regex to parse our new checkpoint filenames with loss
+        self.ckpt_pattern = re.compile(r'checkpoint_rank_(\d+)_step_(\d+)_loss_([\d.inf]+)\.pt')
         
     def start(self):
         if not self.active or self.running:
             return
         self.running = True
         self._stop_event.clear()
-        self.thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        self.thread = threading.Thread(target=self._manager_loop, daemon=True)
         self.thread.start()
         atexit.register(self.stop)
         if self.global_rank == 0:
@@ -59,10 +61,11 @@ class CheckpointManager:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
             
-    def _cleanup_loop(self):
+    def _manager_loop(self):
         while self.running and not self._stop_event.is_set():
             try:
-                self._update_symlinks()
+                self._update_latest_symlink()
+                self._update_best_symlink()
                 self._cleanup_old_checkpoints()
                 self._cleanup_tmp_files()
             except Exception as e:
@@ -70,39 +73,81 @@ class CheckpointManager:
             if self._stop_event.wait(timeout=self.check_interval):
                 break
                 
-    def _update_symlinks(self):
+    def _parse_checkpoint(self, filepath):
+        """Parses metadata from a checkpoint filename."""
+        match = self.ckpt_pattern.search(os.path.basename(filepath))
+        if not match:
+            return None
+        return {
+            'path': filepath,
+            'rank': int(match.group(1)),
+            'step': int(match.group(2)),
+            'loss': float(match.group(3))
+        }
+
+    def _atomic_symlink(self, target_basename, symlink_path):
+        """Atomically create or update a symlink."""
+        if os.path.islink(symlink_path) and os.readlink(symlink_path) == target_basename:
+            return
+        temp_symlink = symlink_path + ".tmp"
+        if os.path.lexists(temp_symlink):
+            os.remove(temp_symlink)
+        os.symlink(target_basename, temp_symlink)
+        os.rename(temp_symlink, symlink_path)
+
+    def _update_latest_symlink(self):
         try:
-            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*.pt")
+            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
             checkpoint_files = glob.glob(pattern)
             if not checkpoint_files:
                 return
             newest_file = max(checkpoint_files, key=os.path.getmtime)
             newest_basename = os.path.basename(newest_file)
             latest_symlink = os.path.join(self.checkpoint_dir, "latest.pt")
-            
-            needs_update = True
-            if os.path.islink(latest_symlink):
-                current_target = os.readlink(latest_symlink)
-                if current_target == newest_basename:
-                    needs_update = False
-                    
-            if needs_update:
-                temp_symlink = latest_symlink + ".tmp"
-                if os.path.lexists(temp_symlink):
-                    os.remove(temp_symlink)
-                os.symlink(newest_basename, temp_symlink)
-                os.rename(temp_symlink, latest_symlink)
+            self._atomic_symlink(newest_basename, latest_symlink)
         except Exception as e:
-            print(f"Rank 0: Symlink update failed: {e}")
+            print(f"Rank 0: Latest symlink update failed: {e}")
+
+    def _update_best_symlink(self):
+        try:
+            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
+            checkpoint_files = glob.glob(pattern)
+            if not checkpoint_files:
+                return
+
+            parsed_checkpoints = [p for p in (self._parse_checkpoint(f) for f in checkpoint_files) if p]
+            if not parsed_checkpoints:
+                return
+
+            best_ckpt = min(parsed_checkpoints, key=lambda x: x['loss'])
+            best_basename = os.path.basename(best_ckpt['path'])
+            best_symlink = os.path.join(self.checkpoint_dir, "best.pt")
+            self._atomic_symlink(best_basename, best_symlink)
+        except Exception as e:
+            print(f"Rank 0: Best symlink update failed: {e}")
             
     def _cleanup_old_checkpoints(self):
         try:
-            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*.pt")
+            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
             checkpoint_files = glob.glob(pattern)
             if len(checkpoint_files) <= self.keep_last_n:
                 return
+
+            # Find the best checkpoint path to preserve it
+            best_path_target = None
+            best_symlink = os.path.join(self.checkpoint_dir, "best.pt")
+            if os.path.islink(best_symlink):
+                best_path_target = os.path.realpath(best_symlink)
+
+            # Sort by modification time to find the N most recent to keep
             checkpoint_files.sort(key=os.path.getmtime, reverse=True)
-            files_to_remove = checkpoint_files[self.keep_last_n:]
+            
+            # Identify files to keep: the N newest, plus the best one
+            files_to_keep = set(checkpoint_files[:self.keep_last_n])
+            if best_path_target and os.path.exists(best_path_target):
+                files_to_keep.add(best_path_target)
+
+            files_to_remove = [f for f in checkpoint_files if f not in files_to_keep]
             removed_count = 0
             for filepath in files_to_remove:
                 try:
@@ -111,14 +156,15 @@ class CheckpointManager:
                 except OSError:
                     continue
             if removed_count > 0:
-                print(f"Rank 0: Removed {removed_count} old checkpoints")
+                print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} (including best).")
         except Exception as e:
             print(f"Rank 0: Checkpoint cleanup failed: {e}")
             
     def _cleanup_tmp_files(self):
         try:
-            cutoff_time = time.time() - (10 * 60)
-            tmp_files = glob.glob(os.path.join(self.checkpoint_dir, "*.tmp"))
+            cutoff_time = time.time() - (10 * 60) # 10 minutes
+            # Be more specific to only catch checkpoint temp files
+            tmp_files = glob.glob(os.path.join(self.checkpoint_dir, "checkpoint_*.pt.tmp"))
             removed_count = 0
             for tmp_file in tmp_files:
                 try:
@@ -132,9 +178,9 @@ class CheckpointManager:
         except Exception as e:
             print(f"Rank 0: Temp file cleanup failed: {e}")
 
-def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank):
-    """Save checkpoint atomically"""
-    filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}.pt"
+def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, ema_fitness):
+    """Save checkpoint atomically with loss in the filename."""
+    filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}_loss_{ema_fitness:.4f}.pt"
     temp_file = os.path.join(checkpoint_dir, filename + ".tmp")
     final_file = os.path.join(checkpoint_dir, filename)
     
@@ -399,6 +445,7 @@ def main():
     model_config = None
     checkpoint = None
     if resuming:
+        # Resuming is robust because 'latest.pt' points to the newest file format
         path = args.resume if os.path.isfile(args.resume) else os.path.join(args.resume, "latest.pt")
         if os.path.exists(path):
             if global_rank == 0: print(f"Loading checkpoint from {path}")
@@ -531,6 +578,13 @@ def main():
     total_tokens_processed = 0
     pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
 
+    # --- Probabilistic Saving Setup ---
+    # We want, on average, one save every `args.save_every` steps across the entire cluster.
+    save_probability = 1.0 / (args.save_every * world_size) if world_size > 1 else (1.0 / args.save_every)
+    if global_rank == 0:
+        print(f"Checkpoint save probability per step per rank: {save_probability:.6f}")
+        print(f"Expected saves per {args.save_every} steps (cluster-wide): 1.0")
+
     # Helper function to log metrics (per-rank)
     def log_metrics(step, train_loss, ema_loss=None):
         nonlocal total_tokens_processed
@@ -614,8 +668,12 @@ def main():
             pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        if step > 0 and step % args.save_every == 0:
-            current_ema_fitness = evolutionary_node.get_current_fitness()
+        # --- Probabilistic Saving ---
+        if step > 0 and random.random() < save_probability:
+            # We already have the current EMA fitness
+            if global_rank == 0:
+                print(f"\nRank {global_rank} triggered save at step {step} with EMA loss {current_ema_fitness:.4f}")
+
             checkpoint_data = {
                 'step': step,
                 'model_state_dict': model.state_dict(),
@@ -624,7 +682,7 @@ def main():
                 'model_config': model_config
             }
             
-            save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank)
+            save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
 
 
     pbar.close()
