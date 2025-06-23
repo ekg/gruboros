@@ -3,8 +3,8 @@ set -e -x
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_8gpu_16k_context_2048chunk"
-OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
+NAME="1g_8gpu_16k_2048chunk"
+OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
     echo "ERROR: Data file not found at $DATA_PATH"

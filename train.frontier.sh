@@ -38,10 +38,10 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_16k_context_final"
+NAME="1g_16k"
 # --- FIX: Use a relative path for the output directory ---
 # This ensures outputs are created within the project directory, next to 'logs'.
-OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
+OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 
 # Use the node-local NVMe for the temporary gossip directory

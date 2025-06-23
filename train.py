@@ -476,7 +476,7 @@ def main():
 
     resuming = args.resume is not None
     resume_step = 0
-    checkpoint_dir = args.output or f"gruboros_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    checkpoint_dir = args.output or f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     if resuming:
         checkpoint_dir = os.path.dirname(args.resume) if os.path.isfile(args.resume) else args.resume
     
