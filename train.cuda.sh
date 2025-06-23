@@ -5,12 +5,18 @@ set -e -x
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1g_8gpu_8k_context_1024chunk"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
-mkdir -p logs "$OUTPUT_DIR"
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
     echo "ERROR: Data file not found at $DATA_PATH"
     exit 1
 fi
+
+### Explicitly define and manage a temp directory ###
+# Create a unique, job-specific temporary directory in /tmp
+JOB_ID=$(date +%s) # Simple job ID using timestamp for local runs
+GOSSIP_TEMP_DIR="/tmp/gossip_temp_${JOB_ID}"
+mkdir -p logs "$OUTPUT_DIR" "$GOSSIP_TEMP_DIR"
+echo "Using local temporary directory: $GOSSIP_TEMP_DIR"
 
 # --- Distributed Settings for Launcher & Script ---
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -48,7 +54,12 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.005 \
+  --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_decay 0.95 \
   --cuda
 
 echo "Training finished."
+
+### Clean up the temporary directory ###
+rm -rf "$GOSSIP_TEMP_DIR"
+echo "Cleaned up local temporary directory."
