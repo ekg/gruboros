@@ -10,6 +10,7 @@
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH -q debug
+#SBATCH -C nvme
 
 set -x
 
@@ -37,13 +38,20 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="2g_2k_context"
+NAME="1g_8k_context"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 
-# Create a dedicated temp directory on the large, fast Lustre filesystem
-GOSSIP_TEMP_DIR="/lustre/orion/bif148/scratch/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
-mkdir -p logs "$OUTPUT_DIR" "$GOSSIP_TEMP_DIR"
+# Use the node-local NVMe for the temporary gossip directory
+# Each rank will use this path. The directory needs to be created on each node.
+GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
+
+# Create output and log directories on the shared filesystem from the head node
+mkdir -p logs "$OUTPUT_DIR"
+
+# Use srun to create the temp directory on the NVMe of *every allocated node*
+srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "mkdir -p $GOSSIP_TEMP_DIR"
+echo "Created gossip temp directory on all node-local NVMe drives: $GOSSIP_TEMP_DIR"
 
 # --- Launch Training ---
 echo "Starting Pure Gossip training. DeepSpeed is used ONLY as a launcher."
@@ -54,17 +62,17 @@ deepspeed \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
-  --train_steps 10000 \
-  --save_every 20 \
-  --lr 0.005 \
+  --train_steps 25000 \
+  --save_every 100 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
-  --weight_decay 0.0001 \
+  --weight_decay 0.01 \
   --batch_size 1 \
   --grad_accum 1 \
-  --chunk_size 128 \
-  --context_chunks 16 \
-  --params 2g \
+  --chunk_size 256 \
+  --context_chunks 32 \
+  --params 1g \
   --keep_checkpoints 5 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
@@ -74,6 +82,7 @@ deepspeed \
   --rocm
 
 echo "Training finished."
-# Clean up hostfile and the temporary gossip directory
+# Clean up hostfile and the temporary gossip directories on all nodes
 rm -f "$HOSTFILE_NAME"
-rm -rf "$GOSSIP_TEMP_DIR"
+srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "rm -rf $GOSSIP_TEMP_DIR"
+echo "Cleaned up gossip temp directories from all node-local NVMe drives."
