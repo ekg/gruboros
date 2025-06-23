@@ -551,8 +551,14 @@ def main():
     train_sampler = None
     
     # Calculate DataLoader workers based on hardware topology
-    # Fallback to world_size if RANKS_PER_NODE is not set (e.g., local run).
-    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size if world_size > 0 else 1))
+    # Use the reliable SLURM variable first, then fall back to your custom one for non-Slurm runs.
+    try:
+        ranks_per_node = int(os.environ.get('SLURM_NTASKS_PER_NODE', os.environ['RANKS_PER_NODE']))
+    except (KeyError, TypeError):
+        # Fallback for local runs or environments without these variables set.
+        ranks_per_node = 1
+        if global_rank == 0:
+            print(f"Warning: Could not determine ranks_per_node, defaulting to {ranks_per_node}. DataLoader may be suboptimal.")
     
     # Calculate available CPUs per rank.
     cpus_available = os.cpu_count() or 1
