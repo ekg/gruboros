@@ -51,7 +51,7 @@ deepspeed \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
-  --train_steps 100k \
+  --train_steps 10000 \
   --save_every 20 \
   --lr 0.005 \
   --sf_beta 0.9 \
