@@ -1,12 +1,12 @@
 #!/bin/bash
 
 #SBATCH -A BIF148
-#SBATCH -J minLM_gossip
+#SBATCH -J minLM_gossip_1G_16k
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
 #SBATCH -t 00:15:00
 #SBATCH -p batch
-#SBATCH -N 2
+#SBATCH -N 4
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH -q debug
@@ -27,7 +27,6 @@ export MASTER_NODE_HOSTNAME=$(scontrol show hostnames $SLURM_JOB_NODELIST | head
 export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 addr show hsn0 | grep -oP 'inet \K[\d.]+')
 export MASTER_PORT=3442
 export TORCH_DISTRIBUTED_TIMEOUT=7200s
-# Use GLOO for peer discovery, our gossip protocol uses its own TCP sockets.
 export TORCH_DISTRIBUTED_BACKEND="gloo"
 echo "Using GLOO backend for initial process group."
 
@@ -38,8 +37,8 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_8k_context"
-OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
+NAME="1g_16k_context_final"
+OUTPUT_DIR="/lustre/orion/bif148/scratch/$(whoami)/outputs/gruboros_${TIMESTAMP}_${NAME}"
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 
 # Use the node-local NVMe for the temporary gossip directory
@@ -62,18 +61,19 @@ deepspeed \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
-  --train_steps 25000 \
-  --save_every 100 \
-  --lr 0.001 \
+  --train_steps 30000 \
+  --save_every 200 \
+  --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
-  --weight_decay 0.01 \
+  --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 1 \
-  --chunk_size 256 \
-  --context_chunks 32 \
+  --chunk_size 2048 \
+  --context_chunks 8 \
   --params 1g \
   --keep_checkpoints 5 \
+  --keep_elite 10 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
