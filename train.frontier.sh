@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_gossip-%j.err
 #SBATCH -t 00:15:00
 #SBATCH -p batch
-#SBATCH -N 16
+#SBATCH -N 4
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH -q debug
@@ -77,7 +77,7 @@ deepspeed \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 1 \
-  --chunk_size 2048 \
+  --chunk_size 4096 \
   --context_chunks 8 \
   --params 1g \
   --keep_checkpoints 5 \
