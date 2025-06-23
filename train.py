@@ -30,10 +30,11 @@ from gossip import EvolutionaryTrainingNode
 class CheckpointManager:
     """Background thread for rank 0 to handle symlinks and cleanup"""
     
-    def __init__(self, checkpoint_dir, check_interval=10, keep_last_n=5, global_rank=0):
+    def __init__(self, checkpoint_dir, check_interval=10, keep_last_n=5, keep_elite_n=10, global_rank=0):
         self.checkpoint_dir = checkpoint_dir
         self.check_interval = check_interval
         self.keep_last_n = keep_last_n
+        self.keep_elite_n = keep_elite_n
         self.global_rank = global_rank
         self.running = False
         self.thread = None
@@ -66,6 +67,7 @@ class CheckpointManager:
             try:
                 self._update_latest_symlink()
                 self._update_best_symlink()
+                self._update_elite_symlinks()
                 self._cleanup_old_checkpoints()
                 self._cleanup_tmp_files()
             except Exception as e:
@@ -125,6 +127,36 @@ class CheckpointManager:
             self._atomic_symlink(best_basename, best_symlink)
         except Exception as e:
             print(f"Rank 0: Best symlink update failed: {e}")
+
+    def _update_elite_symlinks(self):
+        """Update ranked elite model symlinks (elite_01.pt, elite_02.pt, etc.)"""
+        try:
+            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
+            checkpoint_files = glob.glob(pattern)
+            if not checkpoint_files:
+                return
+
+            parsed_checkpoints = [p for p in (self._parse_checkpoint(f) for f in checkpoint_files) if p]
+            if not parsed_checkpoints:
+                return
+
+            # Sort by loss (ascending - lower is better) to get the elite models
+            elite_checkpoints = sorted(parsed_checkpoints, key=lambda x: x['loss'])[:self.keep_elite_n]
+            
+            # Create/update elite symlinks
+            for i, elite_ckpt in enumerate(elite_checkpoints, 1):
+                elite_basename = os.path.basename(elite_ckpt['path'])
+                elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
+                self._atomic_symlink(elite_basename, elite_symlink)
+            
+            # Remove any extra elite symlinks if we have fewer elite models than before
+            for i in range(len(elite_checkpoints) + 1, self.keep_elite_n + 1):
+                elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
+                if os.path.islink(elite_symlink):
+                    os.remove(elite_symlink)
+                    
+        except Exception as e:
+            print(f"Rank 0: Elite symlinks update failed: {e}")
             
     def _cleanup_old_checkpoints(self):
         try:
@@ -139,13 +171,24 @@ class CheckpointManager:
             if os.path.islink(best_symlink):
                 best_path_target = os.path.realpath(best_symlink)
 
+            # Find all elite checkpoint paths to preserve them
+            elite_path_targets = set()
+            for i in range(1, self.keep_elite_n + 1):
+                elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
+                if os.path.islink(elite_symlink):
+                    elite_path_targets.add(os.path.realpath(elite_symlink))
+
             # Sort by modification time to find the N most recent to keep
             checkpoint_files.sort(key=os.path.getmtime, reverse=True)
             
-            # Identify files to keep: the N newest, plus the best one
+            # Identify files to keep: the N newest, plus the best one, plus all elite ones
             files_to_keep = set(checkpoint_files[:self.keep_last_n])
             if best_path_target and os.path.exists(best_path_target):
                 files_to_keep.add(best_path_target)
+            # Add all elite targets
+            for elite_target in elite_path_targets:
+                if os.path.exists(elite_target):
+                    files_to_keep.add(elite_target)
 
             files_to_remove = [f for f in checkpoint_files if f not in files_to_keep]
             removed_count = 0
@@ -155,8 +198,9 @@ class CheckpointManager:
                     removed_count += 1
                 except OSError:
                     continue
-            # if removed_count > 0:
-            #     print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} (including best).")
+            if removed_count > 0:
+                print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} "
+                      f"(including best and {len(elite_path_targets)} elite models).")
         except Exception as e:
             print(f"Rank 0: Checkpoint cleanup failed: {e}")
             
@@ -379,6 +423,7 @@ def get_args():
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
     parser.add_argument('--grad_accum', type=int, default=1, help='gradient accumulation steps')
     parser.add_argument('--keep_checkpoints', type=int, default=3, help='number of recent checkpoints to keep')
+    parser.add_argument('--keep_elite', type=int, default=10, help='number of elite models to preserve')
     parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True)
     parser.add_argument('--sf_beta', type=float, default=0.9)
     parser.add_argument('--sf_beta2', type=float, default=0.999)
@@ -440,6 +485,7 @@ def main():
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir,
         keep_last_n=args.keep_checkpoints,
+        keep_elite_n=args.keep_elite,
         global_rank=global_rank
     )
     checkpoint_manager.start()
