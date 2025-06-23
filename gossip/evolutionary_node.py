@@ -114,6 +114,12 @@ class EvolutionaryTrainingNode:
         self.successful_mixes = 0
         self.current_step = 0
         
+        # New gossip metrics
+        self.outbound_mixes_attempted = 0
+        self.inbound_mixes_attempted = 0
+        self.mixes_won = 0  # When we send our weights
+        self.mixes_lost = 0  # When we receive weights
+        
         # --- Initialize peer_list in the constructor to prevent race conditions ---
         # The gossip worker thread populates this, but the main thread may access it before population.
         self.peer_list: Dict[str, dict] = {}
@@ -344,6 +350,9 @@ class EvolutionaryTrainingNode:
         peer_addr = f"{addr[0]}:{addr[1]}"
         correlation_id = None
         
+        # Count inbound attempts
+        self.inbound_mixes_attempted += 1
+        
         try:
             NetworkUtils.optimize_socket(client_sock)
             client_sock.settimeout(5.0)  # Short timeout for initial fitness exchange
@@ -373,6 +382,7 @@ class EvolutionaryTrainingNode:
             
             if our_fitness < peer_fitness:
                 # We win - send our weights
+                self.mixes_won += 1
                 client_sock.send(b"SENDING_WEIGHTS")
                 # Extend timeout for weight transfer
                 client_sock.settimeout(120.0)
@@ -380,6 +390,7 @@ class EvolutionaryTrainingNode:
                 
             else:
                 # We lose - receive their weights
+                self.mixes_lost += 1
                 client_sock.send(b"SEND_ME_WEIGHTS")
                 # Extend timeout for weight transfer
                 client_sock.settimeout(120.0)
@@ -415,6 +426,8 @@ class EvolutionaryTrainingNode:
         if not self.peer_list:
             return
             
+        # Count outbound attempts
+        self.outbound_mixes_attempted += 1
         correlation_id = self.logger.generate_correlation_id()
         
         # Choose random peer - use our actual node identity
@@ -454,6 +467,8 @@ class EvolutionaryTrainingNode:
             sock.settimeout(120.0)
             
             if response == b"SENDING_WEIGHTS":
+                # Peer is sending, so we lost this exchange
+                self.mixes_lost += 1
                 new_weights, new_optimizer_state, source_fitness, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)
                 if new_weights:
                     update = WeightUpdate(
@@ -466,6 +481,8 @@ class EvolutionaryTrainingNode:
                     self.incoming_updates.put(update)
                     
             elif response == b"SEND_ME_WEIGHTS":
+                # We are sending, so we won this exchange
+                self.mixes_won += 1
                 self._send_our_weights_to_peer(sock, correlation_id)
                 
             self.mixing_attempts += 1
@@ -637,5 +654,9 @@ class EvolutionaryTrainingNode:
             'peer_count': len(self.peer_list),
             'mixing_attempts': self.mixing_attempts,
             'successful_mixes': self.successful_mixes,
+            'outbound_attempted': self.outbound_mixes_attempted,
+            'inbound_attempted': self.inbound_mixes_attempted,
+            'mixes_won': self.mixes_won,
+            'mixes_lost': self.mixes_lost,
             'current_step': self.current_step
         }
