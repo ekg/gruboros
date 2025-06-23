@@ -155,8 +155,8 @@ class CheckpointManager:
                     removed_count += 1
                 except OSError:
                     continue
-            if removed_count > 0:
-                print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} (including best).")
+            # if removed_count > 0:
+            #     print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} (including best).")
         except Exception as e:
             print(f"Rank 0: Checkpoint cleanup failed: {e}")
             
@@ -173,8 +173,8 @@ class CheckpointManager:
                         removed_count += 1
                 except OSError:
                     continue
-            if removed_count > 0:
-                print(f"Rank 0: Removed {removed_count} stale .tmp files")
+            # if removed_count > 0:
+            #     print(f"Rank 0: Removed {removed_count} stale .tmp files")
         except Exception as e:
             print(f"Rank 0: Temp file cleanup failed: {e}")
 
@@ -671,8 +671,8 @@ def main():
         # --- Probabilistic Saving ---
         if step > 0 and random.random() < save_probability:
             # We already have the current EMA fitness
-            if global_rank == 0:
-                print(f"\nRank {global_rank} triggered save at step {step} with EMA loss {current_ema_fitness:.4f}")
+            # if global_rank == 0:
+            #     print(f"\nRank {global_rank} triggered save at step {step} with EMA loss {current_ema_fitness:.4f}")
 
             checkpoint_data = {
                 'step': step,
