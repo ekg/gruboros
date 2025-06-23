@@ -50,8 +50,8 @@ class CheckpointManager:
         self.thread = threading.Thread(target=self._manager_loop, daemon=True)
         self.thread.start()
         atexit.register(self.stop)
-        if self.global_rank == 0:
-            print("Started checkpoint manager thread")
+        # if self.global_rank == 0:
+        #     print("Started checkpoint manager thread")
         
     def stop(self):
         if not self.active or not self.running:
