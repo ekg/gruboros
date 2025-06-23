@@ -28,6 +28,7 @@ export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 
 export MASTER_PORT=3442
 export TORCH_DISTRIBUTED_TIMEOUT=7200s
 export TORCH_DISTRIBUTED_BACKEND="gloo"
+export GLOO_SOCKET_IFNAME=hsn0
 echo "Using GLOO backend for initial process group."
 
 # --- Create Hostfile for DeepSpeed LAUNCHER ---
