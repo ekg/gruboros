@@ -40,7 +40,10 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="2g_2k_context"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
-mkdir -p logs "$OUTPUT_DIR"
+
+# Create a dedicated temp directory on the large, fast Lustre filesystem
+GOSSIP_TEMP_DIR="/lustre/orion/bif148/scratch/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
+mkdir -p logs "$OUTPUT_DIR" "$GOSSIP_TEMP_DIR"
 
 # --- Launch Training ---
 echo "Starting Pure Gossip training. DeepSpeed is used ONLY as a launcher."
@@ -67,7 +70,10 @@ deepspeed \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.03 \
+  --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --rocm
 
 echo "Training finished."
+# Clean up hostfile and the temporary gossip directory
 rm -f "$HOSTFILE_NAME"
+rm -rf "$GOSSIP_TEMP_DIR"

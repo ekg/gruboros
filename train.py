@@ -390,6 +390,8 @@ def get_args():
                         help='How to handle optimizer state during recombination: reset it or interpolate it.')
     parser.add_argument('--gossip_mixing_rate', type=float, default=0.01,
                         help='Probability of attempting evolutionary mixing each step (0.0-1.0).')
+    parser.add_argument('--gossip_temp_dir', type=str, default=None,
+                        help='Directory for temporary gossip payloads. Defaults to $SCRATCH or /tmp.')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -568,7 +570,8 @@ def main():
         tp_size=1, mixing_probability=args.gossip_mixing_rate, output_dir=checkpoint_dir,
         merge_method=args.gossip_merge_method,
         recombination_alpha=args.gossip_recombination_alpha,
-        optimizer_recombination=args.gossip_optimizer_recombination
+        optimizer_recombination=args.gossip_optimizer_recombination,
+        gossip_temp_dir=args.gossip_temp_dir
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")

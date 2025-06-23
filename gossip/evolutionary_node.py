@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
 from .structured_logger import GossipLogger
+import tempfile
+import uuid
 
 @dataclass
 class WeightUpdate:
@@ -29,7 +31,8 @@ class EvolutionaryTrainingNode:
                  output_dir: Optional[str] = None,
                  merge_method: str = 'clonal',
                  recombination_alpha: float = 0.5,
-                 optimizer_recombination: str = 'reset'):
+                 optimizer_recombination: str = 'reset',
+                 gossip_temp_dir: Optional[str] = None):
         # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
@@ -61,6 +64,23 @@ class EvolutionaryTrainingNode:
         
         # Replace standard logger with structured gossip logger
         self.logger = GossipLogger(self.node_id, self.global_rank, self.local_rank, self.data_parallel_rank, output_dir)
+        
+        # Configure and verify the temporary directory
+        if gossip_temp_dir:
+            self.gossip_temp_dir = gossip_temp_dir
+        else:
+            # Sensible default for HPC systems, falling back to standard /tmp
+            self.gossip_temp_dir = os.environ.get('LUSTRE_SCRATCH') or os.environ.get('SCRATCH') or tempfile.gettempdir()
+        
+        # Rank 0 creates the directory, others wait. This avoids race conditions.
+        if self.global_rank == 0:
+            os.makedirs(self.gossip_temp_dir, exist_ok=True)
+            print(f"Gossip temporary directory set to: {self.gossip_temp_dir}")
+        if self.world_size > 1:
+            # Import dist here to avoid circular imports
+            import torch.distributed as dist
+            if dist.is_initialized():
+                dist.barrier()
         
         # Pre-allocate pinned memory buffers for common model sizes
         self._setup_pinned_buffers()
@@ -459,8 +479,10 @@ class EvolutionaryTrainingNode:
             sock.close()
     
     def _send_our_weights_to_peer(self, sock, correlation_id: str):
-        """Send weights AND optimizer state with performance monitoring"""
+        """Send weights AND optimizer state by streaming from a temporary file to avoid OOM."""
         start_time = time.time()
+        
+        temp_filename = os.path.join(self.gossip_temp_dir, f"gossip_payload_{uuid.uuid4()}.pt")
         
         try:
             # Get model state and move to CPU
@@ -491,29 +513,28 @@ class EvolutionaryTrainingNode:
                 'correlation_id': correlation_id
             }
             
-            buffer = io.BytesIO()
-            torch.save(transfer_data, buffer, _use_new_zipfile_serialization=True)
-            weights_bytes = buffer.getvalue()
+            # Save directly to the temporary file on the configured filesystem
+            torch.save(transfer_data, temp_filename, _use_new_zipfile_serialization=True)
             
-            # Send length prefix then data using 64-bit integer
-            sock.send(struct.pack('!Q', len(weights_bytes)))
+            # Get the file size to send as a prefix
+            file_size = os.path.getsize(temp_filename)
+            sock.send(struct.pack('!Q', file_size))
             
-            chunk_size = 1024 * 1024  # 1MB chunks
-            bytes_sent = 0
-            
-            while bytes_sent < len(weights_bytes):
-                chunk_end = min(bytes_sent + chunk_size, len(weights_bytes))
-                chunk = weights_bytes[bytes_sent:chunk_end]
-                sock.sendall(chunk)
-                bytes_sent = chunk_end
+            # Stream the file chunk-by-chunk to keep RAM usage low
+            with open(temp_filename, 'rb') as f:
+                while True:
+                    chunk = f.read(4 * 1024 * 1024)  # Read in 4MB chunks
+                    if not chunk:
+                        break  # End of file
+                    sock.sendall(chunk)
             
             transfer_time = (time.time() - start_time) * 1000
-            throughput = len(weights_bytes) / 1e6 / (transfer_time / 1000)
+            throughput = file_size / 1e6 / (transfer_time / 1000) if transfer_time > 0 else 0
             
             self.logger.log_event("WEIGHT_SEND_COMPLETE",
                                  step=self.current_step,
                                  correlation_id=correlation_id,
-                                 data_size_bytes=len(weights_bytes),
+                                 data_size_bytes=file_size,
                                  transfer_time_ms=transfer_time,
                                  fitness=our_ema_loss,
                                  message=f"Throughput: {throughput:.2f} MB/s")
@@ -523,11 +544,20 @@ class EvolutionaryTrainingNode:
                                  step=self.current_step,
                                  correlation_id=correlation_id,
                                  message=str(e))
+        finally:
+            # Robustly clean up the temporary file
+            if os.path.exists(temp_filename):
+                try:
+                    os.remove(temp_filename)
+                except OSError as e:
+                    self.logger.log_event("TEMP_FILE_CLEANUP_ERROR", message=f"Failed to remove {temp_filename}: {e}")
     
     def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[dict], Optional[dict], Optional[float], Optional[float]]:
-        """Receive weights and optimizer state with performance monitoring"""
+        """Receive weights and optimizer state by streaming to a temporary file."""
         start_time = time.time()
         
+        temp_filename = os.path.join(self.gossip_temp_dir, f"gossip_payload_{uuid.uuid4()}.pt")
+
         try:
             # Receive 8-byte length prefix
             length_data = b''
@@ -539,22 +569,22 @@ class EvolutionaryTrainingNode:
             
             expected_size = struct.unpack('!Q', length_data)[0]
             
-            # Receive data
-            received_data = bytearray()
-            while len(received_data) < expected_size:
-                remaining = expected_size - len(received_data)
-                chunk_size = min(1024 * 1024, remaining)
-                chunk = sock.recv(chunk_size)
-                if not chunk:
-                    return None, None, None, None
-                received_data.extend(chunk)
-            
-            # Deserialize
-            buffer = io.BytesIO(bytes(received_data))
-            transfer_data = torch.load(buffer, map_location='cpu', weights_only=False)
-            
+            # Stream from socket directly to temp file
+            bytes_received = 0
+            with open(temp_filename, 'wb') as f:
+                while bytes_received < expected_size:
+                    remaining = expected_size - bytes_received
+                    chunk = sock.recv(min(4 * 1024 * 1024, remaining))
+                    if not chunk:
+                        raise ConnectionError("Connection broke while receiving weight payload.")
+                    f.write(chunk)
+                    bytes_received += len(chunk)
+
+            # Load from the completed temporary file
+            transfer_data = torch.load(temp_filename, map_location='cpu', weights_only=False)
+
             transfer_time = (time.time() - start_time) * 1000
-            throughput = expected_size / 1e6 / (transfer_time / 1000)
+            throughput = expected_size / 1e6 / (transfer_time / 1000) if transfer_time > 0 else 0
             
             source_model_state = transfer_data.get('model_state_dict')
             source_optimizer_state = transfer_data.get('optimizer_state_dict')
@@ -576,6 +606,13 @@ class EvolutionaryTrainingNode:
                                  correlation_id=correlation_id,
                                  message=str(e))
             return None, None, None, None
+        finally:
+            # Robustly clean up the temporary file
+            if os.path.exists(temp_filename):
+                try:
+                    os.remove(temp_filename)
+                except OSError as e:
+                    self.logger.log_event("TEMP_FILE_CLEANUP_ERROR", message=f"Failed to remove {temp_filename}: {e}")
     
     def stop_gossip_protocol(self):
         """Stop the gossip protocol"""
