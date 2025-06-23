@@ -198,9 +198,9 @@ class CheckpointManager:
                     removed_count += 1
                 except OSError:
                     continue
-            if removed_count > 0:
-                print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} "
-                      f"(including best and {len(elite_path_targets)} elite models).")
+            # if removed_count > 0:
+            #     print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} "
+            #           f"(including best and {len(elite_path_targets)} elite models).")
         except Exception as e:
             print(f"Rank 0: Checkpoint cleanup failed: {e}")
             
