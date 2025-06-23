@@ -3,7 +3,7 @@ set -e -x
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="300m_8gpu_8k_context"
+NAME="1b_8gpu_8k_context"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 mkdir -p logs "$OUTPUT_DIR"
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
@@ -40,9 +40,9 @@ deepspeed --num_gpus=$NUM_GPUS \
   --weight_decay 0.0001 \
   --batch_size 4 \
   --grad_accum 1 \
-  --chunk_size 1024 \
-  --context_chunks 8 \
-  --params 300m \
+  --chunk_size 256 \
+  --context_chunks 32 \
+  --params 1b \
   --keep_checkpoints 3 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
