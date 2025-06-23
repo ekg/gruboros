@@ -457,7 +457,8 @@ def main():
 
     if world_size > 1:
         dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
-        print(f"Rank {global_rank}/{world_size} initialized process group with GLOO backend.")
+        if global_rank == 0:
+            print(f"Process group initialized with {world_size} ranks (GLOO backend).")
     
     device = torch.device(f'cuda:{local_rank}')
     torch.cuda.set_device(device)
@@ -478,10 +479,8 @@ def main():
     checkpoint_dir = args.output or f"gruboros_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     if resuming:
         checkpoint_dir = os.path.dirname(args.resume) if os.path.isfile(args.resume) else args.resume
-
-    if global_rank == 0 and not os.path.exists(checkpoint_dir):
-        os.makedirs(checkpoint_dir, exist_ok=True)
-    if world_size > 1: dist.barrier()
+    
+    # Directory creation is now handled by the shell script - no barriers needed
 
     # Start checkpoint manager
     checkpoint_manager = CheckpointManager(
@@ -551,14 +550,8 @@ def main():
     train_sampler = None
     
     # Calculate DataLoader workers based on hardware topology
-    # Use the reliable SLURM variable first, then fall back to your custom one for non-Slurm runs.
-    try:
-        ranks_per_node = int(os.environ.get('SLURM_NTASKS_PER_NODE', os.environ['RANKS_PER_NODE']))
-    except (KeyError, TypeError):
-        # Fallback for local runs or environments without these variables set.
-        ranks_per_node = 1
-        if global_rank == 0:
-            print(f"Warning: Could not determine ranks_per_node, defaulting to {ranks_per_node}. DataLoader may be suboptimal.")
+    # Revert to the original logic that was working with deepspeed launcher
+    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size if world_size > 0 else 1))
     
     # Calculate available CPUs per rank.
     cpus_available = os.cpu_count() or 1
@@ -592,21 +585,7 @@ def main():
         print(f"DataLoader configuration: {num_workers} workers per rank ({cpus_per_rank} CPUs per rank, {ranks_per_node} ranks per node)")
     
     # --- 4. GOSSIP AND TRAINING LOOP ---
-    if global_rank == 0:
-        # --- CENTRALIZED DIRECTORY CREATION ---
-        # Rank 0 is responsible for creating ALL necessary subdirectories.
-        print("Rank 0: Creating output subdirectories...")
-        os.makedirs(os.path.join(checkpoint_dir, "gossip"), exist_ok=True)
-        os.makedirs(os.path.join(checkpoint_dir, "metrics"), exist_ok=True)
-        print("Rank 0: Directory creation complete.")
-
-    # --- SYNCHRONIZATION BARRIER ---
-    # All ranks wait here until rank 0 has finished creating the directories.
-    # This prevents race conditions on the filesystem.
-    if world_size > 1:
-        print(f"Rank {global_rank}: Waiting at directory barrier...")
-        dist.barrier()
-        print(f"Rank {global_rank}: Passed directory barrier.")
+    # Subdirectories are pre-created by the shell script - no barriers needed
 
     # Create per-rank metrics log file
     metrics_dir = os.path.join(checkpoint_dir, "metrics")

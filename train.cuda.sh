@@ -15,7 +15,11 @@ fi
 # Create a unique, job-specific temporary directory in /tmp
 JOB_ID=$(date +%s) # Simple job ID using timestamp for local runs
 GOSSIP_TEMP_DIR="/tmp/gossip_temp_${JOB_ID}"
-mkdir -p logs "$OUTPUT_DIR" "$GOSSIP_TEMP_DIR"
+# --- *** FIX: PRE-CREATE ALL DIRECTORIES *** ---
+mkdir -p logs
+mkdir -p "${OUTPUT_DIR}/gossip"
+mkdir -p "${OUTPUT_DIR}/metrics"
+mkdir -p "${GOSSIP_TEMP_DIR}"
 echo "Using local temporary directory: $GOSSIP_TEMP_DIR"
 
 # --- Distributed Settings for Launcher & Script ---

@@ -46,8 +46,12 @@ DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 # Each rank will use this path. The directory needs to be created on each node.
 GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
-# Create output and log directories on the shared filesystem from the head node
-mkdir -p logs "$OUTPUT_DIR"
+# --- *** FIX: PRE-CREATE ALL DIRECTORIES *** ---
+# This eliminates any possible race condition inside the Python script.
+mkdir -p logs
+mkdir -p "${OUTPUT_DIR}/gossip"
+mkdir -p "${OUTPUT_DIR}/metrics"
+echo "Pre-created all output directories at ${OUTPUT_DIR}"
 
 # Use srun to create the temp directory on the NVMe of *every allocated node*
 srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "mkdir -p $GOSSIP_TEMP_DIR"
