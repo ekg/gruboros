@@ -42,7 +42,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --grad_accum 1 \
   --chunk_size 256 \
   --context_chunks 32 \
-  --params 1b \
+  --params 1g \
   --keep_checkpoints 3 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
