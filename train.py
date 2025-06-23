@@ -30,7 +30,7 @@ from gossip import EvolutionaryTrainingNode
 class CheckpointManager:
     """Background thread for rank 0 to handle symlinks and cleanup"""
     
-    def __init__(self, checkpoint_dir, check_interval=30, keep_last_n=5, global_rank=0):
+    def __init__(self, checkpoint_dir, check_interval=10, keep_last_n=5, global_rank=0):
         self.checkpoint_dir = checkpoint_dir
         self.check_interval = check_interval
         self.keep_last_n = keep_last_n
