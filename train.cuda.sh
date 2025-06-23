@@ -3,7 +3,7 @@ set -e -x
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1b_8gpu_8k_context_1024chunk"
+NAME="1g_8gpu_8k_context_1024chunk"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 mkdir -p logs "$OUTPUT_DIR"
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
