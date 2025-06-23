@@ -33,7 +33,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --train_steps 100k \
-  --save_every 200 \
+  --save_every 50 \
   --lr 0.01 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
@@ -41,7 +41,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --batch_size 4 \
   --grad_accum 1 \
   --chunk_size 2k \
-  --context_chunks 8 \
+  --context_chunks 1 \
   --params 300m \
   --keep_checkpoints 3 \
   --gossip_merge_method recombination \
