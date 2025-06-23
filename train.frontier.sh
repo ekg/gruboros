@@ -4,7 +4,7 @@
 #SBATCH -J minLM_gossip
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 00:15:00
+#SBATCH -t 00:30:00
 #SBATCH -p batch
 #SBATCH -N 16
 #SBATCH --ntasks-per-node=8
@@ -37,7 +37,7 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_2k_context"
+NAME="2g_2k_context"
 OUTPUT_DIR="./outputs/gruboros_${TIMESTAMP}_${NAME}"
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 mkdir -p logs "$OUTPUT_DIR"
@@ -61,7 +61,7 @@ deepspeed \
   --grad_accum 1 \
   --chunk_size 256 \
   --context_chunks 8 \
-  --params 1g \
+  --params 2g \
   --keep_checkpoints 5 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
