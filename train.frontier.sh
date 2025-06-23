@@ -70,7 +70,7 @@ deepspeed \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 30000 \
-  --save_every 5 \
+  --save_every 1 \
   --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
