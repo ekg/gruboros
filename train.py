@@ -19,11 +19,137 @@ from tqdm import tqdm
 from schedulefree import AdamWScheduleFree
 import fcntl
 import contextlib
+import threading
+import atexit
 
 # Import the minLM model and gossip protocol
 from mingru.minLM import minLM
 import logging
 from gossip import EvolutionaryTrainingNode
+
+class CheckpointManager:
+    """Background thread for rank 0 to handle symlinks and cleanup"""
+    
+    def __init__(self, checkpoint_dir, check_interval=30, keep_last_n=5, global_rank=0):
+        self.checkpoint_dir = checkpoint_dir
+        self.check_interval = check_interval
+        self.keep_last_n = keep_last_n
+        self.global_rank = global_rank
+        self.running = False
+        self.thread = None
+        self._stop_event = threading.Event()
+        self.active = (global_rank == 0)
+        
+    def start(self):
+        if not self.active or self.running:
+            return
+        self.running = True
+        self._stop_event.clear()
+        self.thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        self.thread.start()
+        atexit.register(self.stop)
+        if self.global_rank == 0:
+            print("Started checkpoint manager thread")
+        
+    def stop(self):
+        if not self.active or not self.running:
+            return
+        self.running = False
+        self._stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=5)
+            
+    def _cleanup_loop(self):
+        while self.running and not self._stop_event.is_set():
+            try:
+                self._update_symlinks()
+                self._cleanup_old_checkpoints()
+                self._cleanup_tmp_files()
+            except Exception as e:
+                print(f"Rank 0: Checkpoint manager error: {e}")
+            if self._stop_event.wait(timeout=self.check_interval):
+                break
+                
+    def _update_symlinks(self):
+        try:
+            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*.pt")
+            checkpoint_files = glob.glob(pattern)
+            if not checkpoint_files:
+                return
+            newest_file = max(checkpoint_files, key=os.path.getmtime)
+            newest_basename = os.path.basename(newest_file)
+            latest_symlink = os.path.join(self.checkpoint_dir, "latest.pt")
+            
+            needs_update = True
+            if os.path.islink(latest_symlink):
+                current_target = os.readlink(latest_symlink)
+                if current_target == newest_basename:
+                    needs_update = False
+                    
+            if needs_update:
+                temp_symlink = latest_symlink + ".tmp"
+                if os.path.lexists(temp_symlink):
+                    os.remove(temp_symlink)
+                os.symlink(newest_basename, temp_symlink)
+                os.rename(temp_symlink, latest_symlink)
+        except Exception as e:
+            print(f"Rank 0: Symlink update failed: {e}")
+            
+    def _cleanup_old_checkpoints(self):
+        try:
+            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*.pt")
+            checkpoint_files = glob.glob(pattern)
+            if len(checkpoint_files) <= self.keep_last_n:
+                return
+            checkpoint_files.sort(key=os.path.getmtime, reverse=True)
+            files_to_remove = checkpoint_files[self.keep_last_n:]
+            removed_count = 0
+            for filepath in files_to_remove:
+                try:
+                    os.remove(filepath)
+                    removed_count += 1
+                except OSError:
+                    continue
+            if removed_count > 0:
+                print(f"Rank 0: Removed {removed_count} old checkpoints")
+        except Exception as e:
+            print(f"Rank 0: Checkpoint cleanup failed: {e}")
+            
+    def _cleanup_tmp_files(self):
+        try:
+            cutoff_time = time.time() - (10 * 60)
+            tmp_files = glob.glob(os.path.join(self.checkpoint_dir, "*.tmp"))
+            removed_count = 0
+            for tmp_file in tmp_files:
+                try:
+                    if os.path.getmtime(tmp_file) < cutoff_time:
+                        os.remove(tmp_file)
+                        removed_count += 1
+                except OSError:
+                    continue
+            if removed_count > 0:
+                print(f"Rank 0: Removed {removed_count} stale .tmp files")
+        except Exception as e:
+            print(f"Rank 0: Temp file cleanup failed: {e}")
+
+def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank):
+    """Save checkpoint atomically"""
+    filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}.pt"
+    temp_file = os.path.join(checkpoint_dir, filename + ".tmp")
+    final_file = os.path.join(checkpoint_dir, filename)
+    
+    try:
+        torch.save(checkpoint_data, temp_file)
+        os.rename(temp_file, final_file)
+        return True
+    except Exception as e:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except:
+            pass
+        print(f"Rank {global_rank}: Checkpoint save failed: {e}")
+        return False
 
 @contextlib.contextmanager
 def file_lock(lock_path, timeout=30):
@@ -49,115 +175,6 @@ def file_lock(lock_path, timeout=30):
             except:
                 pass
 
-def update_symlinks_and_cleanup(checkpoint_dir, args):
-    """Update latest.pt, best.pt symlinks and cleanup old checkpoints"""
-    try:
-        # Find all checkpoints
-        all_checkpoints = glob.glob(os.path.join(checkpoint_dir, "step-*.pt"))
-        if not all_checkpoints:
-            return True
-
-        # Parse checkpoints
-        parsed_checkpoints = []
-        for f in all_checkpoints:
-            basename = os.path.basename(f)
-            match = re.search(r'step-(\d+)-rank-(\d+)-loss-([\d.]+)\.pt', basename)
-            if match:
-                parsed_checkpoints.append({
-                    'path': f,
-                    'step': int(match.group(1)),
-                    'rank': int(match.group(2)),
-                    'loss': float(match.group(3)),
-                })
-
-        if not parsed_checkpoints:
-            return True
-        
-        # Update latest.pt
-        latest_ckpt = max(parsed_checkpoints, key=lambda x: x['step'])
-        latest_path = os.path.join(checkpoint_dir, "latest.pt")
-        if os.path.lexists(latest_path): 
-            os.remove(latest_path)
-        os.symlink(os.path.basename(latest_ckpt['path']), latest_path)
-
-        # Update best.pt
-        best_ckpt = min(parsed_checkpoints, key=lambda x: x['loss'])
-        best_path = os.path.join(checkpoint_dir, "best.pt")
-        if os.path.lexists(best_path): 
-            os.remove(best_path)
-        os.symlink(os.path.basename(best_ckpt['path']), best_path)
-
-        # Cleanup old checkpoints
-        steps = sorted(list(set(c['step'] for c in parsed_checkpoints)), reverse=True)
-        if len(steps) > args.keep_checkpoints:
-            steps_to_delete = steps[args.keep_checkpoints:]
-            best_step = best_ckpt['step']  # Preserve the best checkpoint
-            
-            for step_del in steps_to_delete:
-                if step_del == best_step:
-                    continue
-                    
-                for ckpt in parsed_checkpoints:
-                    if ckpt['step'] == step_del:
-                        os.remove(ckpt['path'])
-                        print(f"Cleaned up old checkpoint: {os.path.basename(ckpt['path'])}")
-        
-        return True
-    except Exception as e:
-        print(f"Symlink update failed: {e}")
-        return False
-
-def attempt_save_with_coordination(step, current_ema_fitness, checkpoint_dir, metrics_dir, args, model, optimizer, model_config, global_rank):
-    """Coordinated save attempt - only one rank can save per trigger"""
-    save_lock_path = os.path.join(checkpoint_dir, ".save_coordination.lock")
-    
-    try:
-        with file_lock(save_lock_path, timeout=5):  # Short timeout for save coordination
-            print(f"Rank {global_rank} acquired save coordination lock")
-            
-            # Now that we have the lock, re-check if we're still the best
-            # (metrics might have been updated by other ranks while we waited)
-            all_losses = [current_ema_fitness]
-            
-            for filepath in glob.glob(os.path.join(metrics_dir, "training_metrics_rank_*.tsv")):
-                last_line = _read_last_line(filepath)
-                if last_line and "rank" not in last_line:
-                    try:
-                        parts = last_line.split('\t')
-                        if len(parts) > 4 and parts[4] != "NA":
-                            all_losses.append(float(parts[4]))
-                    except (ValueError, IndexError):
-                        continue
-            
-            min_loss = min(all_losses) if all_losses else float('inf')
-            
-            # Are we still the best?
-            if current_ema_fitness <= min_loss + 1e-6:
-                print(f"Rank {global_rank} confirmed as best ({current_ema_fitness:.4f}) - SAVING!")
-                
-                checkpoint_data = {
-                    'step': step, 'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(), 
-                    'ema_loss': current_ema_fitness,
-                    'model_config': model_config, 'saved_by_rank': global_rank
-                }
-                filename = f"step-{step:06d}-rank-{global_rank:03d}-loss-{current_ema_fitness:.4f}.pt"
-                filepath = os.path.join(checkpoint_dir, filename)
-                torch.save(checkpoint_data, filepath)
-                
-                # Update symlinks immediately (we already have coordination)
-                success = update_symlinks_and_cleanup(checkpoint_dir, args)
-                if success:
-                    print(f"Rank {global_rank} updated symlinks after save")
-                
-                return True
-            else:
-                print(f"Rank {global_rank} no longer best ({current_ema_fitness:.4f} vs {min_loss:.4f}) - another rank was better")
-                return False
-                
-    except TimeoutError:
-        print(f"Rank {global_rank} could not acquire save coordination lock - another rank is saving")
-        return False
 
 # --- 1. SETUP AND CONFIGURATION ---
 
@@ -370,6 +387,14 @@ def main():
     if global_rank == 0 and not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir, exist_ok=True)
     if world_size > 1: dist.barrier()
+
+    # Start checkpoint manager
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=checkpoint_dir,
+        keep_last_n=args.keep_checkpoints,
+        global_rank=global_rank
+    )
+    checkpoint_manager.start()
 
     model_config = None
     checkpoint = None
@@ -589,14 +614,22 @@ def main():
             pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        if step > 0 and random.random() < (1.0 / args.save_every):
-            print(f"Step {step}: Save trigger activated!")
+        if step > 0 and step % args.save_every == 0:
             current_ema_fitness = evolutionary_node.get_current_fitness()
-            attempt_save_with_coordination(step, current_ema_fitness, checkpoint_dir, metrics_dir, args, model, optimizer, model_config, global_rank)
+            checkpoint_data = {
+                'step': step,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'ema_fitness': current_ema_fitness,
+                'model_config': model_config
+            }
+            
+            save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank)
 
 
     pbar.close()
     evolutionary_node.stop_gossip_protocol()
+    checkpoint_manager.stop()
     if global_rank == 0: print("\nTraining complete.")
 
 if __name__ == "__main__":
