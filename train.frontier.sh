@@ -82,7 +82,7 @@ deepspeed \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
-  --save_every 16 \
+  --save_every 50 \
   --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
@@ -93,12 +93,13 @@ deepspeed \
   --context_chunks 16 \
   --dim 2048 \
   --params 1g \
-  --keep_checkpoints 5 \
+  --keep_checkpoints 3 \
   --keep_elite 10 \
+  --archive_rate 0.05 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.03 \
+  --gossip_mixing_rate 0.05 \
   --gossip_fitness_decay 0.95 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --rocm
