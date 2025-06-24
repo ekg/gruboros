@@ -3,7 +3,7 @@ set -e -x
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_8gpu_32k_2048chunk"
+NAME="1g_cuda"
 OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
