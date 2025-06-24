@@ -66,8 +66,8 @@ deepspeed --num_gpus=$NUM_GPUS \
   --context_chunks 16 \
   --params 1g \
   --keep_checkpoints 3 \
-  --keep_elite 10 \
-  --archive_rate 0.1 \
+  --keep_elite 3 \
+  --archive_rate 0.5 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
