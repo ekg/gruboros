@@ -183,11 +183,11 @@ class CheckpointManager:
         try:
             # 1. Identify elite files to keep from our consistent list
             elite_checkpoints = sorted(parsed_checkpoints, key=lambda x: x['loss'])[:self.keep_elite_n]
-            elite_paths = {ckpt['path'] for ckpt in elite_checkpoints}
+            elite_paths = {os.path.realpath(ckpt['path']) for ckpt in elite_checkpoints}
 
             # 2. Identify the N most recent files to keep, also from the consistent list
             sorted_by_time = sorted(parsed_checkpoints, key=lambda x: x['mtime'], reverse=True)
-            recent_paths = {ckpt['path'] for ckpt in sorted_by_time[:self.keep_last_n]}
+            recent_paths = {os.path.realpath(ckpt['path']) for ckpt in sorted_by_time[:self.keep_last_n]}
             
             # --- BUG FIX STARTS HERE ---
             # 3. Identify files that are *already* protected by an archive symlink.
@@ -201,8 +201,8 @@ class CheckpointManager:
 
             # 5. Determine which files to remove. This list will now correctly
             #    exclude any checkpoint that is already archived.
-            all_paths_set = set(all_checkpoint_paths)
-            files_to_remove = [f for f in all_paths_set if f not in files_to_keep]
+            all_paths_set = {os.path.realpath(f) for f in all_checkpoint_paths}
+            files_to_remove = [f for f in all_checkpoint_paths if os.path.realpath(f) not in files_to_keep]
             
             for filepath in files_to_remove:
                 try:
