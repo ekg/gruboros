@@ -517,7 +517,7 @@ def main():
         print(f"Gradient accumulation steps: {args.grad_accum}")
         if args.grad_accum > 1:
             print(f"--> An optimizer step will occur every {args.grad_accum} chunk-steps.")
-            print(f"--> Effective batch size (tokens): {args.batch_size * args.chunk_size * args.grad_accum}")
+            print(f"--> Effective batch size (tokens): {batch_size * chunk_size * args.grad_accum}")
         else:
             print("--> An optimizer step will occur on every chunk-step.")
         print("-------------------------\n")
