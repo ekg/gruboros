@@ -320,32 +320,45 @@ def round_to_multiple(n, multiple=64):
     return multiple * round(n / multiple)
 
 def solve_for_dimension(target_params, depth, vocab_size=256, ff_mult=4, expansion=1.5):
-    factor = 4 * expansion + 2 * ff_mult
+    """Approximates the model dimension `d` for a target parameter count."""
+    # This solver is based on an approximation of the total parameters:
+    # P ≈ depth * (3*e + 2*f)*d^2 + 2*v*d
+    # where d=dim, e=expansion, f=ff_mult, v=vocab_size
+    # This is a quadratic equation in d: (depth*factor)*d^2 + (2*v)*d - P = 0
+    factor = 3 * expansion + 2 * ff_mult
     a = depth * factor
     b = 2 * vocab_size
     c = -target_params
     discriminant = b**2 - 4*a*c
-    if discriminant < 0: raise ValueError("No solution exists")
+    if discriminant < 0: raise ValueError("No real solution for dimension exists with these parameters.")
     dim = (-b + math.sqrt(discriminant)) / (2*a)
     return round_to_multiple(dim)
 
 def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5):
+    """Approximates the model depth for a target parameter count."""
+    # This solver is based on the same approximation as solve_for_dimension.
     embed_params = 2 * dim * vocab_size
-    factor = 4 * expansion + 2 * ff_mult
+    factor = 3 * expansion + 2 * ff_mult
     layer_params = dim * dim * factor
+    if layer_params <= 0: return 1
     depth = (target_params - embed_params) / layer_params
     return max(1, round(depth))
 
 def calculate_model_size(config):
+    """Calculates the approximate parameter count of a minLM model."""
+    # This calculation uses the same approximation as the solvers for consistency.
     dim, depth, vocab_size, ff_mult, expansion = config["dim"], config["depth"], config["num_tokens"], config["ff_mult"], config["expansion"]
     embedding_params = 2 * dim * vocab_size
-    layer_params = dim * dim * (2 * expansion + 2 * ff_mult)
+    # The dominant term for layer parameters comes from d^2 matrices:
+    # minGRU: 3 * expansion * d^2
+    # FFN:    2 * ff_mult * d^2
+    layer_params = dim * dim * (3 * expansion + 2 * ff_mult)
     total_params = embedding_params + depth * layer_params
     return int(total_params)
 
 def get_parameter_count_str(config):
     params = calculate_model_size(config)
-    if params >= 1e9: return f"{params/1e9:.1f}B"
+    if params >= 1e9: return f"{params/1e9:.2f}B"
     if params >= 1e6: return f"{params/1e6:.1f}M"
     return f"{params/1e3:.1f}K"
 
@@ -510,15 +523,28 @@ def main():
             model_config, resume_step = checkpoint.get('model_config'), checkpoint.get('step', 0)
 
     if model_config is None:
+        params_value = parse_size_with_suffix(args.params)
+        
         if args.dim and args.depth:
+            # User specified both, use them directly
             dim = int(parse_size_with_suffix(args.dim))
             depth = args.depth
+        elif args.dim and not args.depth:
+            # User specified dim, solve for depth
+            dim = int(parse_size_with_suffix(args.dim))
+            depth = solve_for_depth(params_value, dim)
+        elif not args.dim and args.depth:
+            # User specified depth, solve for dim
+            depth = args.depth
+            dim = solve_for_dimension(params_value, depth)
         else:
-            params_value = parse_size_with_suffix(args.params)
+            # Default behavior: guess a dim and solve for depth, then refine dim
             base_dim = 512 if params_value < 1e9 else 1024
+            # Heuristic scaling for dimension based on Chinchilla laws (very approximate)
             dim_guess = round_to_multiple(base_dim * (params_value / (100e6 if params_value < 1e9 else 1e9))**0.25)
             depth = solve_for_depth(params_value, dim_guess)
             dim = solve_for_dimension(params_value, depth)
+            
         model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": 4.0, "expansion": 1.5, "enable_conv": False, "dropout": 0.0}
 
     if global_rank == 0:
