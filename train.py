@@ -30,12 +30,14 @@ from gossip import EvolutionaryTrainingNode
 class CheckpointManager:
     """Background thread for rank 0 to handle symlinks and cleanup"""
     
-    def __init__(self, checkpoint_dir, check_interval=10, keep_last_n=5, keep_elite_n=10, global_rank=0):
+    def __init__(self, checkpoint_dir, check_interval=10, keep_last_n=5, keep_elite_n=10, global_rank=0, archive_rate=0.0):
         self.checkpoint_dir = checkpoint_dir
         self.check_interval = check_interval
         self.keep_last_n = keep_last_n
         self.keep_elite_n = keep_elite_n
         self.global_rank = global_rank
+        self.archive_rate = archive_rate
+        self.archive_counter = 0
         self.running = False
         self.thread = None
         self._stop_event = threading.Event()
@@ -96,6 +98,19 @@ class CheckpointManager:
             os.remove(temp_symlink)
         os.symlink(target_basename, temp_symlink)
         os.rename(temp_symlink, symlink_path)
+
+    def _has_archive_symlink(self, filepath):
+        """Check if any archive symlink points to this file."""
+        try:
+            target_path = os.path.realpath(filepath)
+            archive_pattern = os.path.join(self.checkpoint_dir, "archive_*.pt")
+            archive_symlinks = glob.glob(archive_pattern)
+            for symlink in archive_symlinks:
+                if os.path.islink(symlink) and os.path.realpath(symlink) == target_path:
+                    return True
+            return False
+        except Exception:
+            return False
 
     def _update_latest_symlink(self):
         try:
@@ -192,15 +207,28 @@ class CheckpointManager:
 
             files_to_remove = [f for f in checkpoint_files if f not in files_to_keep]
             removed_count = 0
+            archived_count = 0
+            
             for filepath in files_to_remove:
                 try:
-                    os.remove(filepath)
-                    removed_count += 1
+                    # Check if this file should be archived
+                    if self.archive_rate > 0 and random.random() < self.archive_rate:
+                        # Create archive symlink
+                        self.archive_counter += 1
+                        archive_basename = os.path.basename(filepath)
+                        archive_symlink = os.path.join(self.checkpoint_dir, f"archive_{self.archive_counter:03d}.pt")
+                        self._atomic_symlink(archive_basename, archive_symlink)
+                        archived_count += 1
+                    
+                    # Only delete if no archive symlink points to this file
+                    if not self._has_archive_symlink(filepath):
+                        os.remove(filepath)
+                        removed_count += 1
                 except OSError:
                     continue
-            # if removed_count > 0:
-            #     print(f"Rank 0: Removed {removed_count} old checkpoints, preserved {len(files_to_keep)} "
-            #           f"(including best and {len(elite_path_targets)} elite models).")
+            # if removed_count > 0 or archived_count > 0:
+            #     print(f"Rank 0: Removed {removed_count} old checkpoints, archived {archived_count}, "
+            #           f"preserved {len(files_to_keep)} (including best and {len(elite_path_targets)} elite models).")
         except Exception as e:
             print(f"Rank 0: Checkpoint cleanup failed: {e}")
             
@@ -424,6 +452,7 @@ def get_args():
     parser.add_argument('--grad_accum', type=int, default=1, help='gradient accumulation steps')
     parser.add_argument('--keep_checkpoints', type=int, default=3, help='number of recent checkpoints to keep')
     parser.add_argument('--keep_elite', type=int, default=10, help='number of elite models to preserve')
+    parser.add_argument('--archive_rate', type=float, default=0.0, help='probability (0.0-1.0) of archiving checkpoints before deletion')
     parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True)
     parser.add_argument('--sf_beta', type=float, default=0.9)
     parser.add_argument('--sf_beta2', type=float, default=0.999)
@@ -480,7 +509,7 @@ def main():
 
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
-        keep_elite_n=args.keep_elite, global_rank=global_rank
+        keep_elite_n=args.keep_elite, global_rank=global_rank, archive_rate=args.archive_rate
     )
     checkpoint_manager.start()
 
