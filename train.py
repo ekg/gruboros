@@ -65,29 +65,54 @@ class CheckpointManager:
             self.thread.join(timeout=5)
             
     def _manager_loop(self):
+        """
+        Main loop for the manager. It takes a snapshot of the directory,
+        then performs all actions based on that consistent snapshot.
+        """
         while self.running and not self._stop_event.is_set():
             try:
-                self._update_latest_symlink()
-                self._update_best_symlink()
-                self._update_elite_symlinks()
-                self._cleanup_old_checkpoints()
+                # --- 1. TAKE THE SNAPSHOT ---
+                # Get a single, consistent list of checkpoint files at this moment.
+                pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
+                all_checkpoint_paths = glob.glob(pattern)
+                
+                # Parse all files from the snapshot. This list is now the "source of truth" for this cycle.
+                parsed_checkpoints = [p for p in (self._parse_checkpoint(f) for f in all_checkpoint_paths) if p]
+
+                # --- 2. ACT ON THE SNAPSHOT ---
+                if parsed_checkpoints:
+                    self._update_latest_symlink(parsed_checkpoints)
+                    self._update_best_symlink(parsed_checkpoints)
+                    self._update_elite_symlinks(parsed_checkpoints)
+                    self._cleanup_old_checkpoints(parsed_checkpoints, all_checkpoint_paths)
+                
+                # Temp file cleanup can still run independently.
                 self._cleanup_tmp_files()
+                
             except Exception as e:
                 print(f"Rank 0: Checkpoint manager error: {e}")
+
             if self._stop_event.wait(timeout=self.check_interval):
                 break
                 
     def _parse_checkpoint(self, filepath):
-        """Parses metadata from a checkpoint filename."""
+        """Parses metadata from a checkpoint filename, returning None if file vanishes."""
         match = self.ckpt_pattern.search(os.path.basename(filepath))
         if not match:
             return None
-        return {
-            'path': filepath,
-            'rank': int(match.group(1)),
-            'step': int(match.group(2)),
-            'loss': float(match.group(3))
-        }
+        try:
+            # Also get mtime for sorting "latest" files
+            mtime = os.path.getmtime(filepath)
+            return {
+                'path': filepath,
+                'rank': int(match.group(1)),
+                'step': int(match.group(2)),
+                'loss': float(match.group(3)),
+                'mtime': mtime
+            }
+        except FileNotFoundError:
+            # The file was deleted between glob() and getmtime(), which is fine. Ignore it.
+            return None
 
     def _atomic_symlink(self, target_basename, symlink_path):
         """Atomically create or update a symlink."""
@@ -112,30 +137,17 @@ class CheckpointManager:
         except Exception:
             return False
 
-    def _update_latest_symlink(self):
+    def _update_latest_symlink(self, parsed_checkpoints):
         try:
-            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
-            checkpoint_files = glob.glob(pattern)
-            if not checkpoint_files:
-                return
-            newest_file = max(checkpoint_files, key=os.path.getmtime)
-            newest_basename = os.path.basename(newest_file)
+            newest_file = max(parsed_checkpoints, key=lambda x: x['mtime'])
+            newest_basename = os.path.basename(newest_file['path'])
             latest_symlink = os.path.join(self.checkpoint_dir, "latest.pt")
             self._atomic_symlink(newest_basename, latest_symlink)
         except Exception as e:
             print(f"Rank 0: Latest symlink update failed: {e}")
 
-    def _update_best_symlink(self):
+    def _update_best_symlink(self, parsed_checkpoints):
         try:
-            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
-            checkpoint_files = glob.glob(pattern)
-            if not checkpoint_files:
-                return
-
-            parsed_checkpoints = [p for p in (self._parse_checkpoint(f) for f in checkpoint_files) if p]
-            if not parsed_checkpoints:
-                return
-
             best_ckpt = min(parsed_checkpoints, key=lambda x: x['loss'])
             best_basename = os.path.basename(best_ckpt['path'])
             best_symlink = os.path.join(self.checkpoint_dir, "best.pt")
@@ -143,29 +155,18 @@ class CheckpointManager:
         except Exception as e:
             print(f"Rank 0: Best symlink update failed: {e}")
 
-    def _update_elite_symlinks(self):
-        """Update ranked elite model symlinks (elite_01.pt, elite_02.pt, etc.)"""
+    def _update_elite_symlinks(self, parsed_checkpoints):
         try:
-            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
-            checkpoint_files = glob.glob(pattern)
-            if not checkpoint_files:
-                return
-
-            parsed_checkpoints = [p for p in (self._parse_checkpoint(f) for f in checkpoint_files) if p]
-            if not parsed_checkpoints:
-                return
-
-            # Sort by loss (ascending - lower is better) to get the elite models
             elite_checkpoints = sorted(parsed_checkpoints, key=lambda x: x['loss'])[:self.keep_elite_n]
             
-            # Create/update elite symlinks
             for i, elite_ckpt in enumerate(elite_checkpoints, 1):
                 elite_basename = os.path.basename(elite_ckpt['path'])
                 elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
                 self._atomic_symlink(elite_basename, elite_symlink)
             
             # Remove any extra elite symlinks if we have fewer elite models than before
-            for i in range(len(elite_checkpoints) + 1, self.keep_elite_n + 1):
+            # Check a wider range to be safe in case of manual deletions
+            for i in range(len(elite_checkpoints) + 1, self.keep_elite_n + 20):
                 elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
                 if os.path.islink(elite_symlink):
                     os.remove(elite_symlink)
@@ -173,62 +174,41 @@ class CheckpointManager:
         except Exception as e:
             print(f"Rank 0: Elite symlinks update failed: {e}")
             
-    def _cleanup_old_checkpoints(self):
+    def _cleanup_old_checkpoints(self, parsed_checkpoints, all_checkpoint_paths):
+        """Clean up based on the consistent snapshot."""
+        if len(all_checkpoint_paths) <= self.keep_last_n:
+            return
+        
         try:
-            pattern = os.path.join(self.checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt")
-            checkpoint_files = glob.glob(pattern)
-            if len(checkpoint_files) <= self.keep_last_n:
-                return
+            # 1. Identify elite files to keep from our consistent list
+            elite_checkpoints = sorted(parsed_checkpoints, key=lambda x: x['loss'])[:self.keep_elite_n]
+            elite_paths = {ckpt['path'] for ckpt in elite_checkpoints}
 
-            # Find the best checkpoint path to preserve it
-            best_path_target = None
-            best_symlink = os.path.join(self.checkpoint_dir, "best.pt")
-            if os.path.islink(best_symlink):
-                best_path_target = os.path.realpath(best_symlink)
-
-            # Find all elite checkpoint paths to preserve them
-            elite_path_targets = set()
-            for i in range(1, self.keep_elite_n + 1):
-                elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
-                if os.path.islink(elite_symlink):
-                    elite_path_targets.add(os.path.realpath(elite_symlink))
-
-            # Sort by modification time to find the N most recent to keep
-            checkpoint_files.sort(key=os.path.getmtime, reverse=True)
+            # 2. Identify the N most recent files to keep, also from the consistent list
+            sorted_by_time = sorted(parsed_checkpoints, key=lambda x: x['mtime'], reverse=True)
+            recent_paths = {ckpt['path'] for ckpt in sorted_by_time[:self.keep_last_n]}
             
-            # Identify files to keep: the N newest, plus the best one, plus all elite ones
-            files_to_keep = set(checkpoint_files[:self.keep_last_n])
-            if best_path_target and os.path.exists(best_path_target):
-                files_to_keep.add(best_path_target)
-            # Add all elite targets
-            for elite_target in elite_path_targets:
-                if os.path.exists(elite_target):
-                    files_to_keep.add(elite_target)
+            # 3. Combine the sets of files to preserve. This set is the ground truth for this cycle.
+            files_to_keep = elite_paths.union(recent_paths)
 
-            files_to_remove = [f for f in checkpoint_files if f not in files_to_keep]
-            removed_count = 0
-            archived_count = 0
+            # 4. Determine which files to remove from the original full list.
+            # Any file created *after* the glob will not be in all_checkpoint_paths,
+            # and is therefore safe from deletion in this cycle.
+            all_paths_set = set(all_checkpoint_paths)
+            files_to_remove = [f for f in all_paths_set if f not in files_to_keep]
             
             for filepath in files_to_remove:
                 try:
-                    # Check if this file should be archived
                     if self.archive_rate > 0 and random.random() < self.archive_rate:
-                        # Create archive symlink
                         self.archive_counter += 1
                         archive_basename = os.path.basename(filepath)
                         archive_symlink = os.path.join(self.checkpoint_dir, f"archive_{self.archive_counter:03d}.pt")
                         self._atomic_symlink(archive_basename, archive_symlink)
-                        archived_count += 1
                     
-                    # Only delete if no archive symlink points to this file
                     if not self._has_archive_symlink(filepath):
                         os.remove(filepath)
-                        removed_count += 1
-                except OSError:
+                except OSError: # Catches FileNotFoundError and other issues
                     continue
-            # if removed_count > 0 or archived_count > 0:
-            #     print(f"Rank 0: Removed {removed_count} old checkpoints, archived {archived_count}, "
-            #           f"preserved {len(files_to_keep)} (including best and {len(elite_path_targets)} elite models).")
         except Exception as e:
             print(f"Rank 0: Checkpoint cleanup failed: {e}")
             
