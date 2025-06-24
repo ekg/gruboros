@@ -176,7 +176,8 @@ class CheckpointManager:
             
     def _cleanup_old_checkpoints(self, parsed_checkpoints, all_checkpoint_paths):
         """Clean up based on the consistent snapshot."""
-        if len(all_checkpoint_paths) <= self.keep_last_n:
+        # A simple check to avoid work if there's nothing to clean up.
+        if len(all_checkpoint_paths) <= self.keep_last_n and len(all_checkpoint_paths) <= self.keep_elite_n:
             return
         
         try:
@@ -188,23 +189,32 @@ class CheckpointManager:
             sorted_by_time = sorted(parsed_checkpoints, key=lambda x: x['mtime'], reverse=True)
             recent_paths = {ckpt['path'] for ckpt in sorted_by_time[:self.keep_last_n]}
             
-            # 3. Combine the sets of files to preserve. This set is the ground truth for this cycle.
-            files_to_keep = elite_paths.union(recent_paths)
+            # --- BUG FIX STARTS HERE ---
+            # 3. Identify files that are *already* protected by an archive symlink.
+            archive_symlinks = glob.glob(os.path.join(self.checkpoint_dir, "archive_*.pt"))
+            # Get the real, absolute path of the target file for each archive symlink.
+            archived_target_paths = {os.path.realpath(s) for s in archive_symlinks if os.path.islink(s)}
 
-            # 4. Determine which files to remove from the original full list.
-            # Any file created *after* the glob will not be in all_checkpoint_paths,
-            # and is therefore safe from deletion in this cycle.
+            # 4. Combine ALL sets of files to preserve: elites, recents, AND existing archives.
+            files_to_keep = elite_paths.union(recent_paths).union(archived_target_paths)
+            # --- BUG FIX ENDS HERE ---
+
+            # 5. Determine which files to remove. This list will now correctly
+            #    exclude any checkpoint that is already archived.
             all_paths_set = set(all_checkpoint_paths)
             files_to_remove = [f for f in all_paths_set if f not in files_to_keep]
             
             for filepath in files_to_remove:
                 try:
+                    # This file is guaranteed not to have an archive link yet.
                     if self.archive_rate > 0 and random.random() < self.archive_rate:
                         self.archive_counter += 1
                         archive_basename = os.path.basename(filepath)
                         archive_symlink = os.path.join(self.checkpoint_dir, f"archive_{self.archive_counter:03d}.pt")
                         self._atomic_symlink(archive_basename, archive_symlink)
                     
+                    # We still need this check, because we might have *just* created an archive link
+                    # in the lines above.
                     if not self._has_archive_symlink(filepath):
                         os.remove(filepath)
                 except OSError: # Catches FileNotFoundError and other issues
