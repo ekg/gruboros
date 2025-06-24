@@ -189,7 +189,6 @@ class CheckpointManager:
             sorted_by_time = sorted(parsed_checkpoints, key=lambda x: x['mtime'], reverse=True)
             recent_paths = {os.path.realpath(ckpt['path']) for ckpt in sorted_by_time[:self.keep_last_n]}
             
-            # --- BUG FIX STARTS HERE ---
             # 3. Identify files that are *already* protected by an archive symlink.
             archive_symlinks = glob.glob(os.path.join(self.checkpoint_dir, "archive_*.pt"))
             # Get the real, absolute path of the target file for each archive symlink.
@@ -197,7 +196,6 @@ class CheckpointManager:
 
             # 4. Combine ALL sets of files to preserve: elites, recents, AND existing archives.
             files_to_keep = elite_paths.union(recent_paths).union(archived_target_paths)
-            # --- BUG FIX ENDS HERE ---
 
             # 5. Determine which files to remove. This list will now correctly
             #    exclude any checkpoint that is already archived.
