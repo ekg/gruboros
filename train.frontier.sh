@@ -39,9 +39,21 @@ echo "Launcher hostfile created at $HOSTFILE_NAME"
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1g_32k"
+
+# Try to get git commit hash (first 7 chars)
+GIT_HASH=""
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    GIT_HASH=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
+fi
+
+# Build output directory name with optional git hash
 # --- FIX: Use a relative path for the output directory ---
 # This ensures outputs are created within the project directory, next to 'logs'.
-OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
+if [ -n "$GIT_HASH" ]; then
+    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}_${GIT_HASH}"
+else
+    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
+fi
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
 
 # Use the node-local NVMe for the temporary gossip directory

@@ -4,7 +4,19 @@ set -e -x
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1g_cuda"
-OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
+
+# Try to get git commit hash (first 7 chars)
+GIT_HASH=""
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    GIT_HASH=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
+fi
+
+# Build output directory name with optional git hash
+if [ -n "$GIT_HASH" ]; then
+    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}_${GIT_HASH}"
+else
+    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
+fi
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
     echo "ERROR: Data file not found at $DATA_PATH"
