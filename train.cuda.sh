@@ -55,7 +55,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
-  --save_every 256 \
+  --save_every 64 \
   --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
