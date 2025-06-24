@@ -3,7 +3,7 @@ set -e -x
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_8gpu_16k_2048chunk"
+NAME="1g_8gpu_32k_2048chunk"
 OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
@@ -42,16 +42,16 @@ deepspeed --num_gpus=$NUM_GPUS \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --train_steps 80000 \
-  --save_every 2000 \
+  --train_steps 100000 \
+  --save_every 256 \
   --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
-  --grad_accum 8 \
+  --grad_accum 16 \
   --chunk_size 2048 \
-  --context_chunks 8 \
+  --context_chunks 16 \
   --params 1g \
   --keep_checkpoints 3 \
   --gossip_merge_method recombination \
