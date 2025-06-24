@@ -102,6 +102,7 @@ deepspeed \
   --gossip_mixing_rate 0.03 \
   --gossip_fitness_decay 0.95 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
+  --gossip-node-local-lock \
   --rocm
 
 echo "Training finished."

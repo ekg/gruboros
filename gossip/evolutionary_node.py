@@ -10,11 +10,37 @@ import queue
 import struct
 from typing import Dict, Optional
 from dataclasses import dataclass
+from pathlib import Path
+import torch.distributed as dist
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
 from .structured_logger import GossipLogger
 import tempfile
 import uuid
+import fcntl
+import contextlib
+
+@contextlib.contextmanager
+def file_lock(lock_path, timeout=0.1):
+    """
+    A non-blocking file-based lock for inter-process synchronization on a single node.
+    If the lock cannot be acquired within the timeout, it raises a TimeoutError.
+    This is a self-contained copy for modularity.
+    """
+    lock_file = open(lock_path, 'w')
+    try:
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                yield
+                return
+            except BlockingIOError:
+                time.sleep(0.01)
+        raise TimeoutError(f"Could not acquire lock on {lock_path} within {timeout}s")
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
 @dataclass
 class WeightUpdate:
@@ -33,7 +59,8 @@ class EvolutionaryTrainingNode:
                  recombination_alpha: float = 0.5,
                  optimizer_recombination: str = 'reset',
                  gossip_temp_dir: Optional[str] = None,
-                 fitness_decay_factor: float = 0.95):
+                 fitness_decay_factor: float = 0.95,
+                 use_node_local_lock: bool = False):
         # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
@@ -47,6 +74,7 @@ class EvolutionaryTrainingNode:
         self.merge_method = merge_method
         self.recombination_alpha = recombination_alpha
         self.optimizer_recombination = optimizer_recombination
+        self.use_node_local_lock = use_node_local_lock
         
         # Now initialize other attributes
         self.mixing_rng = random.Random(42 + self.global_rank * 1000)
@@ -114,11 +142,27 @@ class EvolutionaryTrainingNode:
         self.successful_mixes = 0
         self.current_step = 0
         
+        # Conditional node-local lock setup
+        if self.use_node_local_lock:
+            self.node_lock_path = os.path.join(self.gossip_temp_dir, "gossip.node.lock")
+            # The first rank on each node initializes/clears the lock file.
+            # `global_rank == local_rank` is a safe way to identify the first rank on a node.
+            if self.global_rank == self.local_rank:
+                 if os.path.exists(self.node_lock_path):
+                     os.remove(self.node_lock_path)
+                 Path(self.node_lock_path).touch()
+            # All ranks must wait for the file to be created before proceeding.
+            if self.world_size > 1 and dist.is_initialized():
+                dist.barrier()
+            self.logger.log_event("NODE_LOCK_ENABLED", message=f"Lock file: {self.node_lock_path}")
+
         # New gossip metrics
         self.outbound_mixes_attempted = 0
         self.inbound_mixes_attempted = 0
         self.mixes_won = 0  # When we send our weights
         self.mixes_lost = 0  # When we receive weights
+        if self.use_node_local_lock:
+            self.mixes_skipped_locked = 0
         
         # --- Initialize peer_list in the constructor to prevent race conditions ---
         # The gossip worker thread populates this, but the main thread may access it before population.
@@ -292,11 +336,27 @@ class EvolutionaryTrainingNode:
                     
                     # Check if we should attempt mixing on this step
                     if self.mixing_rng.random() < self.mixing_probability:
-                        self.logger.log_event("MIX_DECISION", 
-                                             step=step,
-                                             fitness=self.get_current_fitness(),
-                                             message="Random check triggered mixing attempt")
-                        self._try_mix_with_peer()
+                        # Conditional locking logic
+                        if self.use_node_local_lock:
+                            try:
+                                with file_lock(self.node_lock_path, timeout=0.05):
+                                    self.logger.log_event("MIX_DECISION_LOCKED", 
+                                                         step=step,
+                                                         fitness=self.get_current_fitness(),
+                                                         message="Acquired node lock, proceeding with mix.")
+                                    self._try_mix_with_peer()
+                            except TimeoutError:
+                                self.mixes_skipped_locked += 1
+                                self.logger.log_event("MIX_ATTEMPT_SKIPPED", 
+                                                     step=step,
+                                                     message="Node lock was busy, skipping mix attempt.")
+                        else:
+                            # Original behavior: mix without locking
+                            self.logger.log_event("MIX_DECISION", 
+                                                 step=step,
+                                                 fitness=self.get_current_fitness(),
+                                                 message="Attempting mix (locking disabled).")
+                            self._try_mix_with_peer()
                     
                     # Mark step notification as processed
                     self.step_notifications.task_done()
@@ -658,7 +718,7 @@ class EvolutionaryTrainingNode:
         # This can happen due to timeouts, network errors, etc.
         failed_mixes = (outbound + inbound) - (won + lost)
 
-        return {
+        status = {
             'node_id': self.node_id,
             'fitness': self.get_current_fitness(),
             'peer_count': len(self.peer_list),
@@ -672,3 +732,8 @@ class EvolutionaryTrainingNode:
             'lost_mixes': lost,
             'failed_mixes': failed_mixes
         }
+        # Conditionally add the lock metric
+        if self.use_node_local_lock:
+            status['skipped_due_to_lock'] = self.mixes_skipped_locked
+        
+        return status
