@@ -91,6 +91,7 @@ deepspeed \
   --grad_accum 16 \
   --chunk_size 2048 \
   --context_chunks 16 \
+  --dim 2048 \
   --params 1g \
   --keep_checkpoints 5 \
   --keep_elite 10 \
