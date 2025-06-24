@@ -728,11 +728,24 @@ def main():
 
         # Probabilistic Saving
         if step > 0 and save_probability > 0 and random.random() < save_probability:
-            checkpoint_data = {
-                'step': step, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
-                'ema_fitness': current_ema_fitness, 'model_config': model_config
-            }
-            save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
+            if args.use_gossip_lock:
+                try:
+                    with file_lock(evolutionary_node.node_lock_path, timeout=0.1):
+                        checkpoint_data = {
+                            'step': step, 'model_state_dict': model.state_dict(), 
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'ema_fitness': current_ema_fitness, 'model_config': model_config
+                        }
+                        save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
+                except TimeoutError:
+                    pass  # Skip checkpoint if gossip is active
+            else:
+                checkpoint_data = {
+                    'step': step, 'model_state_dict': model.state_dict(), 
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'ema_fitness': current_ema_fitness, 'model_config': model_config
+                }
+                save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
         
         step += 1
 
