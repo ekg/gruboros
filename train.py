@@ -469,6 +469,8 @@ def get_args():
                         help='Directory for temporary gossip payloads. Defaults to $SCRATCH or /tmp.')
     parser.add_argument('--gossip_fitness_decay', type=float, default=0.95,
                         help='Decay factor for the EMA loss used as fitness (e.g., 0.9 to 0.995).')
+    parser.add_argument('--gossip-node-local-lock', dest='use_gossip_lock', action='store_true', default=False,
+                        help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -606,6 +608,9 @@ def main():
             # --- NEW COLUMNS ---
             "initiated_mixes", "received_mixes", "won_mixes", "lost_mixes", "failed_mixes"
         ]
+        # Conditionally add the lock metric header
+        if args.use_gossip_lock:
+            header.append("skipped_due_to_lock")
         f.write('\t'.join(header) + '\n')
 
     evolutionary_node = EvolutionaryTrainingNode(
@@ -614,7 +619,8 @@ def main():
         tp_size=1, mixing_probability=args.gossip_mixing_rate, output_dir=checkpoint_dir,
         merge_method=args.gossip_merge_method, recombination_alpha=args.gossip_recombination_alpha,
         optimizer_recombination=args.gossip_optimizer_recombination, gossip_temp_dir=args.gossip_temp_dir,
-        fitness_decay_factor=args.gossip_fitness_decay
+        fitness_decay_factor=args.gossip_fitness_decay,
+        use_node_local_lock=args.use_gossip_lock
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")
@@ -643,6 +649,9 @@ def main():
             mix_status['lost_mixes'],
             mix_status['failed_mixes']
         ]]
+        # Conditionally add the lock metric value
+        if args.use_gossip_lock:
+            values.append(str(mix_status.get('skipped_due_to_lock', 0)))
         with open(metrics_log_path, 'a') as f:
             f.write('\t'.join(values) + '\n')
 
@@ -710,7 +719,11 @@ def main():
         log_metrics(step, chunk_loss, current_ema_fitness, status)
 
         if global_rank == 0:
-            pbar.set_postfix_str(f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
+            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}"
+            # Conditionally add lock info to progress bar
+            if 'skipped_due_to_lock' in status:
+                pbar_str += f" skipped={status['skipped_due_to_lock']}"
+            pbar.set_postfix_str(pbar_str)
             pbar.update(1)
 
         # Probabilistic Saving
