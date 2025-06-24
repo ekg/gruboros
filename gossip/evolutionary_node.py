@@ -648,15 +648,27 @@ class EvolutionaryTrainingNode:
         pass
     
     def get_status(self) -> dict:
+        """Returns a comprehensive dictionary of the node's current status."""
+        outbound = self.outbound_mixes_attempted
+        inbound = self.inbound_mixes_attempted
+        won = self.mixes_won
+        lost = self.mixes_lost
+        
+        # A mix fails if it was attempted (inbound or outbound) but did not result in a win or loss.
+        # This can happen due to timeouts, network errors, etc.
+        failed_mixes = (outbound + inbound) - (won + lost)
+
         return {
             'node_id': self.node_id,
             'fitness': self.get_current_fitness(),
             'peer_count': len(self.peer_list),
-            'mixing_attempts': self.mixing_attempts,
             'successful_mixes': self.successful_mixes,
-            'outbound_attempted': self.outbound_mixes_attempted,
-            'inbound_attempted': self.inbound_mixes_attempted,
-            'mixes_won': self.mixes_won,
-            'mixes_lost': self.mixes_lost,
-            'current_step': self.current_step
+            'current_step': self.current_step,
+            
+            # --- NEW METRICS FOR LOGGING ---
+            'initiated_mixes': outbound,
+            'received_mixes': inbound,
+            'won_mixes': won,
+            'lost_mixes': lost,
+            'failed_mixes': failed_mixes
         }

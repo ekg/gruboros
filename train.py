@@ -557,7 +557,13 @@ def main():
     metrics_dir = os.path.join(checkpoint_dir, "metrics")
     metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{global_rank:03d}.tsv")
     with open(metrics_log_path, 'w') as f:
-        f.write('\t'.join(["rank", "step", "time_elapsed_s", "train_loss", "ema_loss", "total_tokens_processed", "tokens_per_sec", "learning_rate"]) + '\n')
+        header = [
+            "rank", "step", "time_elapsed_s", "train_loss", "ema_loss", 
+            "total_tokens_processed", "tokens_per_sec", "learning_rate",
+            # --- NEW COLUMNS ---
+            "initiated_mixes", "received_mixes", "won_mixes", "lost_mixes", "failed_mixes"
+        ]
+        f.write('\t'.join(header) + '\n')
 
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{global_rank}", model=model, optimizer=optimizer, global_rank=global_rank,
@@ -576,16 +582,23 @@ def main():
 
     # --- 4. UNIFIED TRAINING LOOP ---
     
-    def log_metrics(step, train_loss, ema_loss=None):
+    def log_metrics(step, train_loss, ema_loss, mix_status):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         total_tokens_processed = (step + 1) * batch_size * chunk_size
         tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
         current_lr = optimizer.param_groups[0]['lr']
+        
         values = [str(v) for v in [
             global_rank, step, f"{elapsed:.2f}", f"{train_loss:.6f}",
             f"{ema_loss:.6f}" if ema_loss is not None else "NA",
-            total_tokens_processed, f"{tokens_per_sec:.2f}", f"{current_lr:.8f}"
+            total_tokens_processed, f"{tokens_per_sec:.2f}", f"{current_lr:.8f}",
+            # --- NEW VALUES ---
+            mix_status['initiated_mixes'],
+            mix_status['received_mixes'],
+            mix_status['won_mixes'],
+            mix_status['lost_mixes'],
+            mix_status['failed_mixes']
         ]]
         with open(metrics_log_path, 'a') as f:
             f.write('\t'.join(values) + '\n')
@@ -646,10 +659,14 @@ def main():
         evolutionary_node.check_for_updates()
         evolutionary_node.request_mix()
         current_ema_fitness = evolutionary_node.get_current_fitness()
-        log_metrics(step, chunk_loss, current_ema_fitness)
+        
+        # Get the full status dictionary once per step
+        status = evolutionary_node.get_status()
+        
+        # Pass the status to the logging function
+        log_metrics(step, chunk_loss, current_ema_fitness, status)
 
         if global_rank == 0:
-            status = evolutionary_node.get_status()
             pbar.set_postfix_str(f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
