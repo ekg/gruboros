@@ -42,14 +42,14 @@ deepspeed --num_gpus=$NUM_GPUS \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --train_steps 10000 \
-  --save_every 50 \
+  --train_steps 80000 \
+  --save_every 2000 \
   --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
-  --grad_accum 1 \
+  --grad_accum 8 \
   --chunk_size 2048 \
   --context_chunks 8 \
   --params 1g \

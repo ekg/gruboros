@@ -448,7 +448,7 @@ def get_args():
 def main():
     args = get_args()
 
-    # --- 2. DISTRIBUTED INITIALIZATION (MANUAL) ---
+    # --- 1. DISTRIBUTED INITIALIZATION ---
     configure_backend(args)
     
     global_rank = int(os.environ.get('RANK', '0'))
@@ -457,44 +457,35 @@ def main():
 
     if world_size > 1:
         dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
-        if global_rank == 0:
-            print(f"Process group initialized with {world_size} ranks (GLOO backend).")
     
     device = torch.device(f'cuda:{local_rank}')
     torch.cuda.set_device(device)
-
     random.seed(SEED + global_rank)
+
     if global_rank == 0:
         debug_distributed_info(global_rank)
         print(f"\nRe-seeded Python's random module per-rank to ensure stochastic mixing.\n")
 
-    # --- 3. MODEL, OPTIMIZER, AND DATA SETUP ---
+    # --- 2. CONFIGURATION AND SETUP ---
     train_steps = int(parse_size_with_suffix(args.train_steps))
     chunk_size = int(parse_size_with_suffix(args.chunk_size))
     batch_size = int(parse_size_with_suffix(args.batch_size))
     batches_per_epoch = int(parse_size_with_suffix(args.batches_per_epoch))
-
+    
     resuming = args.resume is not None
     resume_step = 0
     checkpoint_dir = args.output or f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     if resuming:
         checkpoint_dir = os.path.dirname(args.resume) if os.path.isfile(args.resume) else args.resume
-    
-    # Directory creation is now handled by the shell script - no barriers needed
 
-    # Start checkpoint manager
     checkpoint_manager = CheckpointManager(
-        checkpoint_dir=checkpoint_dir,
-        keep_last_n=args.keep_checkpoints,
-        keep_elite_n=args.keep_elite,
-        global_rank=global_rank
+        checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
+        keep_elite_n=args.keep_elite, global_rank=global_rank
     )
     checkpoint_manager.start()
 
-    model_config = None
-    checkpoint = None
+    model_config, checkpoint = None, None
     if resuming:
-        # Resuming is robust because 'latest.pt' points to the newest file format
         path = args.resume if os.path.isfile(args.resume) else os.path.join(args.resume, "latest.pt")
         if os.path.exists(path):
             if global_rank == 0: print(f"Loading checkpoint from {path}")
@@ -519,8 +510,20 @@ def main():
         with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
             json.dump(model_config, f, indent=2)
 
-    model = get_model(model_config).to(device)
+        ### NEW: EXPLANATION OF THE TRAINING DYNAMICS ###
+        print("\n--- Training Dynamics ---")
+        print(f"A 'step' is one chunk of size {chunk_size}.")
+        print(f"TBPTT context is carried for {args.context_chunks} chunks before reset.")
+        print(f"Gradient accumulation steps: {args.grad_accum}")
+        if args.grad_accum > 1:
+            print(f"--> An optimizer step will occur every {args.grad_accum} chunk-steps.")
+            print(f"--> Effective batch size (tokens): {args.batch_size * args.chunk_size * args.grad_accum}")
+        else:
+            print("--> An optimizer step will occur on every chunk-step.")
+        print("-------------------------\n")
 
+
+    model = get_model(model_config).to(device)
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     if resuming and checkpoint:
@@ -531,196 +534,134 @@ def main():
     if args.schedulefree: optimizer.train()
 
     train_dataset = ContinuousIIDDataset(
-        args.data,
-        chunk_size=chunk_size,
-        context_chunks=args.context_chunks,
-        seed=SEED + global_rank,
-        samples_per_epoch=batches_per_epoch * batch_size,
-        batch_size=batch_size,
-        global_rank=global_rank
+        args.data, chunk_size=chunk_size, context_chunks=args.context_chunks,
+        seed=SEED + global_rank, samples_per_epoch=batches_per_epoch * batch_size,
+        batch_size=batch_size, global_rank=global_rank
     )
     
-    # --- REMOVE DistributedSampler ---
-    # The core of the bug is a conceptual mismatch. DistributedSampler is designed to PARTITION
-    # a dataset into non-overlapping chunks for data-parallel training.
-    # However, our ContinuousIIDDataset is already designed for IID sampling; each rank
-    # has its own random seed and can sample from the entire dataset independently.
-    # Forcing it through a partitioning sampler is incorrect and causes the crash when
-    # len(dataset) < world_size. The correct approach is to not use a sampler at all.
-    train_sampler = None
-    
-    # Calculate DataLoader workers based on hardware topology
-    # Revert to the original logic that was working with deepspeed launcher
+    # Correct DataLoader setup from previous iteration
     ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size if world_size > 0 else 1))
-    
-    # Calculate available CPUs per rank.
     cpus_available = os.cpu_count() or 1
-    # If running on a single process, ranks_per_node can be larger than cpus_available,
-    # so we take the min to avoid nonsensical division.
-    if ranks_per_node > 0 and ranks_per_node <= cpus_available:
-        cpus_per_rank = cpus_available // ranks_per_node
-    else:
-        # This case should not happen with Slurm, but as a fallback.
-        cpus_per_rank = 1
-    
-    num_workers = max(0, cpus_per_rank - 1)  # Reserve 1 CPU for main thread
-    persistent_workers = num_workers > 0
-    prefetch_factor = 4 if num_workers > 0 else None
-    
+    cpus_per_rank = (cpus_available // ranks_per_node) if ranks_per_node > 0 and ranks_per_node <= cpus_available else 1
+    num_workers = max(0, cpus_per_rank - 1)
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        sampler=None,
-        # Set shuffle=False. The randomness is handled entirely inside our
-        # ContinuousIIDDataset via its per-rank random seed. This ensures NO coordination.
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=persistent_workers,
-        prefetch_factor=prefetch_factor,
-        drop_last=True
+        train_dataset, batch_size=batch_size, sampler=None, shuffle=False,
+        num_workers=num_workers, pin_memory=True, persistent_workers=(num_workers > 0),
+        prefetch_factor=4 if num_workers > 0 else None, drop_last=True
     )
     
     if global_rank == 0:
         print(f"DataLoader configuration: {num_workers} workers per rank ({cpus_per_rank} CPUs per rank, {ranks_per_node} ranks per node)")
-    
-    # --- 4. GOSSIP AND TRAINING LOOP ---
-    # Subdirectories are pre-created by the shell script - no barriers needed
 
-    # Create per-rank metrics log file
+    # --- 3. GOSSIP AND METRICS SETUP ---
     metrics_dir = os.path.join(checkpoint_dir, "metrics")
     metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{global_rank:03d}.tsv")
     with open(metrics_log_path, 'w') as f:
-        header = [
-            "rank", "step", "time_elapsed_s", "train_loss", "ema_loss", 
-            "total_tokens_processed", "tokens_per_sec", "learning_rate"
-        ]
-        f.write('\t'.join(header) + '\n')
+        f.write('\t'.join(["rank", "step", "time_elapsed_s", "train_loss", "ema_loss", "total_tokens_processed", "tokens_per_sec", "learning_rate"]) + '\n')
 
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{global_rank}", model=model, optimizer=optimizer, global_rank=global_rank,
         local_rank=local_rank, world_size=world_size, data_parallel_rank=global_rank,
         tp_size=1, mixing_probability=args.gossip_mixing_rate, output_dir=checkpoint_dir,
-        merge_method=args.gossip_merge_method,
-        recombination_alpha=args.gossip_recombination_alpha,
-        optimizer_recombination=args.gossip_optimizer_recombination,
-        gossip_temp_dir=args.gossip_temp_dir,
+        merge_method=args.gossip_merge_method, recombination_alpha=args.gossip_recombination_alpha,
+        optimizer_recombination=args.gossip_optimizer_recombination, gossip_temp_dir=args.gossip_temp_dir,
         fitness_decay_factor=args.gossip_fitness_decay
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")
 
     start_time = time.time()
-    loss_value = 0.0
     total_tokens_processed = 0
-    pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
+    save_probability = 1.0 / (args.save_every * world_size) if world_size > 1 and args.save_every > 0 else (1.0 / args.save_every if args.save_every > 0 else 0)
 
-    # --- Probabilistic Saving Setup ---
-    # We want, on average, one save every `args.save_every` steps across the entire cluster.
-    save_probability = 1.0 / (args.save_every * world_size) if world_size > 1 else (1.0 / args.save_every)
-    if global_rank == 0:
-        print(f"Checkpoint save probability per step per rank: {save_probability:.6f}")
-        print(f"Expected saves per {args.save_every} steps (cluster-wide): 1.0")
-
-    # Helper function to log metrics (per-rank)
+    # --- 4. UNIFIED TRAINING LOOP ---
+    
     def log_metrics(step, train_loss, ema_loss=None):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
-        # Note: total_tokens_processed is now based on meta-steps
-        total_tokens_processed = step * batch_size * chunk_size * args.context_chunks
+        total_tokens_processed = (step + 1) * batch_size * chunk_size
         tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
         current_lr = optimizer.param_groups[0]['lr']
-
-        values = [
-            str(global_rank),
-            str(step),
-            f"{elapsed:.2f}",
-            f"{train_loss:.6f}",
+        values = [str(v) for v in [
+            global_rank, step, f"{elapsed:.2f}", f"{train_loss:.6f}",
             f"{ema_loss:.6f}" if ema_loss is not None else "NA",
-            str(total_tokens_processed),
-            f"{tokens_per_sec:.2f}",
-            f"{current_lr:.8f}"
-        ]
-
+            total_tokens_processed, f"{tokens_per_sec:.2f}", f"{current_lr:.8f}"
+        ]]
         with open(metrics_log_path, 'a') as f:
             f.write('\t'.join(values) + '\n')
 
-    for step in range(resume_step, train_steps):
-        # A "step" is now a full pass over `context_chunks`
-        long_batch = next(iter(train_loader))
+    pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
+    step = resume_step
+    data_iterator = iter(train_loader)
+    hidden_state = None
+    optimizer.zero_grad() # Prepare for the first accumulation cycle.
 
+    while step < train_steps:
+        # Check for and apply any pending model updates at the beginning of the step.
         was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
-        
         if needs_optimizer_reset:
-            if global_rank == 0:
-                print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
+            if global_rank == 0: print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
             optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
             if args.schedulefree: optimizer.train()
             evolutionary_node.optimizer = optimizer
+            optimizer.zero_grad() # Crucially, zero the new optimizer's grads.
 
-        optimizer.zero_grad()
+        # Fetch a new long batch if we're at the start of a context window.
+        if step % args.context_chunks == 0:
+            try:
+                long_batch = next(data_iterator)
+            except StopIteration:
+                data_iterator = iter(train_loader)
+                long_batch = next(data_iterator)
+            # Reset hidden state for the new, unrelated sequence.
+            hidden_state = None
 
-        hidden_state = None
-        total_loss = 0.0
-
-        # --- TBPTT Inner Loop ---
-        for i in range(args.context_chunks):
-            start_idx = i * chunk_size
-            end_idx = start_idx + chunk_size + 1
-            chunk = long_batch[:, start_idx:end_idx].to(device, non_blocking=True)
-            
-            # The model needs to return loss AND the next hidden state
-            loss, next_hidden_state = model(
-                chunk,
-                return_loss=True,
-                return_prev_hiddens=True,
-                prev_hiddens=hidden_state
-            )
-
-            # Normalize loss to maintain stable gradient magnitudes
-            # This is equivalent to averaging the loss over all chunks
-            normalized_loss = loss / args.context_chunks
-            normalized_loss.backward()
-            
-            total_loss += normalized_loss.detach().item()
-
-            # --- This is the "Truncated" part of TBPTT ---
-            # We detach the hidden state from the computation graph so that
-            # gradients do not flow back to the previous chunk.
-            if next_hidden_state:
-                hidden_state = [h.detach() for h in next_hidden_state]
+        # Get the current chunk from the long batch.
+        chunk_idx_in_batch = step % args.context_chunks
+        start_idx = chunk_idx_in_batch * chunk_size
+        chunk = long_batch[:, start_idx : start_idx + chunk_size + 1].to(device, non_blocking=True)
         
-        optimizer.step()
-        loss_value = total_loss # This is now the average loss over the effective sequence
+        # Forward pass for one chunk.
+        loss, next_hidden_state = model(
+            chunk, return_loss=True, return_prev_hiddens=True, prev_hiddens=hidden_state
+        )
         
-        evolutionary_node.update_fitness(loss_value, step)
+        chunk_loss = loss.detach().item()
+
+        # Scale loss for gradient accumulation and perform backward pass.
+        scaled_loss = loss / args.grad_accum
+        scaled_loss.backward()
+
+        # Detach hidden state for the next TBPTT step.
+        if next_hidden_state:
+            hidden_state = [h.detach() for h in next_hidden_state]
+        
+        # --- Optimizer Step Gate ---
+        if (step + 1) % args.grad_accum == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+        
+        # --- High-frequency operations follow (every chunk-step) ---
+        evolutionary_node.update_fitness(chunk_loss, step)
         evolutionary_node.check_for_updates()
         evolutionary_node.request_mix()
-
         current_ema_fitness = evolutionary_node.get_current_fitness()
-        log_metrics(step, loss_value, current_ema_fitness)
+        log_metrics(step, chunk_loss, current_ema_fitness)
 
         if global_rank == 0:
             status = evolutionary_node.get_status()
-            pbar.set_postfix_str(f"loss={loss_value:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
+            pbar.set_postfix_str(f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}")
             pbar.update(1)
 
-        # --- Probabilistic Saving ---
-        if step > 0 and random.random() < save_probability:
-            # We already have the current EMA fitness
-            # if global_rank == 0:
-            #     print(f"\nRank {global_rank} triggered save at step {step} with EMA loss {current_ema_fitness:.4f}")
-
+        # Probabilistic Saving
+        if step > 0 and save_probability > 0 and random.random() < save_probability:
             checkpoint_data = {
-                'step': step,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'ema_fitness': current_ema_fitness,
-                'model_config': model_config
+                'step': step, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
+                'ema_fitness': current_ema_fitness, 'model_config': model_config
             }
-            
             save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
-
+        
+        step += 1
 
     pbar.close()
     evolutionary_node.stop_gossip_protocol()

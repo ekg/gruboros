@@ -69,14 +69,14 @@ deepspeed \
   train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
-  --train_steps 30000 \
-  --save_every 1 \
+  --train_steps 480000 \
+  --save_every 5000 \
   --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
-  --grad_accum 1 \
+  --grad_accum 16 \
   --chunk_size 2048 \
   --context_chunks 16 \
   --params 1g \
