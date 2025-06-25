@@ -483,9 +483,10 @@ def main():
     # --- 1. DISTRIBUTED INITIALIZATION ---
     configure_backend(args)
     
-    global_rank = int(os.environ.get('RANK', '0'))
-    local_rank = int(os.environ.get('LOCAL_RANK', '0'))
-    world_size = int(os.environ.get('WORLD_SIZE', '1'))
+    # Make rank discovery compatible with both deepspeed launcher and srun
+    global_rank = int(os.environ.get('RANK', os.environ.get('SLURM_PROCID', '0')))
+    local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('SLURM_LOCALID', '0')))
+    world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SLURM_NPROCS', '1')))
 
     if world_size > 1:
         dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
@@ -584,10 +585,18 @@ def main():
         batch_size=batch_size, global_rank=global_rank
     )
     
-    # Correct DataLoader setup from previous iteration
+    # Correct DataLoader setup for HPC environments with cpu-binding
     ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size if world_size > 0 else 1))
-    cpus_available = os.cpu_count() or 1
-    cpus_per_rank = (cpus_available // ranks_per_node) if ranks_per_node > 0 and ranks_per_node <= cpus_available else 1
+    
+    # Use sched_getaffinity to respect cpu-binding from srun/launchers
+    try:
+        cpus_per_rank = len(os.sched_getaffinity(0))
+    except AttributeError:
+        # Fallback for systems without sched_getaffinity (like Windows)
+        cpus_available = os.cpu_count() or 1
+        cpus_per_rank = (cpus_available // ranks_per_node) if ranks_per_node > 0 and ranks_per_node <= cpus_available else 1
+    
+    # Reserve one CPU for the main process, use the rest for workers
     num_workers = max(0, cpus_per_rank - 1)
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, sampler=None, shuffle=False,
@@ -596,7 +605,7 @@ def main():
     )
     
     if global_rank == 0:
-        print(f"DataLoader configuration: {num_workers} workers per rank ({cpus_per_rank} CPUs per rank, {ranks_per_node} ranks per node)")
+        print(f"DataLoader configuration: {num_workers} workers per rank ({cpus_per_rank} CPUs/process, {ranks_per_node} ranks/node)")
 
     # --- 3. GOSSIP AND METRICS SETUP ---
     metrics_dir = os.path.join(checkpoint_dir, "metrics")

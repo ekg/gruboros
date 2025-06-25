@@ -145,13 +145,19 @@ class EvolutionaryTrainingNode:
         # Conditional node-local lock setup
         if self.use_node_local_lock:
             self.node_lock_path = os.path.join(self.gossip_temp_dir, "gossip.node.lock")
-            # The first rank on each node initializes/clears the lock file.
-            # `global_rank == local_rank` is a safe way to identify the first rank on a node.
-            if self.global_rank == self.local_rank:
-                 if os.path.exists(self.node_lock_path):
-                     os.remove(self.node_lock_path)
-                 Path(self.node_lock_path).touch()
-            # All ranks must wait for the file to be created before proceeding.
+            # Only the first rank on each node (local_rank == 0) is responsible for initialization.
+            if self.local_rank == 0:
+                 # Clean up lock file from a previous failed run.
+                 # Using try/except is safer than if/remove to avoid race conditions.
+                try:
+                    os.remove(self.node_lock_path)
+                except FileNotFoundError:
+                    pass # It's okay if the file doesn't exist.
+                Path(self.node_lock_path).touch()
+                self.logger.log_event("NODE_LOCK_INIT", message=f"Initialized lock file at {self.node_lock_path}")
+
+            # All ranks must wait for local_rank 0 on their respective nodes to create the file.
+            # A barrier across all processes in the world is the simplest way to ensure this.
             if self.world_size > 1 and dist.is_initialized():
                 dist.barrier()
             self.logger.log_event("NODE_LOCK_ENABLED", message=f"Lock file: {self.node_lock_path}")
