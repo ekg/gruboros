@@ -47,7 +47,7 @@ echo "Using GLOO backend for initial process group."
 NUM_GPUS=8
 
 # --- Launch Training ---
-echo "Starting Pure Gossip training on 8 GPUs. DeepSpeed is used ONLY as a launcher."
+echo "Starting Filesystem-Augmented Hybrid Evolution on 8 GPUs. DeepSpeed is used ONLY as a launcher."
 deepspeed --num_gpus=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
@@ -72,9 +72,15 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.03 \
+  --gossip_mixing_rate 0.002 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
-  --gossip_fitness_decay 0.95 \
+  --gossip_fitness_decay 0.995 \
+  --gossip-node-local-lock \
+  --filesystem-coordinator \
+  --fitness-weighted-checkpointing \
+  --elite-checkpoint-multiplier 3.0 \
+  --rejuvenation-threshold 0.80 \
+  --rejuvenation-probability 0.001 \
   --cuda
 
 echo "Training finished."

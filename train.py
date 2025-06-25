@@ -467,7 +467,7 @@ def get_args():
                         help='Probability of attempting evolutionary mixing each step (0.0-1.0).')
     parser.add_argument('--gossip_temp_dir', type=str, default=None,
                         help='Directory for temporary gossip payloads. Defaults to $SCRATCH or /tmp.')
-    parser.add_argument('--gossip_fitness_decay', type=float, default=0.95,
+    parser.add_argument('--gossip_fitness_decay', type=float, default=0.995,
                         help='Decay factor for the EMA loss used as fitness (e.g., 0.9 to 0.995).')
     parser.add_argument('--gossip-node-local-lock', dest='use_gossip_lock', action='store_true', default=False,
                         help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')

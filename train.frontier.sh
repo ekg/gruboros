@@ -54,7 +54,7 @@ srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "mkdir -p $GOSSIP_TEMP_D
 echo "Created gossip temp directory on all node-local NVMe drives: $GOSSIP_TEMP_DIR"
 
 # --- Launch Training with srun ---
-echo "Starting Pure Gossip training with srun launcher and the Gloo backend."
+echo "Starting Filesystem-Augmented Hybrid Evolution with srun launcher and the Gloo backend."
 echo "Master Node: $MASTER_ADDR:$MASTER_PORT"
 
 # srun will start 128 total tasks (16 nodes * 8 tasks/node).
@@ -82,10 +82,15 @@ srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 python train.py \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.005 \
-  --gossip_fitness_decay 0.95 \
+  --gossip_mixing_rate 0.001 \
+  --gossip_fitness_decay 0.995 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip-node-local-lock \
+  --filesystem-coordinator \
+  --fitness-weighted-checkpointing \
+  --elite-checkpoint-multiplier 4.0 \
+  --rejuvenation-threshold 0.75 \
+  --rejuvenation-probability 0.002 \
   --rocm
 
 echo "Training finished."
