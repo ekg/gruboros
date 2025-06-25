@@ -4,9 +4,9 @@
 #SBATCH -J minLM_gossip_srun_gloo
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 00:10:00
+#SBATCH -t 00:30:00
 #SBATCH -p batch
-#SBATCH -N 2
+#SBATCH -N 16
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH --gpus-per-task=1  # Important: Binds one task to one GPU for stability
@@ -71,7 +71,7 @@ python train.py \
   --output \"$OUTPUT_DIR\" \
   --train_steps 100000 \
   --save_every 100 \
-  --lr 0.005 \
+  --lr 0.002 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
@@ -87,7 +87,7 @@ python train.py \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.001 \
+  --gossip_mixing_rate 0.01 \
   --gossip_fitness_decay 0.995 \
   --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
   --gossip-node-local-lock \
@@ -95,7 +95,7 @@ python train.py \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 4.0 \
   --rejuvenation-threshold 0.75 \
-  --rejuvenation-probability 0.002 \
+  --rejuvenation-probability 0.005 \
   --rocm
 "
 
