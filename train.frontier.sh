@@ -57,11 +57,16 @@ echo "Created gossip temp directory on all node-local NVMe drives: $GOSSIP_TEMP_
 echo "Starting Filesystem-Augmented Hybrid Evolution with srun launcher and the Gloo backend."
 echo "Master Node: $MASTER_ADDR:$MASTER_PORT"
 
-# srun will start 128 total tasks (16 nodes * 8 tasks/node).
-# It automatically provides RANK, WORLD_SIZE, and LOCAL_RANK to each process.
-# Your Python script already reads these variables, so it will work seamlessly.
-# The --cpu-bind flag is highly recommended for performance and stability.
-srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 python train.py \
+# --- FIX: Explicitly set RANK, WORLD_SIZE, and LOCAL_RANK for each task ---
+# srun provides SLURM_PROCID, SLURM_NPROCS, and SLURM_LOCALID. We map these
+# to the standard PyTorch environment variables.
+srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 bash -c '
+export RANK=$SLURM_PROCID
+export WORLD_SIZE=$SLURM_NPROCS
+export LOCAL_RANK=$SLURM_LOCALID
+
+# Execute the python script with the correct environment now set
+python train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
@@ -92,6 +97,7 @@ srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 python train.py \
   --rejuvenation-threshold 0.75 \
   --rejuvenation-probability 0.002 \
   --rocm
+'
 
 echo "Training finished."
 # --- Cleanup (Unchanged) ---
