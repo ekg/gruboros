@@ -471,6 +471,19 @@ def get_args():
                         help='Decay factor for the EMA loss used as fitness (e.g., 0.9 to 0.995).')
     parser.add_argument('--gossip-node-local-lock', dest='use_gossip_lock', action='store_true', default=False,
                         help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')
+    
+    # --- NEW: Filesystem-Augmented Evolution ---
+    parser.add_argument('--filesystem-coordinator', action='store_true',
+                        help='Enable filesystem-based coordination for rejuvenation and weighted checkpointing.')
+    parser.add_argument('--rejuvenation-probability', type=float, default=0.001,
+                        help='Base probability per step for a struggling model to load an elite checkpoint.')
+    parser.add_argument('--rejuvenation-threshold', type=float, default=0.75,
+                        help='Fitness percentile below which a model is considered "struggling" (e.g., 0.75 means bottom 25%).')
+    parser.add_argument('--fitness-weighted-checkpointing', action='store_true',
+                        help='Enable checkpointing probability based on fitness rank.')
+    parser.add_argument('--elite-checkpoint-multiplier', type=float, default=4.0,
+                        help='How much more likely top models are to save a checkpoint vs. the baseline.')
+    
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -629,10 +642,13 @@ def main():
         merge_method=args.gossip_merge_method, recombination_alpha=args.gossip_recombination_alpha,
         optimizer_recombination=args.gossip_optimizer_recombination, gossip_temp_dir=args.gossip_temp_dir,
         fitness_decay_factor=args.gossip_fitness_decay,
-        use_node_local_lock=args.use_gossip_lock
+        use_node_local_lock=args.use_gossip_lock,
+        use_filesystem_coordinator=args.filesystem_coordinator
     )
     evolutionary_node.start_gossip_protocol()
-    if global_rank == 0: print("Evolutionary gossip protocol initialized and running.")
+    if global_rank == 0:
+        proto_type = "Filesystem-Augmented" if args.filesystem_coordinator else "Pure TCP"
+        print(f"\n{proto_type} Gossip protocol initialized and running.\n")
 
     start_time = time.time()
     total_tokens_processed = 0
@@ -671,6 +687,24 @@ def main():
     optimizer.zero_grad() # Prepare for the first accumulation cycle.
 
     while step < train_steps:
+        # --- NEW: Check for Rejuvenation (locked) ---
+        if args.filesystem_coordinator and args.use_gossip_lock:
+            my_percentile = evolutionary_node.coordinator.get_my_percentile()
+            # If we are in the bottom tier of models...
+            if my_percentile and my_percentile > args.rejuvenation_threshold:
+                # ...we have a small chance to rejuvenate.
+                if random.random() < args.rejuvenation_probability:
+                    try:
+                        with file_lock(evolutionary_node.node_lock_path, timeout=0.1):
+                            was_rejuvenated, needs_reset = evolutionary_node.attempt_rejuvenation(model, alpha=0.5)
+                            if was_rejuvenated and needs_reset:
+                                optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+                                if args.schedulefree: optimizer.train()
+                                evolutionary_node.optimizer = optimizer
+                                optimizer.zero_grad()
+                    except TimeoutError:
+                        pass # Node lock was busy, skip this time.
+        
         # Check for and apply any pending model updates at the beginning of the step.
         was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
         if needs_optimizer_reset:
@@ -735,26 +769,35 @@ def main():
             pbar.set_postfix_str(pbar_str)
             pbar.update(1)
 
-        # Probabilistic Saving
-        if step > 0 and save_probability > 0 and random.random() < save_probability:
-            if args.use_gossip_lock:
-                try:
-                    with file_lock(evolutionary_node.node_lock_path, timeout=0.1):
-                        checkpoint_data = {
-                            'step': step, 'model_state_dict': model.state_dict(), 
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'ema_fitness': current_ema_fitness, 'model_config': model_config
-                        }
-                        save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
-                except TimeoutError:
-                    pass  # Skip checkpoint if gossip is active
-            else:
+        # --- MODIFIED: Probabilistic Saving with Fitness-Weighting (locked) ---
+        if step > 0 and save_probability > 0:
+            should_save = False
+            save_prob_final = save_probability # Baseline probability
+
+            if args.fitness_weighted_checkpointing and args.filesystem_coordinator:
+                my_percentile = evolutionary_node.coordinator.get_my_percentile()
+                if my_percentile is not None:
+                    # Best models (percentile=0) get highest multiplier. Worst (percentile=1) get 1.0x.
+                    scaling_factor = 1.0 + (args.elite_checkpoint_multiplier - 1.0) * (1.0 - my_percentile)
+                    save_prob_final = save_probability * scaling_factor
+            
+            should_save = random.random() < save_prob_final
+            
+            if should_save:
                 checkpoint_data = {
                     'step': step, 'model_state_dict': model.state_dict(), 
                     'optimizer_state_dict': optimizer.state_dict(),
                     'ema_fitness': current_ema_fitness, 'model_config': model_config
                 }
-                save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
+                
+                if args.use_gossip_lock:
+                    try:
+                        with file_lock(evolutionary_node.node_lock_path, timeout=0.1):
+                            save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
+                    except TimeoutError:
+                        pass  # Skip checkpoint if gossip is active
+                else:
+                    save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
         
         step += 1
 

@@ -8,6 +8,7 @@ import socket
 import threading
 import queue
 import struct
+import glob
 from typing import Dict, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ import torch.distributed as dist
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
 from .structured_logger import GossipLogger
+from .filesystem_coordinator import FilesystemCoordinator
 import tempfile
 import uuid
 import fcntl
@@ -60,7 +62,8 @@ class EvolutionaryTrainingNode:
                  optimizer_recombination: str = 'reset',
                  gossip_temp_dir: Optional[str] = None,
                  fitness_decay_factor: float = 0.95,
-                 use_node_local_lock: bool = False):
+                 use_node_local_lock: bool = False,
+                 use_filesystem_coordinator: bool = False):
         # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
@@ -75,6 +78,18 @@ class EvolutionaryTrainingNode:
         self.recombination_alpha = recombination_alpha
         self.optimizer_recombination = optimizer_recombination
         self.use_node_local_lock = use_node_local_lock
+        self.use_filesystem_coordinator = use_filesystem_coordinator
+        self.output_dir = output_dir
+        
+        # Initialize filesystem coordinator if enabled
+        self.coordinator: Optional[FilesystemCoordinator] = None
+        if self.use_filesystem_coordinator:
+            self.coordinator = FilesystemCoordinator(
+                global_rank=self.global_rank,
+                world_size=self.world_size,
+                output_dir=output_dir
+            )
+            self.coordinator.set_fitness_provider(self.get_current_fitness)
         
         # Now initialize other attributes
         self.mixing_rng = random.Random(42 + self.global_rank * 1000)
@@ -308,7 +323,10 @@ class EvolutionaryTrainingNode:
         pass  # Weight transfer already started in check_for_updates()
 
     def start_gossip_protocol(self):
-        """Start the background gossip thread"""
+        """Start the background gossip and/or coordinator threads"""
+        if self.coordinator:
+            self.coordinator.start()
+
         self.gossip_running = True
         self.gossip_thread = threading.Thread(target=self._gossip_worker, daemon=True)
         self.gossip_thread.start()
@@ -699,7 +717,10 @@ class EvolutionaryTrainingNode:
                     self.logger.log_event("TEMP_FILE_CLEANUP_ERROR", message=f"Failed to remove {temp_filename}: {e}")
     
     def stop_gossip_protocol(self):
-        """Stop the gossip protocol"""
+        """Stop the background threads"""
+        if self.coordinator:
+            self.coordinator.stop()
+
         self.gossip_running = False
         if self.gossip_thread:
             self.gossip_thread.join(timeout=5)
@@ -743,3 +764,45 @@ class EvolutionaryTrainingNode:
             status['skipped_due_to_lock'] = self.mixes_skipped_locked
         
         return status
+    
+    def attempt_rejuvenation(self, model: torch.nn.Module, alpha: float) -> tuple[bool, bool]:
+        """
+        Loads an elite checkpoint to rejuvenate a struggling model. This is a heavy
+        I/O operation and must be protected by an external node-local lock.
+        Returns: (was_rejuvenated, needs_optimizer_reset)
+        """
+        # Find available elite checkpoints (these are symlinks)
+        elite_symlinks = glob.glob(os.path.join(self.output_dir, "elite_*.pt"))
+        if not elite_symlinks:
+            return False, False
+
+        try:
+            chosen_symlink = self.mixing_rng.choice(elite_symlinks)
+            # Load checkpoint to CPU memory first. This avoids holding the lock
+            # during the entire state_dict application on GPU.
+            elite_checkpoint = torch.load(chosen_symlink, map_location='cpu')
+            
+            # --- Safely apply the loaded checkpoint ---
+            with torch.no_grad():
+                # Recombination is safer than a full overwrite
+                elite_state_dict = elite_checkpoint['model_state_dict']
+                for name, param in model.named_parameters():
+                    if name in elite_state_dict:
+                        elite_param = elite_state_dict[name].to(param.device, non_blocking=True)
+                        param.mul_(1.0 - alpha).add_(elite_param, alpha=alpha)
+
+            # Signal that the optimizer should be reset for a clean start
+            needs_reset = True
+            
+            if 'ema_fitness' in elite_checkpoint:
+                self.fitness_tracker.inherit_fitness(elite_checkpoint['ema_fitness'])
+
+            self.logger.log_event("REJUVENATION_SUCCESS",
+                                 step=self.current_step,
+                                 message=f"Blended with {os.path.basename(chosen_symlink)}",
+                                 fitness=elite_checkpoint.get('ema_fitness'))
+            return True, needs_reset
+
+        except Exception as e:
+            self.logger.log_event("REJUVENATION_FAILED", step=self.current_step, message=str(e))
+            return False, False
