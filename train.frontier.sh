@@ -40,12 +40,12 @@ NAME="1g_32k_srun_gloo"
 GIT_HASH=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
 
 if [ -n "$GIT_HASH" ]; then
-    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}_${GIT_HASH}"
+    export OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}_${GIT_HASH}"
 else
-    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
+    export OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 fi
-DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
-GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
+export DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
+export GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
 # --- Pre-create Directories (Unchanged, this is good practice) ---
 mkdir -p logs "${OUTPUT_DIR}"/gossip "${OUTPUT_DIR}"/metrics
@@ -57,18 +57,18 @@ echo "Created gossip temp directory on all node-local NVMe drives: $GOSSIP_TEMP_
 echo "Starting Filesystem-Augmented Hybrid Evolution with srun launcher and the Gloo backend."
 echo "Master Node: $MASTER_ADDR:$MASTER_PORT"
 
-# --- FIX: Explicitly set RANK, WORLD_SIZE, and LOCAL_RANK for each task ---
-# srun provides SLURM_PROCID, SLURM_NPROCS, and SLURM_LOCALID. We map these
-# to the standard PyTorch environment variables.
-srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 bash -c '
-export RANK=$SLURM_PROCID
-export WORLD_SIZE=$SLURM_NPROCS
-export LOCAL_RANK=$SLURM_LOCALID
+# --- FIX: Use double quotes and escape SLURM vars ---
+# This allows script variables like $OUTPUT_DIR to be expanded by the main shell,
+# while SLURM variables like \$SLURM_PROCID are expanded by srun for each task.
+srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 bash -c "
+export RANK=\$SLURM_PROCID
+export WORLD_SIZE=\$SLURM_NPROCS
+export LOCAL_RANK=\$SLURM_LOCALID
 
 # Execute the python script with the correct environment now set
 python train.py \
-  --data "$DATA" \
-  --output "$OUTPUT_DIR" \
+  --data \"$DATA\" \
+  --output \"$OUTPUT_DIR\" \
   --train_steps 100000 \
   --save_every 100 \
   --lr 0.005 \
@@ -89,7 +89,7 @@ python train.py \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.001 \
   --gossip_fitness_decay 0.995 \
-  --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
+  --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
   --gossip-node-local-lock \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
@@ -97,7 +97,7 @@ python train.py \
   --rejuvenation-threshold 0.75 \
   --rejuvenation-probability 0.002 \
   --rocm
-'
+"
 
 echo "Training finished."
 # --- Cleanup (Unchanged) ---
