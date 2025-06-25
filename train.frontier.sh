@@ -1,85 +1,67 @@
 #!/bin/bash
 
 #SBATCH -A BIF148
-#SBATCH -J minLM_gossip_1G_16k
+#SBATCH -J minLM_gossip_srun_gloo
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 00:30:00
+#SBATCH -t 00:10:00
 #SBATCH -p batch
-#SBATCH -N 16
+#SBATCH -N 2
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
-#SBATCH -q debug
+#SBATCH --gpus-per-task=1  # Important: Binds one task to one GPU for stability
 #SBATCH -C nvme
 
 set -x
 
 # --- Environment Setup ---
+# Your existing environment setup is correct.
 eval "$(micromamba shell hook --shell bash)"
 micromamba activate gruboros
-export LD_PRELOAD="/usr/lib64/libcrypto.so /usr/lib64/libssh.so.4 /usr/lib64/libssl.so.1.1"
 module load PrgEnv-gnu gcc/11.2.0 rocm/6.2.4 craype-accel-amd-gfx90a
 
-# --- Distributed Settings for Launcher & Script ---
+# --- Distributed Settings for srun + gloo ---
 export OMP_NUM_THREADS=1
 export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
-export MASTER_NODE_HOSTNAME=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 addr show hsn0 | grep -oP 'inet \K[\d.]+')
+
+# 1. Set the Master Address: srun needs this for the gloo backend to rendezvous.
+#    This is the canonical way to get the head node's hostname in a SLURM job.
+export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+
+# 2. Set the Master Port: Any free port will do.
 export MASTER_PORT=3442
-export TORCH_DISTRIBUTED_TIMEOUT=7200s
-export DEEPSPEED_TIMEOUT=7200
-export TORCH_DISTRIBUTED_BACKEND="gloo"
+
+# 3. Critical for Performance: Tell gloo to use the High-Speed Network Interface.
 export GLOO_SOCKET_IFNAME=hsn0
-echo "Using GLOO backend for initial process group."
 
-# --- Create Hostfile for DeepSpeed LAUNCHER ---
-HOSTFILE_NAME="hostfile-job$SLURM_JOB_ID.txt"
-scontrol show hostnames $SLURM_JOB_NODELIST | while IFS= read -r host; do echo "$host slots=$RANKS_PER_NODE"; done > "$HOSTFILE_NAME"
-echo "Launcher hostfile created at $HOSTFILE_NAME"
-
-# --- Paths and Directories ---
+# --- Paths and Directories (Unchanged) ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_32k"
+NAME="1g_32k_srun_gloo"
+GIT_HASH=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
 
-# Try to get git commit hash (first 7 chars)
-GIT_HASH=""
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    GIT_HASH=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
-fi
-
-# Build output directory name with optional git hash
-# --- FIX: Use a relative path for the output directory ---
-# This ensures outputs are created within the project directory, next to 'logs'.
 if [ -n "$GIT_HASH" ]; then
     OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}_${GIT_HASH}"
 else
     OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 fi
 DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
-
-# Use the node-local NVMe for the temporary gossip directory
-# Each rank will use this path. The directory needs to be created on each node.
 GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
-# --- *** FIX: PRE-CREATE ALL DIRECTORIES *** ---
-# This eliminates any possible race condition inside the Python script.
-mkdir -p logs # For SLURM logs
-mkdir -p "${OUTPUT_DIR}"
-mkdir -p "${OUTPUT_DIR}/gossip" # For gossip logs
-mkdir -p "${OUTPUT_DIR}/metrics" # For training metrics
-echo "Pre-created all output directories at ${OUTPUT_DIR}"
-
-# Use srun to create the temp directory on the NVMe of *every allocated node*
+# --- Pre-create Directories (Unchanged, this is good practice) ---
+mkdir -p logs "${OUTPUT_DIR}"/gossip "${OUTPUT_DIR}"/metrics
+# Use srun to create the temp directory on every allocated node
 srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "mkdir -p $GOSSIP_TEMP_DIR"
 echo "Created gossip temp directory on all node-local NVMe drives: $GOSSIP_TEMP_DIR"
 
-# --- Launch Training ---
-echo "Starting Pure Gossip training. DeepSpeed is used ONLY as a launcher."
-deepspeed \
-  --hostfile="$HOSTFILE_NAME" \
-  --master_addr="$MASTER_ADDR" \
-  --master_port="$MASTER_PORT" \
-  train.py \
+# --- Launch Training with srun ---
+echo "Starting Pure Gossip training with srun launcher and the Gloo backend."
+echo "Master Node: $MASTER_ADDR:$MASTER_PORT"
+
+# srun will start 128 total tasks (16 nodes * 8 tasks/node).
+# It automatically provides RANK, WORLD_SIZE, and LOCAL_RANK to each process.
+# Your Python script already reads these variables, so it will work seamlessly.
+# The --cpu-bind flag is highly recommended for performance and stability.
+srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 python train.py \
   --data "$DATA" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
@@ -107,7 +89,6 @@ deepspeed \
   --rocm
 
 echo "Training finished."
-# Clean up hostfile and the temporary gossip directories on all nodes
-rm -f "$HOSTFILE_NAME"
+# --- Cleanup (Unchanged) ---
 srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "rm -rf $GOSSIP_TEMP_DIR"
 echo "Cleaned up gossip temp directories from all node-local NVMe drives."
