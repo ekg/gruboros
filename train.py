@@ -504,10 +504,34 @@ def main():
     if world_size > 1:
         dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
     
-    device = torch.device(f'cuda:{local_rank}')
-    torch.cuda.set_device(device)
+    # --- START OF DEFINITIVE FIX ---
+    # When using srun with --gpus-per-task, each process sees only one GPU, indexed at 0.
+    # We must set the device to 0 for all ranks in that case.
+    # The deepspeed launcher exposes all GPUs, so we use local_rank there.
+    # This logic handles both cases robustly.
+    if torch.cuda.is_available():
+        visible_devices = torch.cuda.device_count()
+        if visible_devices == 1:
+            # srun --gpus-per-task=1 case: The single visible device is always at index 0.
+            device_id = 0
+        else:
+            # Deepspeed or other launchers: Use local_rank to select from multiple visible devices.
+            device_id = local_rank
+        
+        device = torch.device(f'cuda:{device_id}')
+        torch.cuda.set_device(device)
+    else:
+        # Fallback for CPU-only testing
+        device = torch.device('cpu')
+    # --- END OF DEFINITIVE FIX ---
+
+    if world_size > 1:
+        dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
+    
     random.seed(SEED + global_rank)
 
+    # --- FIX: ROBUST DIRECTORY CREATION and Debugging ---
+    # Rank 0 creates the output directory, all others wait for it to be ready.
     if global_rank == 0:
         debug_distributed_info(global_rank)
         print(f"\nRe-seeded Python's random module per-rank to ensure stochastic mixing.\n")
@@ -520,9 +544,26 @@ def main():
     
     resuming = args.resume is not None
     resume_step = 0
+    # Use args.output directly, which is now guaranteed to exist.
     checkpoint_dir = args.output or f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     if resuming:
-        checkpoint_dir = os.path.dirname(args.resume) if os.path.isfile(args.resume) else args.resume
+        # This logic is a bit complex, let's simplify and make it safer.
+        if os.path.isfile(args.resume):
+             checkpoint_dir = os.path.dirname(args.resume)
+        else:
+             # If a directory is passed, assume it's the checkpoint dir.
+             checkpoint_dir = args.resume
+
+    # Rank 0 creates the checkpoint directory, all others wait for it to be ready.
+    if global_rank == 0:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if world_size > 1:
+        dist.barrier()
+        if global_rank != 0:
+            # For debugging, let's see what other ranks think their environment is
+            debug_distributed_info(global_rank)
+        dist.barrier()
 
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
@@ -566,6 +607,7 @@ def main():
     if global_rank == 0:
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")
         print(f"Configuration: {model_config}")
+        # The directory is now guaranteed to exist before this is called.
         with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
             json.dump(model_config, f, indent=2)
 
