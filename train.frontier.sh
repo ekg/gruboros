@@ -70,7 +70,7 @@ python train.py \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
   --train_steps 100000 \
-  --save_every 100 \
+  --save_every 10 \
   --lr 0.002 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
@@ -87,15 +87,14 @@ python train.py \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.01 \
+  --gossip_mixing_rate 0.03 \
   --gossip_fitness_decay 0.995 \
   --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
-  --gossip-node-local-lock \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 4.0 \
-  --rejuvenation-threshold 0.75 \
-  --rejuvenation-probability 0.005 \
+  --rejuvenation-threshold 0.6 \
+  --rejuvenation-probability 0.01 \
   --rocm
 "
 
