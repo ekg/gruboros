@@ -100,7 +100,7 @@ deepspeed \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.03 \
+  --gossip_mixing_rate 0.005 \
   --gossip_fitness_decay 0.95 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip-node-local-lock \
