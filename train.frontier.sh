@@ -14,6 +14,9 @@
 
 set -x
 
+# --- Increase File Descriptor Limit ---
+ulimit -n 65536
+
 # --- Environment Setup ---
 # Your existing environment setup is correct.
 eval "$(micromamba shell hook --shell bash)"

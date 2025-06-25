@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e -x
 
+# --- Increase File Descriptor Limit ---
+ulimit -n 65536
+
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NAME="1g_cuda"

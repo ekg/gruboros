@@ -654,8 +654,11 @@ def main():
         cpus_available = os.cpu_count() or 1
         cpus_per_rank = (cpus_available // ranks_per_node) if ranks_per_node > 0 and ranks_per_node <= cpus_available else 1
     
-    # Reserve one CPU for the main process, use the rest for workers
-    num_workers = max(0, cpus_per_rank - 1)
+    # --- FIX: Use a fixed, small number of workers to prevent file descriptor exhaustion ---
+    # The previous calculation (cpus_per_rank - 1) was too aggressive, leading to 
+    # file descriptor exhaustion. A smaller, fixed number is more robust.
+    # 2-4 workers per rank is a common and safe choice.
+    num_workers = 2
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, sampler=None, shuffle=False,
         num_workers=num_workers, pin_memory=True, persistent_workers=(num_workers > 0),
