@@ -699,7 +699,7 @@ class EvolutionaryTrainingNode:
             self.gossip_thread.join(timeout=5)
         if self.server_thread:
             self.server_thread.join(timeout=5)
-        self.logger.info("Gossip protocol stopped.")
+        self.logger.log_event("GOSSIP_PROTOCOL_STOPPED", message="Gossip protocol stopped.")
     
     def request_mix(self):
         """Called by main thread to trigger mixing (for compatibility)"""
