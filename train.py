@@ -501,8 +501,14 @@ def main():
     local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('SLURM_LOCALID', '0')))
     world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SLURM_NPROCS', '1')))
 
-    if world_size > 1:
+    # --- START OF FIX ---
+    # On HPC systems with MPI integration (like Frontier), the process group
+    # may be initialized automatically when torch.distributed is imported.
+    # We must check if it's already initialized before trying to do it ourselves.
+    if world_size > 1 and not dist.is_initialized():
+        print(f"Rank {global_rank}: Manually initializing process group with 'gloo' backend.")
         dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
+    # --- END OF FIX ---
     
     # --- START OF DEFINITIVE FIX ---
     # When using srun with --gpus-per-task, each process sees only one GPU, indexed at 0.
@@ -525,9 +531,6 @@ def main():
         device = torch.device('cpu')
     # --- END OF DEFINITIVE FIX ---
 
-    if world_size > 1:
-        dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
-    
     random.seed(SEED + global_rank)
 
     # --- FIX: ROBUST DIRECTORY CREATION and Debugging ---
