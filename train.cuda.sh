@@ -75,7 +75,6 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_mixing_rate 0.002 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_decay 0.995 \
-  --gossip-node-local-lock \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 3.0 \
