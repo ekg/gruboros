@@ -27,6 +27,7 @@ export MASTER_NODE_HOSTNAME=$(scontrol show hostnames $SLURM_JOB_NODELIST | head
 export MASTER_ADDR=$(srun --ntasks=1 --nodes=1 -w "$MASTER_NODE_HOSTNAME" ip -4 addr show hsn0 | grep -oP 'inet \K[\d.]+')
 export MASTER_PORT=3442
 export TORCH_DISTRIBUTED_TIMEOUT=7200s
+export DEEPSPEED_TIMEOUT=7200
 export TORCH_DISTRIBUTED_BACKEND="gloo"
 export GLOO_SOCKET_IFNAME=hsn0
 echo "Using GLOO backend for initial process group."
