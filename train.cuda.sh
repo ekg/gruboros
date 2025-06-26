@@ -6,7 +6,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1B_ThinDeep_Emergence"
+NAME="1g_cuda"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
