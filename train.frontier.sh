@@ -4,9 +4,9 @@
 #SBATCH -J minLM_gossip_srun_gloo
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 00:15:00
+#SBATCH -t 01:00:00
 #SBATCH -p batch
-#SBATCH -N 4
+#SBATCH -N 16
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH --gpus-per-task=1  # Important: Binds one task to one GPU for stability
@@ -73,7 +73,7 @@ python train.py \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
   --train_steps 100000 \
-  --save_every 500 \
+  --save_every 50 \
   --lr 0.002 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
