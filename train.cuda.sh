@@ -6,7 +6,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_cuda"
+NAME="1B_ThinDeep_Emergence"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -50,13 +50,16 @@ echo "Using GLOO backend for initial process group."
 NUM_GPUS=8
 
 # --- Launch Training ---
-echo "Starting Filesystem-Augmented Hybrid Evolution on 8 GPUs. DeepSpeed is used ONLY as a launcher."
+echo "Starting 'Thin & Deep' run for emergent behaviors."
 deepspeed --num_gpus=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
+  --params 1g \
+  --dim 1024 \
+  --expansion_factor 8.0 \
   --train_steps 100000 \
   --save_every 500 \
   --lr 0.002 \
@@ -67,8 +70,6 @@ deepspeed --num_gpus=$NUM_GPUS \
   --grad_accum 16 \
   --chunk_size 2048 \
   --context_chunks 16 \
-  --dim 2048 \
-  --params 1g \
   --keep_checkpoints 5 \
   --keep_elite 10 \
   --archive_rate 0.02 \

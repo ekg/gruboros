@@ -445,6 +445,7 @@ def get_args():
     parser.add_argument('--params', type=str, default="100m", help='target parameter count (e.g., 15m, 1g)')
     parser.add_argument('--dim', type=str, default=None, help='model hidden dimension (overrides params calculation)')
     parser.add_argument('--depth', type=int, default=None, help='number of layers (overrides params calculation)')
+    parser.add_argument('--expansion_factor', type=float, default=1.5, help='state expansion factor for MinGRU inner dimension')
     parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
     parser.add_argument('--context_chunks', type=int, default=1, help='Number of consecutive chunks to process for TBPTT. Effective seq_len = chunk_size * context_chunks.')
     parser.add_argument('--batch_size', type=str, default="4", help='batch size per GPU')
@@ -594,20 +595,20 @@ def main():
         elif args.dim and not args.depth:
             # User specified dim, solve for depth
             dim = int(parse_size_with_suffix(args.dim))
-            depth = solve_for_depth(params_value, dim)
+            depth = solve_for_depth(params_value, dim, expansion=args.expansion_factor)
         elif not args.dim and args.depth:
             # User specified depth, solve for dim
             depth = args.depth
-            dim = solve_for_dimension(params_value, depth)
+            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor)
         else:
             # Default behavior: guess a dim and solve for depth, then refine dim
             base_dim = 512 if params_value < 1e9 else 1024
             # Heuristic scaling for dimension based on Chinchilla laws (very approximate)
             dim_guess = round_to_multiple(base_dim * (params_value / (100e6 if params_value < 1e9 else 1e9))**0.25)
-            depth = solve_for_depth(params_value, dim_guess)
-            dim = solve_for_dimension(params_value, depth)
+            depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor)
+            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor)
             
-        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": 4.0, "expansion": 1.5, "enable_conv": False, "dropout": 0.0}
+        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": 4.0, "expansion": args.expansion_factor, "enable_conv": False, "dropout": 0.0}
 
     if global_rank == 0:
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")
