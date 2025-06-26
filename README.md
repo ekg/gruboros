@@ -1,8 +1,6 @@
-# gruboros: Evolutionary MinGRU Language Model Training
+# gruboros
 
-**Author**: Erik Garrison  
-**License**: MIT  
-**Funding**: Oak Ridge Leadership Computing Facility Director's Discretionary Award BIF148
+### Evolutionary MinGRU Language Model Training
 
 This research platform explores a fundamentally different approach to training large language models by combining evolutionary optimization with efficient RNN architectures and universal byte-level modeling. Rather than relying on transformer architectures that require massive computational resources and complex tokenization schemes, gruboros demonstrates that recurrent neural networks—when properly parallelized—can achieve competitive performance while offering unique advantages in memory efficiency, context handling, and data processing flexibility.
 
@@ -155,9 +153,17 @@ If you use this code in your research, please cite the MinGRU paper:
 }
 ```
 
+## Author
+
+Erik Garrison
+
 ## License
 
 MIT License
+
+## Funding
+
+Oak Ridge Leadership Computing Facility Director's Discretionary Award BIF148
 
 ## Contributing
 
