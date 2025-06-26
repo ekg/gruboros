@@ -657,8 +657,8 @@ def main():
     # --- FIX: Use a fixed, small number of workers to prevent file descriptor exhaustion ---
     # The previous calculation (cpus_per_rank - 1) was too aggressive, leading to 
     # file descriptor exhaustion. A smaller, fixed number is more robust.
-    # 2-4 workers per rank is a common and safe choice.
-    num_workers = 2
+    # Use 1 worker per rank as suggested by the system warning.
+    num_workers = 1
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, sampler=None, shuffle=False,
         num_workers=num_workers, pin_memory=True, persistent_workers=(num_workers > 0),
