@@ -73,7 +73,7 @@ python train.py \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
   --train_steps 100000 \
-  --save_every 50 \
+  --save_every 100 \
   --lr 0.002 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
