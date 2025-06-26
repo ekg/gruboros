@@ -82,8 +82,9 @@ python train.py \
   --grad_accum 16 \
   --chunk_size 2048 \
   --context_chunks 16 \
-  --dim 2048 \
   --params 1g \
+  --dim 1024 \
+  --expansion_factor 8.0 \
   --keep_checkpoints 5 \
   --keep_elite 10 \
   --archive_rate 0.02 \
@@ -93,6 +94,7 @@ python train.py \
   --gossip_mixing_rate 0.01 \
   --gossip_fitness_decay 0.995 \
   --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
+  --gossip-node-local-lock \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 5.0 \
