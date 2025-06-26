@@ -483,6 +483,8 @@ def get_args():
                         help='Enable checkpointing probability based on fitness rank.')
     parser.add_argument('--elite-checkpoint-multiplier', type=float, default=4.0,
                         help='How much more likely top models are to save a checkpoint vs. the baseline.')
+    parser.add_argument('--rejuvenation-tiebreaker-threshold', type=float, default=0.005,
+                        help='If elite losses are within this fractional threshold, use step count as a tie-breaker (e.g., 0.01 for 1%).')
     
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
@@ -744,7 +746,7 @@ def main():
                 if random.random() < args.rejuvenation_probability:
                     try:
                         with file_lock(evolutionary_node.node_lock_path, timeout=0.1):
-                            was_rejuvenated, needs_reset = evolutionary_node.attempt_rejuvenation(model, alpha=0.5)
+                            was_rejuvenated, needs_reset = evolutionary_node.attempt_rejuvenation(model, alpha=0.5, tiebreaker_threshold=args.rejuvenation_tiebreaker_threshold)
                             if was_rejuvenated and needs_reset:
                                 optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
                                 if args.schedulefree: optimizer.train()

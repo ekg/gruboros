@@ -9,6 +9,7 @@ import threading
 import queue
 import struct
 import glob
+import re
 from typing import Dict, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -765,10 +766,11 @@ class EvolutionaryTrainingNode:
         
         return status
     
-    def attempt_rejuvenation(self, model: torch.nn.Module, alpha: float) -> tuple[bool, bool]:
+    def attempt_rejuvenation(self, model: torch.nn.Module, alpha: float, tiebreaker_threshold: float = 0.005) -> tuple[bool, bool]:
         """
         Loads an elite checkpoint to rejuvenate a struggling model. This is a heavy
-        I/O operation and must be protected by an external node-local lock.
+        I/O operation. It finds the BEST elite candidate that is better than the current
+        model, using step count as a tie-breaker for models with similar fitness.
         Returns: (was_rejuvenated, needs_optimizer_reset)
         """
         # Find available elite checkpoints (these are symlinks)
@@ -777,15 +779,56 @@ class EvolutionaryTrainingNode:
             return False, False
 
         try:
-            chosen_symlink = self.mixing_rng.choice(elite_symlinks)
-            # Load checkpoint to CPU memory first. This avoids holding the lock
-            # during the entire state_dict application on GPU.
-            elite_checkpoint = torch.load(chosen_symlink, map_location='cpu')
+            my_current_fitness = self.get_current_fitness()
+            if my_current_fitness == float('inf'):
+                return False, False
+
+            best_candidate_checkpoint = None
+            chosen_symlink_path = None
+            best_elite_fitness = my_current_fitness
+            best_elite_step = -1
+
+            for symlink_path in elite_symlinks:
+                try:
+                    target_path = os.path.basename(os.readlink(symlink_path))
+                    loss_match = re.search(r'loss_([\d.inf]+)', target_path)
+                    step_match = re.search(r'step_(\d+)', target_path)
+                    if not loss_match or not step_match: continue
+                    
+                    elite_fitness = float(loss_match.group(1))
+                    elite_step = int(step_match.group(1))
+
+                    # --- New Discerning Logic ---
+                    # The candidate MUST be better than our current fitness.
+                    if elite_fitness >= my_current_fitness:
+                        continue
+                    
+                    # Now, check if this valid candidate is better than the best *other* candidate we've found.
+                    # Is it significantly better than our current best candidate?
+                    if elite_fitness < best_elite_fitness * (1.0 - tiebreaker_threshold):
+                        best_elite_fitness = elite_fitness
+                        best_elite_step = elite_step
+                        chosen_symlink_path = symlink_path
+                    # Or, is it marginally better but has a higher step count?
+                    elif elite_fitness < best_elite_fitness:
+                        if elite_step > best_elite_step:
+                            best_elite_fitness = elite_fitness
+                            best_elite_step = elite_step
+                            chosen_symlink_path = symlink_path
+
+                except (FileNotFoundError, ValueError, IndexError, OSError):
+                    continue
+
+            # After checking all elites, if we found a winner, load it.
+            if chosen_symlink_path:
+                best_candidate_checkpoint = torch.load(chosen_symlink_path, map_location='cpu')
+            else:
+                self.logger.log_event("REJUVENATION_SKIPPED", step=self.current_step, message=f"No elite model found with fitness < {my_current_fitness:.4f}", fitness=my_current_fitness)
+                return False, False
             
             # --- Safely apply the loaded checkpoint ---
             with torch.no_grad():
-                # Recombination is safer than a full overwrite
-                elite_state_dict = elite_checkpoint['model_state_dict']
+                elite_state_dict = best_candidate_checkpoint['model_state_dict']
                 for name, param in model.named_parameters():
                     if name in elite_state_dict:
                         elite_param = elite_state_dict[name].to(param.device, non_blocking=True)
@@ -794,13 +837,13 @@ class EvolutionaryTrainingNode:
             # Signal that the optimizer should be reset for a clean start
             needs_reset = True
             
-            if 'ema_fitness' in elite_checkpoint:
-                self.fitness_tracker.inherit_fitness(elite_checkpoint['ema_fitness'])
+            if 'ema_fitness' in best_candidate_checkpoint:
+                self.fitness_tracker.inherit_fitness(best_candidate_checkpoint['ema_fitness'])
 
             self.logger.log_event("REJUVENATION_SUCCESS",
                                  step=self.current_step,
-                                 message=f"Blended with {os.path.basename(chosen_symlink)}",
-                                 fitness=elite_checkpoint.get('ema_fitness'))
+                                 message=f"Blended with {os.path.basename(chosen_symlink_path)} (L:{best_elite_fitness:.4f} S:{best_elite_step})",
+                                 fitness=best_candidate_checkpoint.get('ema_fitness'))
             return True, needs_reset
 
         except Exception as e:

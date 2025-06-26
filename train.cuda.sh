@@ -58,7 +58,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --train_steps 100000 \
-  --save_every 200 \
+  --save_every 500 \
   --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
@@ -69,20 +69,21 @@ deepspeed --num_gpus=$NUM_GPUS \
   --context_chunks 16 \
   --dim 2048 \
   --params 1g \
-  --keep_checkpoints 3 \
+  --keep_checkpoints 5 \
   --keep_elite 10 \
   --archive_rate 0.02 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.02 \
+  --gossip_mixing_rate 0.01 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_decay 0.995 \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
-  --elite-checkpoint-multiplier 3.0 \
-  --rejuvenation-threshold 0.6 \
-  --rejuvenation-probability 0.01 \
+  --elite-checkpoint-multiplier 5.0 \
+  --rejuvenation-threshold 0.8 \
+  --rejuvenation-probability 0.002 \
+  --rejuvenation-tiebreaker-threshold 0.005 \
   --cuda
 
 echo "Training finished."
