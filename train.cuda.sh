@@ -58,11 +58,12 @@ deepspeed --num_gpus=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --params 1g \
-  --dim 1024 \
-  --expansion_factor 8.0 \
+  --dim 1280 \
+  --depth 32 \
+  --expansion_factor 4.0 \
   --train_steps 100000 \
   --save_every 500 \
-  --lr 0.002 \
+  --lr 0.005 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
@@ -76,7 +77,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.01 \
+  --gossip_mixing_rate 0.005 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_decay 0.995 \
   --filesystem-coordinator \
