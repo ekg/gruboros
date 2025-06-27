@@ -16,9 +16,9 @@ fi
 
 # Build output directory name with optional git hash
 if [ -n "$GIT_HASH" ]; then
-    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}_${GIT_HASH}"
+    OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_${NAME}_${GIT_HASH}"
 else
-    OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
+    OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_${NAME}"
 fi
 DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
 if [ ! -f "$DATA_PATH" ]; then
