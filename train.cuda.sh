@@ -58,8 +58,8 @@ deepspeed --num_gpus=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --params 1g \
-  --dim 1280 \
-  --depth 32 \
+  --dim 1024 \
+  --depth 48 \
   --expansion_factor 4.0 \
   --train_steps 100000 \
   --save_every 500 \
