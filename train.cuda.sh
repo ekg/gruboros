@@ -60,7 +60,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --params 1g \
   --dim 2048 \
   --expansion_factor 4.0 \
-  --train_steps 100000 \
+  --train_steps 1000000 \
   --save_every 500 \
   --lr 0.0005 \
   --sf_beta 0.9 \
