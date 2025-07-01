@@ -59,7 +59,7 @@ def sample(logits, temperature=1.0, top_k=0, top_p=0.0):
 
     # Apply top-p (nucleus) filtering
     if top_p > 0.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
         cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
 
         # Remove tokens with cumulative probability above the threshold
@@ -68,8 +68,10 @@ def sample(logits, temperature=1.0, top_k=0, top_p=0.0):
         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
         sorted_indices_to_remove[..., 0] = 0
 
-        # Scatter the mask back to the original ordering
-        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        # Fix: Use the correct dimension and pattern for scatter
+        indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+        indices_to_remove.scatter_(-1, sorted_indices, sorted_indices_to_remove)
+        
         logits[indices_to_remove] = -float('Inf')
         
     # Sample from the filtered distribution
@@ -109,12 +111,19 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
         else:
             raise ValueError(f"Could not find config.json in checkpoint directory: {os.path.dirname(checkpoint_path)}")
     
-    required_keys = ["num_tokens", "dim", "depth", "ff_mult", "expansion"]
-    for key in required_keys:
-        if key not in config: config[key] = 0 # Handle legacy configs
+    # Make model loading robust to older configs that might be missing keys
+    model_params = {
+        "num_tokens": config.get("num_tokens", 256),
+        "dim": config.get("dim"),
+        "depth": config.get("depth"),
+        "ff_mult": config.get("ff_mult", 4.0),
+        "expansion": config.get("expansion", 1.5),
+        "enable_conv": config.get("enable_conv", False),
+        "dropout": config.get("dropout", 0.0)
+    }
     
-    print(f"INFO: Creating model with dimension={config['dim']}, depth={config['depth']}...")
-    model = minLM(**config)
+    print(f"INFO: Creating model with dimension={model_params['dim']}, depth={model_params['depth']}...")
+    model = minLM(**model_params)
     
     state_dict = checkpoint.get('model_state_dict', checkpoint)
     if any(key.startswith('_orig_mod.') for key in state_dict.keys()):
@@ -175,7 +184,7 @@ def generate(
         logits, hidden_states = model(prompt, return_prev_hiddens=True)
 
         # The next token is sampled from the logits of the last token in the prompt
-        last_logits = logits[:, -1, :]
+        last_logits = logits[:, -1:, :] # Keep seq_len dim for 3D consistency
         prev_token = sample(last_logits, temperature, top_k, top_p)
         
         if stream:
