@@ -226,7 +226,9 @@ def generate(
 
 def load_primer_text(primer_file=None, primer_length=None, primer_text=None, explicit_length=False):
     if primer_text:
-        tokens = [ord(c) for c in primer_text]
+        # Convert text to bytes using UTF-8 encoding
+        byte_data = primer_text.encode('utf-8')
+        tokens = list(byte_data)  # This gives us values 0-255
         if explicit_length and primer_length and len(tokens) > primer_length:
             print(f"WARNING: Primer text truncated from {len(tokens)} to {primer_length} tokens.")
             tokens = tokens[:primer_length]
@@ -234,13 +236,18 @@ def load_primer_text(primer_file=None, primer_length=None, primer_text=None, exp
     
     elif primer_file:
         with open(primer_file, 'r', encoding='utf-8') as f: text = f.read()
-        tokens = [ord(c) for c in text]
+        # Convert text to bytes using UTF-8 encoding
+        byte_data = text.encode('utf-8')
+        tokens = list(byte_data)  # This gives us values 0-255
         if primer_length and len(tokens) > primer_length:
             print(f"WARNING: Primer file truncated from {len(tokens)} to {primer_length} tokens.")
             tokens = tokens[:primer_length]
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
     else:
-        return torch.tensor([ord(c) for c in "The "], dtype=torch.long)[None, ...]
+        # Default prompt
+        byte_data = "The ".encode('utf-8')
+        tokens = list(byte_data)
+        return torch.tensor(tokens, dtype=torch.long)[None, ...]
 
 def parse_size_with_suffix(size_str):
     if not isinstance(size_str, str): return size_str
