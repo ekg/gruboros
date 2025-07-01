@@ -184,7 +184,7 @@ def generate(
         logits, hidden_states = model(prompt, return_prev_hiddens=True)
 
         # The next token is sampled from the logits of the last token in the prompt
-        last_logits = logits[:, -1:, :] # Keep seq_len dim for 3D consistency
+        last_logits = logits[:, -1, :] # Shape: [batch_size, vocab_size]
         prev_token = sample(last_logits, temperature, top_k, top_p)
         
         if stream:
@@ -207,7 +207,7 @@ def generate(
             )
             
             # Sample the next token
-            prev_token = sample(logits, temperature, top_k, top_p)
+            prev_token = sample(logits[:, -1, :], temperature, top_k, top_p)
             token_val = prev_token.item()
             generated_tokens.append(token_val)
 
