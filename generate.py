@@ -50,12 +50,12 @@ def sample(logits, temperature=1.0, top_k=0, top_p=0.0):
 
     # Apply top-k filtering
     if top_k > 0:
-        top_k = min(top_k, logits.size(-1))  # Ensure k is not larger than vocab size
-        # E.g., if logits are [0.1, 0.3, 0.05, 0.2], topk(2) -> values are [0.3, 0.2]
-        # We want to set anything NOT in the top-k to -inf.
-        # The value of the k-th element becomes the threshold.
-        v, _ = torch.topk(logits, top_k)
-        logits[logits < v[:, -1, None]] = -float('Inf')
+        top_k = min(top_k, logits.size(-1))
+        top_k_values, top_k_indices = torch.topk(logits, top_k, dim=-1)
+        
+        filtered_logits = torch.full_like(logits, float('-inf'))
+        filtered_logits.scatter_(dim=-1, index=top_k_indices, src=top_k_values)
+        logits = filtered_logits
 
     # Apply top-p (nucleus) filtering
     if top_p > 0.0:
@@ -86,13 +86,17 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
     
     if os.path.isdir(checkpoint_path):
         latest_path = os.path.join(checkpoint_path, "latest.pt")
-        if os.path.exists(latest_path):
+        if os.path.exists(latest_path) and os.path.islink(latest_path):
+            real_ckpt_name = os.path.basename(os.readlink(latest_path))
+            print(f"INFO: Using latest checkpoint: {real_ckpt_name}")
             checkpoint_path = latest_path
-            print(f"INFO: Using latest checkpoint: {os.path.basename(os.readlink(latest_path))}")
+        elif os.path.exists(latest_path):
+             print(f"INFO: Using checkpoint: {os.path.basename(latest_path)}")
+             checkpoint_path = latest_path
         else:
-            raise ValueError(f"No 'latest.pt' symlink found in directory: {checkpoint_path}")
+            raise ValueError(f"No 'latest.pt' symlink or file found in directory: {checkpoint_path}")
     
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
     if 'model_config' in checkpoint:
         config = checkpoint['model_config']
@@ -105,13 +109,16 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
         else:
             raise ValueError(f"Could not find config.json in checkpoint directory: {os.path.dirname(checkpoint_path)}")
     
+    required_keys = ["num_tokens", "dim", "depth", "ff_mult", "expansion"]
+    for key in required_keys:
+        if key not in config: config[key] = 0 # Handle legacy configs
+    
     print(f"INFO: Creating model with dimension={config['dim']}, depth={config['depth']}...")
     model = minLM(**config)
     
     state_dict = checkpoint.get('model_state_dict', checkpoint)
-    # Handle compiled model prefixes
     if any(key.startswith('_orig_mod.') for key in state_dict.keys()):
-        state_dict = {k[10:]: v for k, v in state_dict.items() if k.startswith('_orig_mod.')}
+        state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
         print("INFO: Adapted weights from a compiled model checkpoint.")
 
     model.load_state_dict(state_dict)
@@ -124,10 +131,8 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
     if device == 'cuda':
         if use_bf16 and torch.cuda.is_bf16_supported():
             model = model.to(torch.bfloat16)
-            print("INFO: Model converted to BF16 precision.")
         elif use_fp16:
             model = model.to(torch.float16)
-            print("INFO: Model converted to FP16 precision.")
     
     model = model.to(device)
     print(f"INFO: Model loaded with {sum(p.numel() for p in model.parameters()):,} parameters on {device}.")
@@ -140,8 +145,8 @@ def generate(
     prompt: torch.Tensor,
     generation_length: int,
     temperature: float = 1.0,
-    top_k: int = 40,
-    top_p: float = 0.9,
+    top_k: int = 0,
+    top_p: float = 0.0,
     device: str = 'cuda',
     stream: bool = True
 ):
@@ -229,55 +234,37 @@ def load_primer_text(primer_file=None, primer_length=None, primer_text=None, exp
         return torch.tensor([ord(c) for c in "The "], dtype=torch.long)[None, ...]
 
 def parse_size_with_suffix(size_str):
-    """
-    Parse a string with optional k, m, g suffix into a number.
-    Examples:
-      "1k" -> 1024
-      "100k" -> 102400 (100*1024)
-      "2m" -> 2097152 (2*1024*1024)
-      "3g" -> 3221225472 (3*1024*1024*1024)
-      "42" -> 42 (no suffix, unchanged)
-    """
-    if not isinstance(size_str, str):
-        return size_str
-        
+    if not isinstance(size_str, str): return size_str
     pattern = r'^(\d+(?:\.\d+)?)([kmg])?$'
     match = re.match(pattern, size_str.lower())
-    if not match:
-        try:
-            return float(size_str)
-        except ValueError:
-            raise ValueError(f"Invalid size format: {size_str}")
-            
+    if not match: return float(size_str)
     value, suffix = match.groups()
     value = float(value)
-    
-    if suffix == 'k':
-        return value * 1024
-    elif suffix == 'm':
-        return value * 1024 * 1024
-    elif suffix == 'g':
-        return value * 1024 * 1024 * 1024
-    else:
-        return value
+    if suffix == 'k': return int(value * 1024)
+    elif suffix == 'm': return int(value * 1024 * 1024)
+    elif suffix == 'g': return int(value * 1024 * 1024 * 1024)
+    return int(value)
 
 def main():
     parser = argparse.ArgumentParser(description="Generate text using a trained minLM model")
     
-    parser.add_argument("--model", type=str, required=True, help="Path to trained model checkpoint or directory containing 'latest.pt'.")
-    parser.add_argument("--config_path", type=str, default=None, help="Path to model config file (if not in checkpoint).")
-    parser.add_argument("--device", type=str, default="auto", help="Device: 'cpu', 'cuda', 'cuda:0', etc.")
+    parser.add_argument("--model", type=str, required=True, help="Path to checkpoint or directory.")
+    parser.add_argument("--device", type=str, default="auto", help="Device: 'cpu', 'cuda', etc.")
     parser.add_argument("--cpu", action="store_true", help="Force CPU execution.")
     parser.add_argument("--use-f32", dest="use_bf16", action="store_false", default=True, help="Use FP32 instead of BF16.")
     parser.add_argument("--use-fp16", action="store_true", default=False, help="Use FP16 instead of BF16/FP32.")
     
     parser.add_argument("--generation_length", type=str, default="512", help="Tokens to generate (e.g., 512, 2k).")
     parser.add_argument("--temperature", type=float, default=0.85, help="Sampling temperature (0=greedy).")
-    parser.add_argument("--top_k", type=int, default=40, help="Top-k sampling (0 to disable).")
-    parser.add_argument("--top_p", type=float, default=0.9, help="Top-p/nucleus sampling (0.0 to disable).")
     
-    parser.add_argument("--primer_file", type=str, default=None, help="File containing primer text.")
-    parser.add_argument("--primer_text", type=str, default=None, help="Direct text to use as primer.")
+    # --- Clear sampling controls ---
+    parser.add_argument("--top_p", type=float, default=0.9,
+                        help="Nucleus sampling probability. (e.g., 0.9). Set to 0 to disable.")
+    parser.add_argument("--top_k", type=int, default=0,
+                        help="Top-k sampling. (e.g., 40). Set to 0 to disable. If both top-p and top-k are non-zero, top-k is applied first.")
+    
+    parser.add_argument("--primer_file", type=str, default=None, help="File with primer text.")
+    parser.add_argument("--primer_text", type=str, default=None, help="Direct primer text.")
     parser.add_argument("--primer_length", type=str, default="1k", help="Max primer length (e.g., 256, 1k).")
     parser.add_argument("--force_primer_length", action="store_true", help="Force truncation of --primer_text.")
     
@@ -292,8 +279,7 @@ def main():
     print(f"INFO: Using device: {device}")
     
     model = load_model(
-        checkpoint_path=args.model, config_path=args.config_path, 
-        use_bf16=args.use_bf16, use_fp16=args.use_fp16, device=device
+        checkpoint_path=args.model, use_bf16=args.use_bf16, use_fp16=args.use_fp16, device=device
     )
     
     generation_length = int(parse_size_with_suffix(args.generation_length))
@@ -303,9 +289,14 @@ def main():
         args.primer_file, primer_length, args.primer_text, args.force_primer_length
     ).long().to(device)
     
-    print(f"\nINFO: Generating {generation_length} tokens with T={args.temperature}, k={args.top_k}, p={args.top_p}")
+    # Clear logging of sampling method
+    sampling_params = f"T={args.temperature}"
+    if args.top_p > 0:
+        sampling_params += f", p={args.top_p}"
+    if args.top_k > 0:
+        sampling_params += f", k={args.top_k}"
+    print(f"\nINFO: Generating {generation_length} tokens with sampling: {sampling_params}")
     
-    # --- 3. CALL THE NEW, EFFICIENT GENERATION FUNCTION ---
     generated_tensor = generate(
         model, prompt, generation_length,
         args.temperature, args.top_k, args.top_p,
