@@ -686,6 +686,18 @@ def main():
             header.append("skipped_due_to_lock")
         f.write('\t'.join(header) + '\n')
 
+    # Calculate save probability first
+    base_save_probability = 1.0 / (args.save_every * world_size) if world_size > 1 and args.save_every > 0 else (1.0 / args.save_every if args.save_every > 0 else 0)
+    
+    # Adjust save probability to compensate for gossip lock blocking
+    if args.use_gossip_lock:
+        # If ~80% of regular saves get blocked by gossip locks, and we get some compensation 
+        # from opportunistic saves during gossip wins, boost base probability by ~4.5x
+        lock_compensation_factor = 4.5
+        save_probability = base_save_probability * lock_compensation_factor
+    else:
+        save_probability = base_save_probability
+
     def create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config):
         def opportunistic_save_callback(step, current_ema_fitness, opportunistic=False):
             if opportunistic:
@@ -723,16 +735,6 @@ def main():
 
     start_time = time.time()
     total_tokens_processed = 0
-    base_save_probability = 1.0 / (args.save_every * world_size) if world_size > 1 and args.save_every > 0 else (1.0 / args.save_every if args.save_every > 0 else 0)
-    
-    # Adjust save probability to compensate for gossip lock blocking
-    if args.use_gossip_lock:
-        # If ~80% of regular saves get blocked by gossip locks, and we get some compensation 
-        # from opportunistic saves during gossip wins, boost base probability by ~4.5x
-        lock_compensation_factor = 4.5
-        save_probability = base_save_probability * lock_compensation_factor
-    else:
-        save_probability = base_save_probability
 
     # --- 4. UNIFIED TRAINING LOOP ---
     
