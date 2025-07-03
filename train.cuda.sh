@@ -6,7 +6,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_fixed"
+NAME="1g_ok"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -78,7 +78,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.01 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
-  --gossip_fitness_decay 0.995 \
+  --gossip_fitness_decay 0.9995 \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 5.0 \

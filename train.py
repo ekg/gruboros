@@ -689,7 +689,7 @@ def main():
     def create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config):
         def opportunistic_save_callback(step, current_ema_fitness, opportunistic=False):
             if opportunistic:
-                save_prob = save_probability * 3.0  # 3x more likely for winners
+                save_prob = save_probability * 5.0  # 5x more likely for winners
             else:
                 save_prob = save_probability
             
