@@ -686,6 +686,25 @@ def main():
             header.append("skipped_due_to_lock")
         f.write('\t'.join(header) + '\n')
 
+    def create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config):
+        def opportunistic_save_callback(step, current_ema_fitness, opportunistic=False):
+            if opportunistic:
+                save_prob = save_probability * 3.0  # 3x more likely for winners
+            else:
+                save_prob = save_probability
+            
+            if random.random() < save_prob:
+                checkpoint_data = {
+                    'step': step, 'model_state_dict': model.state_dict(), 
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'ema_fitness': current_ema_fitness, 'model_config': model_config
+                }
+                return save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
+            return False
+        return opportunistic_save_callback
+
+    save_callback = create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config)
+
     evolutionary_node = EvolutionaryTrainingNode(
         node_id=f"node_{global_rank}", model=model, optimizer=optimizer, global_rank=global_rank,
         local_rank=local_rank, world_size=world_size, data_parallel_rank=global_rank,
@@ -694,7 +713,8 @@ def main():
         optimizer_recombination=args.gossip_optimizer_recombination, gossip_temp_dir=args.gossip_temp_dir,
         fitness_decay_factor=args.gossip_fitness_decay,
         use_node_local_lock=args.use_gossip_lock,
-        use_filesystem_coordinator=args.filesystem_coordinator
+        use_filesystem_coordinator=args.filesystem_coordinator,
+        save_callback=save_callback
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0:
@@ -738,117 +758,85 @@ def main():
     optimizer.zero_grad() # Prepare for the first accumulation cycle.
 
     while step < train_steps:
-        # --- NEW: Check for Rejuvenation (locked) ---
-        if args.filesystem_coordinator and args.use_gossip_lock:
-            my_percentile = evolutionary_node.coordinator.get_my_percentile()
-            # If we are in the bottom tier of models...
-            if my_percentile and my_percentile > args.rejuvenation_threshold:
-                # ...we have a small chance to rejuvenate.
-                if random.random() < args.rejuvenation_probability:
-                    try:
-                        with file_lock(evolutionary_node.node_lock_path, timeout=0.1):
-                            was_rejuvenated, needs_reset = evolutionary_node.attempt_rejuvenation(model, alpha=0.5, tiebreaker_threshold=args.rejuvenation_tiebreaker_threshold)
-                            if was_rejuvenated and needs_reset:
-                                optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
-                                if args.schedulefree: optimizer.train()
-                                evolutionary_node.optimizer = optimizer
-                                optimizer.zero_grad()
-                    except TimeoutError:
-                        pass # Node lock was busy, skip this time.
-        
-        # Check for and apply any pending model updates at the beginning of the step.
+        # Check for and apply any pending model updates at the beginning of the step
         was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
         if needs_optimizer_reset:
             if global_rank == 0: print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
             optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
             if args.schedulefree: optimizer.train()
             evolutionary_node.optimizer = optimizer
-            optimizer.zero_grad() # Crucially, zero the new optimizer's grads.
+            optimizer.zero_grad()
 
-        # Fetch a new long batch if we're at the start of a context window.
+        # Fetch data and process chunk
         if step % args.context_chunks == 0:
             try:
                 long_batch = next(data_iterator)
             except StopIteration:
                 data_iterator = iter(train_loader)
                 long_batch = next(data_iterator)
-            # Reset hidden state for the new, unrelated sequence.
             hidden_state = None
 
-        # Get the current chunk from the long batch.
         chunk_idx_in_batch = step % args.context_chunks
         start_idx = chunk_idx_in_batch * chunk_size
         chunk = long_batch[:, start_idx : start_idx + chunk_size + 1].to(device, non_blocking=True)
         
-        # Forward pass for one chunk.
         loss, next_hidden_state = model(
             chunk, return_loss=True, return_prev_hiddens=True, prev_hiddens=hidden_state
         )
         
         chunk_loss = loss.detach().item()
-
-        # Scale loss for gradient accumulation and perform backward pass.
         scaled_loss = loss / args.grad_accum
         scaled_loss.backward()
 
-        # Detach hidden state for the next TBPTT step.
         if next_hidden_state:
             hidden_state = [h.detach() for h in next_hidden_state]
         
-        # --- Optimizer Step Gate ---
+        # CRITICAL FIX: Only mix after complete gradient accumulation cycles
         if (step + 1) % args.grad_accum == 0:
             optimizer.step()
             optimizer.zero_grad()
+            
+            # Now safe to do evolutionary operations
+            evolutionary_node.update_fitness(chunk_loss, step)
+            evolutionary_node.check_for_updates()
+            evolutionary_node.request_mix()
+            current_ema_fitness = evolutionary_node.get_current_fitness()
+        else:
+            # During accumulation, only track fitness, no mixing
+            evolutionary_node.update_fitness(chunk_loss, step)
+            current_ema_fitness = evolutionary_node.get_current_fitness()
         
-        # --- High-frequency operations follow (every chunk-step) ---
-        evolutionary_node.update_fitness(chunk_loss, step)
-        evolutionary_node.check_for_updates()
-        evolutionary_node.request_mix()
-        current_ema_fitness = evolutionary_node.get_current_fitness()
-        
-        # Get the full status dictionary once per step
+        # Get status and log
         status = evolutionary_node.get_status()
-        
-        # Pass the status to the logging function
         log_metrics(step, chunk_loss, current_ema_fitness, status)
 
         if global_rank == 0:
             pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}"
-            # Conditionally add lock info to progress bar
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"
             pbar.set_postfix_str(pbar_str)
             pbar.update(1)
 
-        # --- MODIFIED: Probabilistic Saving with Fitness-Weighting (locked) ---
+        # MODIFIED: Simplified saving (opportunistic saving happens in gossip wins)
         if step > 0 and save_probability > 0:
-            should_save = False
-            save_prob_final = save_probability # Baseline probability
-
             if args.fitness_weighted_checkpointing and args.filesystem_coordinator:
                 my_percentile = evolutionary_node.coordinator.get_my_percentile()
                 if my_percentile is not None:
-                    # Best models (percentile=0) get highest multiplier. Worst (percentile=1) get 1.0x.
                     scaling_factor = 1.0 + (args.elite_checkpoint_multiplier - 1.0) * (1.0 - my_percentile)
                     save_prob_final = save_probability * scaling_factor
-            
-            should_save = random.random() < save_prob_final
-            
-            if should_save:
-                checkpoint_data = {
-                    'step': step, 'model_state_dict': model.state_dict(), 
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'ema_fitness': current_ema_fitness, 'model_config': model_config
-                }
-                
-                if args.use_gossip_lock:
-                    try:
-                        with file_lock(evolutionary_node.node_lock_path, timeout=0.1):
-                            save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
-                    except TimeoutError:
-                        pass  # Skip checkpoint if gossip is active
                 else:
-                    save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
+                    save_prob_final = save_probability
+            else:
+                save_prob_final = save_probability
+            
+            if args.use_gossip_lock:
+                try:
+                    with file_lock(evolutionary_node.node_lock_path, timeout=0.01):
+                        save_callback(step, current_ema_fitness, opportunistic=False)
+                except TimeoutError:
+                    pass  # Winners save opportunistically, so this is OK
+            else:
+                save_callback(step, current_ema_fitness, opportunistic=False)
         
         step += 1
 

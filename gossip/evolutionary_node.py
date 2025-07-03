@@ -64,7 +64,8 @@ class EvolutionaryTrainingNode:
                  gossip_temp_dir: Optional[str] = None,
                  fitness_decay_factor: float = 0.95,
                  use_node_local_lock: bool = False,
-                 use_filesystem_coordinator: bool = False):
+                 use_filesystem_coordinator: bool = False,
+                 save_callback: Optional[callable] = None):
         # Store parameters as instance variables FIRST
         self.node_id = node_id
         self.model = model  # Main thread owns this
@@ -81,6 +82,7 @@ class EvolutionaryTrainingNode:
         self.use_node_local_lock = use_node_local_lock
         self.use_filesystem_coordinator = use_filesystem_coordinator
         self.output_dir = output_dir
+        self.save_callback = save_callback
         
         # Initialize filesystem coordinator if enabled
         self.coordinator: Optional[FilesystemCoordinator] = None
@@ -266,16 +268,13 @@ class EvolutionaryTrainingNode:
                 winner_model_state = self.pending_update.state_dict
                 alpha = self.recombination_alpha
 
-                # 1. Interpolate model parameters
                 with torch.no_grad():
                     for name, loser_param in self.model.named_parameters():
                         if name in winner_model_state and loser_param.dtype.is_floating_point:
                             winner_param = winner_model_state[name].to(loser_param.device)
                             loser_param.mul_(1.0 - alpha).add_(winner_param, alpha=alpha)
 
-                # 2. Handle optimizer state based on strategy
                 if self.optimizer_recombination == 'interpolate' and self.pending_update.optimizer_state_dict:
-                    # Interpolate the optimizer state
                     winner_optim_state = self.pending_update.optimizer_state_dict['state']
                     loser_optim_state = self.optimizer.state
 
@@ -283,22 +282,19 @@ class EvolutionaryTrainingNode:
                         for p_id, winner_p_state in winner_optim_state.items():
                             if p_id in loser_optim_state:
                                 loser_p_state = loser_optim_state[p_id]
-                                # Interpolate 'exp_avg' and 'exp_avg_sq'
                                 for key in ['exp_avg', 'exp_avg_sq']:
                                     if key in loser_p_state and key in winner_p_state:
                                         loser_tensor = loser_p_state[key]
                                         winner_tensor = winner_p_state[key].to(loser_tensor.device)
                                         loser_tensor.mul_(1.0 - alpha).add_(winner_tensor, alpha=alpha)
-
                 elif self.optimizer_recombination == 'reset':
-                    # Signal the main loop to reset the optimizer
                     needs_optimizer_reset = True
-            
-            else:  # clonal
-                # Overwrite model and optimizer state completely
+                
+                # FIXED: Don't inherit fitness in recombination mode
+                
+            else:  # clonal mode
                 self.model.load_state_dict(self.pending_update.state_dict)
                 if self.pending_update.optimizer_state_dict:
-                    # Move optimizer state tensors to the correct device before loading
                     winner_optim_state = self.pending_update.optimizer_state_dict
                     device = next(self.model.parameters()).device
                     for state in winner_optim_state['state'].values():
@@ -306,12 +302,10 @@ class EvolutionaryTrainingNode:
                             if torch.is_tensor(value):
                                 state[key] = value.to(device)
                     self.optimizer.load_state_dict(winner_optim_state)
-
-            load_time = (time.time() - start_time) * 1000
-
-            # Inherit fitness
-            with self.fitness_lock:
-                self.fitness_tracker.inherit_fitness(self.pending_update.source_ema_loss)
+                
+                # FIXED: Only inherit fitness in clonal mode (complete replacement)
+                with self.fitness_lock:
+                    self.fitness_tracker.inherit_fitness(self.pending_update.source_ema_loss)
             
             self.successful_mixes += 1
             
@@ -469,9 +463,15 @@ class EvolutionaryTrainingNode:
                 # We win - send our weights
                 self.mixes_won += 1
                 client_sock.send(b"SENDING_WEIGHTS")
-                # Extend timeout for weight transfer
                 client_sock.settimeout(120.0)
                 self._send_our_weights_to_peer(client_sock, correlation_id)
+                
+                # NEW: Try to save while we have the lock
+                if self.save_callback:
+                    try:
+                        self.save_callback(self.current_step, our_fitness, opportunistic=True)
+                    except Exception as e:
+                        self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
                 
             else:
                 # We lose - receive their weights
@@ -569,6 +569,13 @@ class EvolutionaryTrainingNode:
                 # We are sending, so we won this exchange
                 self.mixes_won += 1
                 self._send_our_weights_to_peer(sock, correlation_id)
+                
+                # NEW: Try to save while we have the lock
+                if self.save_callback:
+                    try:
+                        self.save_callback(self.current_step, our_fitness, opportunistic=True)
+                    except Exception as e:
+                        self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
                 
             self.mixing_attempts += 1
             

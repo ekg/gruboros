@@ -6,7 +6,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_cuda"
+NAME="1g_fixed"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -20,7 +20,7 @@ if [ -n "$GIT_HASH" ]; then
 else
     OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_${NAME}"
 fi
-DATA_PATH="/mnt/nvme1n1/erikg/fineweb-edu/sample/350BT.txt"
+DATA_PATH="/mnt/nvme2n1/erikg/pile.txt"
 if [ ! -f "$DATA_PATH" ]; then
     echo "ERROR: Data file not found at $DATA_PATH"
     exit 1
@@ -62,14 +62,14 @@ deepspeed --num_gpus=$NUM_GPUS \
   --expansion_factor 4.0 \
   --train_steps 1000000 \
   --save_every 500 \
-  --lr 0.0005 \
+  --lr 0.0001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
   --grad_accum 16 \
   --chunk_size 2048 \
-  --context_chunks 16 \
+  --context_chunks 4 \
   --keep_checkpoints 5 \
   --keep_elite 10 \
   --archive_rate 0.02 \
@@ -82,9 +82,6 @@ deepspeed --num_gpus=$NUM_GPUS \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 5.0 \
-  --rejuvenation-threshold 0.8 \
-  --rejuvenation-probability 0.002 \
-  --rejuvenation-tiebreaker-threshold 0.005 \
   --cuda
 
 echo "Training finished."
