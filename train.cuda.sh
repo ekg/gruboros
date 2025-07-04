@@ -58,27 +58,28 @@ deepspeed --num_gpus=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --params 1g \
-  --dim 2048 \
-  --expansion_factor 4.0 \
-  --train_steps 1000000 \
+  --dim 1024 \
+  --expansion_factor 3.0 \
+  --ff_mult 1.5 \
+  --train_steps 2000000 \
   --save_every 500 \
-  --lr 0.0001 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
-  --grad_accum 4 \
+  --grad_accum 8 \
   --chunk_size 2048 \
-  --context_chunks 4 \
+  --context_chunks 8 \
   --keep_checkpoints 5 \
   --keep_elite 10 \
   --archive_rate 0.02 \
   --gossip_merge_method recombination \
-  --gossip_recombination_alpha 0.5 \
+  --gossip_recombination_alpha 0.3 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.01 \
+  --gossip_mixing_rate 0.002 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
-  --gossip_fitness_decay 0.9995 \
+  --gossip_fitness_decay 0.995 \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 5.0 \
