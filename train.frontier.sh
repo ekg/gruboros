@@ -9,7 +9,7 @@
 #SBATCH -N 16
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
-#SBATCH --gpus-per-task=1  # Important: Binds one task to one GPU for stability
+#SBATCH --gpus-per-task=1
 #SBATCH -C nvme
 
 set -x
@@ -47,7 +47,7 @@ if [ -n "$GIT_HASH" ]; then
 else
     export OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 fi
-export DATA="/lustre/orion/bif148/scratch/erikgarrison/fineweb-edu/sample/350BT.txt"
+export DATA="/lustre/orion/bif148/scratch/erikgarrison/commonpile/commapile.txt"
 export GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
 # --- Pre-create Directories (Unchanged, this is good practice) ---
@@ -72,35 +72,33 @@ export LOCAL_RANK=\$SLURM_LOCALID
 python train.py \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
-  --train_steps 100000 \
-  --save_every 200 \
-  --lr 0.002 \
+  --params 1g \
+  --dim 1024 \
+  --expansion_factor 3.0 \
+  --ff_mult 1.5 \
+  --train_steps 1000000 \
+  --save_every 500 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --batch_size 1 \
-  --grad_accum 16 \
+  --grad_accum 8 \
   --chunk_size 2048 \
-  --context_chunks 16 \
-  --params 1g \
-  --dim 1024 \
-  --expansion_factor 8.0 \
+  --context_chunks 8 \
   --keep_checkpoints 5 \
-  --keep_elite 10 \
-  --archive_rate 0.02 \
+  --keep_elite 20 \
+  --archive_rate 0.05 \
   --gossip_merge_method recombination \
-  --gossip_recombination_alpha 0.5 \
+  --gossip_recombination_alpha 0.3 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.01 \
-  --gossip_fitness_decay 0.995 \
+  --gossip_mixing_rate 0.002 \
   --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
+  --gossip_fitness_decay 0.995 \
   --gossip-node-local-lock \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
-  --elite-checkpoint-multiplier 5.0 \
-  --rejuvenation-threshold 0.8 \
-  --rejuvenation-probability 0.002 \
-  --rejuvenation-tiebreaker-threshold 0.005 \
+  --elite-checkpoint-multiplier 10.0 \
   --rocm
 "
 
