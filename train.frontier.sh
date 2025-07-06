@@ -4,9 +4,9 @@
 #SBATCH -J minLM_gossip_srun_gloo
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 01:00:00
-#SBATCH -p batch
-#SBATCH -N 16
+#SBATCH -t 24:00:00
+#SBATCH -p extended
+#SBATCH -N 64
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH --gpus-per-task=1
@@ -87,8 +87,8 @@ python train.py \
   --chunk_size 2048 \
   --context_chunks 8 \
   --keep_checkpoints 5 \
-  --keep_elite 20 \
-  --archive_rate 0.05 \
+  --keep_elite 30 \
+  --archive_rate 0.2 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.3 \
   --gossip_optimizer_recombination interpolate \
