@@ -53,7 +53,7 @@ export GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 # --- Pre-create Directories (Unchanged, this is good practice) ---
 mkdir -p logs "${OUTPUT_DIR}"/gossip "${OUTPUT_DIR}"/metrics
 # Use srun to create the temp directory on every allocated node
-srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "mkdir -p $GOSSIP_TEMP_DIR"
+srun --no-kill --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "mkdir -p $GOSSIP_TEMP_DIR"
 echo "Created gossip temp directory on all node-local NVMe drives: $GOSSIP_TEMP_DIR"
 
 # --- Launch Training with srun ---
@@ -63,7 +63,7 @@ echo "Master Node: $MASTER_ADDR:$MASTER_PORT"
 # --- FIX: Use double quotes and escape SLURM vars ---
 # This allows script variables like $OUTPUT_DIR to be expanded by the main shell,
 # while SLURM variables like \$SLURM_PROCID are expanded by srun for each task.
-srun --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 bash -c "
+srun --no-kill --cpu-bind=verbose,map_cpu:49,57,17,25,1,9,33,41 bash -c "
 export RANK=\$SLURM_PROCID
 export WORLD_SIZE=\$SLURM_NPROCS
 export LOCAL_RANK=\$SLURM_LOCALID
@@ -104,5 +104,5 @@ python train.py \
 
 echo "Training finished."
 # --- Cleanup (Unchanged) ---
-srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "rm -rf $GOSSIP_TEMP_DIR"
+srun --no-kill --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "rm -rf $GOSSIP_TEMP_DIR"
 echo "Cleaned up gossip temp directories from all node-local NVMe drives."
