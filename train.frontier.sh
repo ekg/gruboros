@@ -1,12 +1,11 @@
 #!/bin/bash
-
 #SBATCH -A BIF148
 #SBATCH -J minLM_gossip_srun_gloo
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 24:00:00
-#SBATCH -p extended
-#SBATCH -N 64
+#SBATCH -t 02:00:00
+#SBATCH -p batch
+#SBATCH -N 32
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH --gpus-per-task=1
@@ -49,6 +48,7 @@ else
 fi
 export DATA="/lustre/orion/bif148/scratch/erikgarrison/commonpile/commapile.txt"
 export GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
+export CHECKPOINT="/lustre/orion/bif148/scratch/erikgarrison/gruboros.tune.1/checkpoints/checkpoint_rank_0006_step_763291_loss_0.8698.pt"
 
 # --- Pre-create Directories (Unchanged, this is good practice) ---
 mkdir -p logs "${OUTPUT_DIR}"/gossip "${OUTPUT_DIR}"/metrics
@@ -70,6 +70,7 @@ export LOCAL_RANK=\$SLURM_LOCALID
 
 # Execute the python script with the correct environment now set
 ( python train.py \
+  --resume \"$CHECKPOINT\" \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
   --params 1g \
