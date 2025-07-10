@@ -70,7 +70,7 @@ export WORLD_SIZE=\$SLURM_NPROCS
 export LOCAL_RANK=\$SLURM_LOCALID
 
 # Execute the python script with the correct environment now set
-python train.py \
+( python train.py \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
   --params 1g \
@@ -100,10 +100,10 @@ python train.py \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 10.0 \
-  --rocm
+  --rocm ) || (
+    echo \"[\$(date)] Rank \$SLURM_PROCID died on \$(hostname)\" >> \"$OUTPUT_DIR/deaths.log\"
+    sleep infinity
+  )
 "
 
 echo "Training finished."
-# --- Cleanup (Unchanged) ---
-srun --no-kill --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c "rm -rf $GOSSIP_TEMP_DIR"
-echo "Cleaned up gossip temp directories from all node-local NVMe drives."
