@@ -551,15 +551,9 @@ def main():
     
     resuming = args.resume is not None
     resume_step = 0
-    # Use args.output directly, which is now guaranteed to exist.
+    resume_path = args.resume  # Keep track of where to load checkpoint from
+    # Use args.output directly for saving new outputs
     checkpoint_dir = args.output or f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    if resuming:
-        # This logic is a bit complex, let's simplify and make it safer.
-        if os.path.isfile(args.resume):
-             checkpoint_dir = os.path.dirname(args.resume)
-        else:
-             # If a directory is passed, assume it's the checkpoint dir.
-             checkpoint_dir = args.resume
 
     # Rank 0 creates the checkpoint directory, all others wait for it to be ready.
     if global_rank == 0:
@@ -580,7 +574,7 @@ def main():
 
     model_config, checkpoint = None, None
     if resuming:
-        path = args.resume if os.path.isfile(args.resume) else os.path.join(args.resume, "latest.pt")
+        path = resume_path if os.path.isfile(resume_path) else os.path.join(resume_path, "latest.pt")
         if os.path.exists(path):
             if global_rank == 0: print(f"Loading checkpoint from {path}")
             checkpoint = torch.load(path, map_location='cpu')
