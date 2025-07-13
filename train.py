@@ -395,7 +395,7 @@ class ContinuousIIDDataset(Dataset):
         self.samples_per_epoch = samples_per_epoch
 
         self.mmap = np.memmap(filepath, dtype=np.uint8, mode='r')
-        self.max_start = len(self.mmap) - self.total_seq_len - 1
+        self.max_start = len(self.mmap) - self.total_seq_len
         self.rng = random.Random(self.seed)
 
         if global_rank == 0:
@@ -409,12 +409,12 @@ class ContinuousIIDDataset(Dataset):
     def __getitem__(self, idx):
         file_pos = int(self.rng.random() * self.max_start)
         # Fetch one long, contiguous sequence for TBPTT
-        data = self.mmap[file_pos : file_pos + self.total_seq_len + 1]
+        data = self.mmap[file_pos : file_pos + self.total_seq_len]
         tensor = torch.tensor(data, dtype=torch.long)
         
         # This padding should rarely, if ever, be needed with correct max_start calculation
-        if tensor.size(0) < self.total_seq_len + 1:
-            padding = torch.zeros(self.total_seq_len + 1 - tensor.size(0), dtype=torch.long)
+        if tensor.size(0) < self.total_seq_len:
+            padding = torch.zeros(self.total_seq_len - tensor.size(0), dtype=torch.long)
             tensor = torch.cat([tensor, padding])
         return tensor
 
@@ -790,7 +790,7 @@ def main():
 
         chunk_idx_in_batch = step % args.context_chunks
         start_idx = chunk_idx_in_batch * chunk_size
-        chunk = long_batch[:, start_idx : start_idx + chunk_size + 1].to(device, non_blocking=True)
+        chunk = long_batch[:, start_idx : start_idx + chunk_size].to(device, non_blocking=True)
         
         loss, next_hidden_state = model(
             chunk, return_loss=True, return_prev_hiddens=True, prev_hiddens=hidden_state
