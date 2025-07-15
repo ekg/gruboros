@@ -78,6 +78,64 @@ def sample(logits, temperature=1.0, top_k=0, top_p=0.0):
     probs = F.softmax(logits, dim=-1)
     return torch.multinomial(probs, num_samples=1)
 
+def locally_typical_sampling(logits, temperature=1.0, typical_p=0.9, typical_mass=0.9, epsilon=1e-10):
+    """
+    Locally typical sampling: Sample from tokens whose information content is close to expected.
+    
+    Args:
+        logits: Raw model logits [batch_size, vocab_size].
+        temperature: Controls randomness. Lower = less random.
+        typical_p: Mass of typical set to consider (similar to top_p).
+        typical_mass: Alternative to typical_p - include tokens until we have this much mass.
+        epsilon: Small value for numerical stability.
+    
+    Returns:
+        torch.Tensor: The sampled token indices.
+    """
+    if temperature == 0.0:
+        # Greedy sampling
+        return logits.argmax(dim=-1, keepdim=True)
+    
+    # Apply temperature
+    logits = logits / temperature
+    
+    # Get probabilities and log probabilities
+    probs = F.softmax(logits, dim=-1)
+    log_probs = F.log_softmax(logits, dim=-1)
+    
+    # Calculate entropy (expected information content)
+    entropy = -torch.sum(probs * log_probs, dim=-1, keepdim=True)
+    
+    # Calculate absolute deviation from entropy for each token
+    neg_log_probs = -log_probs
+    typicality = torch.abs(neg_log_probs - entropy)
+    
+    # Sort by typicality (ascending - most typical first)
+    sorted_typicality, sorted_indices = torch.sort(typicality, dim=-1)
+    sorted_probs = torch.gather(probs, -1, sorted_indices)
+    
+    # Calculate cumulative probabilities
+    cumsum_probs = torch.cumsum(sorted_probs, dim=-1)
+    
+    # Create mask for typical set (include tokens until we have typical_p mass)
+    mask = cumsum_probs < typical_p
+    # Ensure we include at least one token
+    mask[..., 0] = True
+    
+    # Zero out probabilities outside typical set
+    sorted_probs[~mask] = 0.0
+    
+    # Renormalize
+    sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+    
+    # Sample from the filtered distribution
+    sample_idx = torch.multinomial(sorted_probs.squeeze(0), num_samples=1)
+    
+    # Map back to original indices
+    original_idx = sorted_indices.squeeze(0)[sample_idx]
+    
+    return original_idx.unsqueeze(0)
+
 def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False, device=None):
     """
     Load a trained minLM model from checkpoint. (Largely unchanged, but still good)
@@ -156,6 +214,7 @@ def generate(
     temperature: float = 1.0,
     top_k: int = 0,
     top_p: float = 0.0,
+    typical_p: float = 0.0,  # Add this parameter
     device: str = 'cuda',
     stream: bool = True
 ):
@@ -166,7 +225,8 @@ def generate(
         model: The minLM model.
         prompt: Starting prompt tensor [1, seq_len].
         generation_length: Number of tokens to generate.
-        temperature, top_k, top_p: Sampling parameters.
+        temperature, top_k, top_p: Standard sampling parameters.
+        typical_p: If > 0, use locally typical sampling instead of top-k/top-p.
         device: Device to run on.
         stream: Whether to print tokens as they are generated.
     """
@@ -185,7 +245,12 @@ def generate(
 
         # The next token is sampled from the logits of the last token in the prompt
         last_logits = logits[:, -1, :] # Shape: [batch_size, vocab_size]
-        prev_token = sample(last_logits, temperature, top_k, top_p)
+        
+        # Choose sampling method
+        if typical_p > 0:
+            prev_token = locally_typical_sampling(last_logits, temperature, typical_p)
+        else:
+            prev_token = sample(last_logits, temperature, top_k, top_p)
         
         if stream:
             # Print the prompt itself for context
@@ -207,7 +272,11 @@ def generate(
             )
             
             # Sample the next token
-            prev_token = sample(logits[:, -1, :], temperature, top_k, top_p)
+            if typical_p > 0:
+                prev_token = locally_typical_sampling(logits[:, -1, :], temperature, typical_p)
+            else:
+                prev_token = sample(logits[:, -1, :], temperature, top_k, top_p)
+            
             token_val = prev_token.item()
             generated_tokens.append(token_val)
 
@@ -273,7 +342,13 @@ def main():
     parser.add_argument("--generation_length", type=str, default="512", help="Tokens to generate (e.g., 512, 2k).")
     parser.add_argument("--temperature", type=float, default=0.85, help="Sampling temperature (0=greedy).")
     
-    # --- Clear sampling controls ---
+    # --- Sampling method controls ---
+    parser.add_argument("--typical", action="store_true", 
+                        help="Use locally typical sampling instead of top-p/top-k.")
+    parser.add_argument("--typical_p", type=float, default=0.9,
+                        help="Typical sampling threshold (0.8-0.95 recommended). Only used with --typical.")
+    
+    # --- Existing sampling controls (only used if --typical is not set) ---
     parser.add_argument("--top_p", type=float, default=0.9,
                         help="Nucleus sampling probability. (e.g., 0.9). Set to 0 to disable.")
     parser.add_argument("--top_k", type=int, default=0,
@@ -306,16 +381,28 @@ def main():
     ).long().to(device)
     
     # Clear logging of sampling method
-    sampling_params = f"T={args.temperature}"
-    if args.top_p > 0:
-        sampling_params += f", p={args.top_p}"
-    if args.top_k > 0:
-        sampling_params += f", k={args.top_k}"
+    if args.typical:
+        sampling_params = f"Typical sampling with p={args.typical_p}, T={args.temperature}"
+        # When using typical sampling, set top_p and top_k to 0
+        top_p_value = 0.0
+        top_k_value = 0
+        typical_p_value = args.typical_p
+    else:
+        sampling_params = f"T={args.temperature}"
+        if args.top_p > 0:
+            sampling_params += f", top_p={args.top_p}"
+        if args.top_k > 0:
+            sampling_params += f", top_k={args.top_k}"
+        top_p_value = args.top_p
+        top_k_value = args.top_k
+        typical_p_value = 0.0
+    
     print(f"\nINFO: Generating {generation_length} tokens with sampling: {sampling_params}")
     
     generated_tensor = generate(
         model, prompt, generation_length,
-        args.temperature, args.top_k, args.top_p,
+        args.temperature, top_k_value, top_p_value,
+        typical_p_value,  # Pass typical_p to generate
         device, args.stream
     )
     
