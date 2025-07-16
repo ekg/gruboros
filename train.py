@@ -489,14 +489,10 @@ class DocumentStreamDataset(Dataset):
                 self.documents_processed += 1
                 
                 if len(self.byte_buffer) > 0:
-                    # We have a partial chunk to return
+                    # We have a partial chunk to return - NO PADDING!
                     actual_length = len(self.byte_buffer)
                     
-                    # Pad to chunk_size
-                    while len(self.byte_buffer) < self.chunk_size:
-                        self.byte_buffer.append(0)  # Padding with zeros
-                    
-                    chunk = torch.tensor(self.byte_buffer[:self.chunk_size], dtype=torch.long)
+                    chunk = torch.tensor(self.byte_buffer, dtype=torch.long)
                     self.byte_buffer = []
                     
                     return chunk, True, actual_length
@@ -907,10 +903,7 @@ def main():
             prev_hiddens=hidden_state
         )
         
-        # Scale loss by actual chunk length if this is a partial chunk
-        if actual_length < chunk_size:
-            scale_factor = torch.tensor(actual_length / chunk_size, device=loss.device, dtype=loss.dtype)
-            loss = loss * scale_factor
+        # No loss scaling needed - chunk is already the correct size
         
         chunk_loss = loss.detach().item()
         
