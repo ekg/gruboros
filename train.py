@@ -2,7 +2,7 @@ import os, random, numpy as np
 import torch, torch.nn as nn
 import torch.distributed as dist
 from torch.optim import AdamW
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 import time
 import argparse
@@ -418,6 +418,113 @@ class ContinuousIIDDataset(Dataset):
             tensor = torch.cat([tensor, padding])
         return tensor
 
+
+class DocumentStreamDataset(Dataset):
+    """
+    Streams through documents sequentially, respecting boundaries.
+    Each GPU starts at a random position and reads forever.
+    """
+    def __init__(self, filepath, chunk_size, seed=42, global_rank=0):
+        super().__init__()
+        self.filepath = filepath
+        self.chunk_size = chunk_size
+        self.mmap = np.memmap(filepath, dtype=np.uint8, mode='r')
+        self.file_size = len(self.mmap)
+        
+        # Each GPU gets a different random starting position
+        rng = random.Random(seed + global_rank * 1000)
+        self.position = rng.randint(0, self.file_size - 1)
+        
+        # Scan forward to next document boundary to start clean
+        self._scan_to_next_document()
+        
+        # Buffer for accumulating bytes until we have a full chunk
+        self.byte_buffer = []
+        
+        # Per-GPU statistics
+        self.documents_processed = 0
+        self.bytes_processed = 0  # This is per-GPU!
+        self.wraps = 0
+        
+        print(f"Rank {global_rank}: DocumentStreamDataset initialized at position {self.position}")
+        
+    def _scan_to_next_document(self):
+        """Scan forward to the start of the next document"""
+        while self.position < self.file_size and self.mmap[self.position] != 0x1e:
+            self.position += 1
+        
+        if self.position >= self.file_size:
+            self.position = 0
+            self.wraps += 1
+        else:
+            self.position += 1  # Skip the \x1e delimiter
+            if self.position >= self.file_size:
+                self.position = 0
+                self.wraps += 1
+    
+    def get_next_chunk(self):
+        """
+        Returns: (chunk_tensor, is_final_chunk_in_doc, actual_chunk_length)
+        """
+        while len(self.byte_buffer) < self.chunk_size:
+            # Check if we need to wrap
+            if self.position >= self.file_size:
+                self.position = 0
+                self.wraps += 1
+            
+            # Read one byte
+            byte_val = int(self.mmap[self.position])
+            self.position += 1
+            self.bytes_processed += 1
+            
+            # Check for document boundary
+            if byte_val == 0x1e:
+                self.documents_processed += 1
+                
+                if len(self.byte_buffer) > 0:
+                    # We have a partial chunk to return
+                    actual_length = len(self.byte_buffer)
+                    
+                    # Pad to chunk_size
+                    while len(self.byte_buffer) < self.chunk_size:
+                        self.byte_buffer.append(0)  # Padding with zeros
+                    
+                    chunk = torch.tensor(self.byte_buffer[:self.chunk_size], dtype=torch.long)
+                    self.byte_buffer = []
+                    
+                    return chunk, True, actual_length
+                else:
+                    # Empty buffer at boundary, continue to next document
+                    continue
+            else:
+                self.byte_buffer.append(byte_val)
+        
+        # We have a full chunk
+        chunk = torch.tensor(self.byte_buffer[:self.chunk_size], dtype=torch.long)
+        self.byte_buffer = self.byte_buffer[self.chunk_size:]  # Keep remainder
+        
+        return chunk, False, self.chunk_size
+    
+    def get_stats(self):
+        return {
+            'documents_processed': self.documents_processed,
+            'bytes_processed': self.bytes_processed,
+            'file_wraps': self.wraps,
+            'current_position': self.position
+        }
+
+
+class DocumentStreamWrapper(IterableDataset):
+    """
+    Wrapper to make DocumentStreamDataset work with PyTorch DataLoader
+    """
+    def __init__(self, filepath, chunk_size, seed=42, global_rank=0):
+        self.stream_dataset = DocumentStreamDataset(filepath, chunk_size, seed, global_rank)
+        
+    def __iter__(self):
+        while True:  # Infinite iterator
+            yield self.stream_dataset.get_next_chunk()
+
 def get_model(model_config):
     return minLM(**model_config)
 
@@ -641,36 +748,29 @@ def main():
     
     if args.schedulefree: optimizer.train()
 
-    train_dataset = ContinuousIIDDataset(
-        args.data, chunk_size=chunk_size, context_chunks=args.context_chunks,
-        seed=SEED + global_rank, samples_per_epoch=batches_per_epoch * batch_size,
-        batch_size=batch_size, global_rank=global_rank
-    )
-    
-    # Correct DataLoader setup for HPC environments with cpu-binding
-    ranks_per_node = int(os.environ.get('RANKS_PER_NODE', world_size if world_size > 0 else 1))
-    
-    # Use sched_getaffinity to respect cpu-binding from srun/launchers
-    try:
-        cpus_per_rank = len(os.sched_getaffinity(0))
-    except AttributeError:
-        # Fallback for systems without sched_getaffinity (like Windows)
-        cpus_available = os.cpu_count() or 1
-        cpus_per_rank = (cpus_available // ranks_per_node) if ranks_per_node > 0 and ranks_per_node <= cpus_available else 1
-    
-    # --- FIX: Use a fixed, small number of workers to prevent file descriptor exhaustion ---
-    # The previous calculation (cpus_per_rank - 1) was too aggressive, leading to 
-    # file descriptor exhaustion. A smaller, fixed number is more robust.
-    # Use 1 worker per rank as suggested by the system warning.
-    num_workers = 1
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, sampler=None, shuffle=False,
-        num_workers=num_workers, pin_memory=True, persistent_workers=(num_workers > 0),
-        prefetch_factor=4 if num_workers > 0 else None, drop_last=True
-    )
-    
+    # Check batch size requirement for document streaming
+    if batch_size != 1:
+        raise ValueError(f"Document streaming mode requires batch_size=1, got {batch_size}")
+
     if global_rank == 0:
-        print(f"DataLoader configuration: {num_workers} workers per rank ({cpus_per_rank} CPUs/process, {ranks_per_node} ranks/node)")
+        print(f"\nUsing DocumentStreamDataset with sequential document reading")
+        print(f"Each GPU will start at a random position and read continuously")
+        print(f"Document delimiter: 0x1e")
+
+    train_dataset = DocumentStreamWrapper(
+        args.data, 
+        chunk_size=chunk_size,
+        seed=SEED,
+        global_rank=global_rank
+    )
+
+    # Simplified DataLoader for streaming
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=1,  # Must be 1
+        num_workers=0,  # Keep it simple for streaming
+        pin_memory=True
+    )
 
     # --- 3. GOSSIP AND METRICS SETUP ---
     metrics_dir = os.path.join(checkpoint_dir, "metrics")
@@ -679,6 +779,7 @@ def main():
         header = [
             "rank", "step", "time_elapsed_s", "train_loss", "ema_loss", 
             "total_tokens_processed", "tokens_per_sec", "learning_rate",
+            "documents_completed", "current_position_gb",
             # --- NEW COLUMNS ---
             "initiated_mixes", "received_mixes", "won_mixes", "lost_mixes", "failed_mixes"
         ]
@@ -735,22 +836,28 @@ def main():
         print(f"\n{proto_type} Gossip protocol initialized and running.\n")
 
     start_time = time.time()
-    total_tokens_processed = 0
+    # Initialize per-GPU token counter
+    total_tokens_processed = 0  # Now per-GPU, not global!
 
     # --- 4. UNIFIED TRAINING LOOP ---
     
-    def log_metrics(step, train_loss, ema_loss, mix_status):
+    # Modified log_metrics function
+    def log_metrics(step, train_loss, ema_loss, mix_status, doc_stats):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
-        total_tokens_processed = (step + 1) * batch_size * chunk_size
+        
+        # Use per-GPU bytes processed from dataset
+        total_tokens_processed = doc_stats['bytes_processed']
         tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
         current_lr = optimizer.param_groups[0]['lr']
         
         values = [str(v) for v in [
             global_rank, step, f"{elapsed:.2f}", f"{train_loss:.6f}",
             f"{ema_loss:.6f}" if ema_loss is not None else "NA",
-            total_tokens_processed, f"{tokens_per_sec:.2f}", f"{current_lr:.8f}",
-            # --- NEW VALUES ---
+            total_tokens_processed,  # Per-GPU tokens
+            f"{tokens_per_sec:.2f}", f"{current_lr:.8f}",
+            doc_stats['documents_processed'],  # NEW
+            f"{doc_stats['current_position'] / 1e9:.3f}",  # NEW
             mix_status['initiated_mixes'],
             mix_status['received_mixes'],
             mix_status['won_mixes'],
@@ -763,67 +870,73 @@ def main():
         with open(metrics_log_path, 'a') as f:
             f.write('\t'.join(values) + '\n')
 
+    # Main training loop
     pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
     step = resume_step
     data_iterator = iter(train_loader)
     hidden_state = None
-    optimizer.zero_grad() # Prepare for the first accumulation cycle.
+    optimizer.zero_grad()
 
     while step < train_steps:
-        # Check for and apply any pending model updates at the beginning of the step
+        # Check for and apply any pending model updates
         was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
         if needs_optimizer_reset:
-            if global_rank == 0: print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
+            if global_rank == 0: 
+                print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
             optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
             if args.schedulefree: optimizer.train()
             evolutionary_node.optimizer = optimizer
             optimizer.zero_grad()
 
-        # Fetch data and process chunk
-        if step % args.context_chunks == 0:
-            try:
-                long_batch = next(data_iterator)
-            except StopIteration:
-                data_iterator = iter(train_loader)
-                long_batch = next(data_iterator)
-            hidden_state = None
-
-        chunk_idx_in_batch = step % args.context_chunks
-        start_idx = chunk_idx_in_batch * chunk_size
-        chunk = long_batch[:, start_idx : start_idx + chunk_size].to(device, non_blocking=True)
+        # Get next chunk with document boundary info
+        chunk_data, is_doc_end, actual_length = next(data_iterator)
+        chunk = chunk_data.to(device, non_blocking=True)
         
+        # Forward pass
         loss, next_hidden_state = model(
-            chunk, return_loss=True, return_prev_hiddens=True, prev_hiddens=hidden_state
+            chunk.unsqueeze(0),  # Add batch dimension back
+            return_loss=True,
+            return_prev_hiddens=True,
+            prev_hiddens=hidden_state
         )
+        
+        # Scale loss by actual chunk length if this is a partial chunk
+        if actual_length < chunk_size:
+            loss = loss * (actual_length / chunk_size)
         
         chunk_loss = loss.detach().item()
         scaled_loss = loss / args.grad_accum
         scaled_loss.backward()
-
-        if next_hidden_state:
-            hidden_state = [h.detach() for h in next_hidden_state]
         
-        # CRITICAL FIX: Only mix after complete gradient accumulation cycles
+        # Handle hidden state based on document boundary
+        if is_doc_end:
+            # Document boundary - reset hidden state for next document
+            hidden_state = None
+        else:
+            # Continue with hidden state for next chunk
+            if next_hidden_state:
+                hidden_state = [h.detach() for h in next_hidden_state]
+        
+        # Only do evolutionary operations after gradient accumulation
         if (step + 1) % args.grad_accum == 0:
             optimizer.step()
             optimizer.zero_grad()
             
-            # Now safe to do evolutionary operations
             evolutionary_node.update_fitness(chunk_loss, step)
             evolutionary_node.check_for_updates()
             evolutionary_node.request_mix()
             current_ema_fitness = evolutionary_node.get_current_fitness()
         else:
-            # During accumulation, only track fitness, no mixing
             evolutionary_node.update_fitness(chunk_loss, step)
             current_ema_fitness = evolutionary_node.get_current_fitness()
         
-        # Get status and log
+        # Get status and log with document stats
         status = evolutionary_node.get_status()
-        log_metrics(step, chunk_loss, current_ema_fitness, status)
-
+        doc_stats = train_dataset.stream_dataset.get_stats()
+        log_metrics(step, chunk_loss, current_ema_fitness, status, doc_stats)
+        
         if global_rank == 0:
-            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} mixes={status['successful_mixes']}"
+            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} docs={doc_stats['documents_processed']}"
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"
             pbar.set_postfix_str(pbar_str)
