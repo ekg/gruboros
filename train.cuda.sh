@@ -67,7 +67,6 @@ deepspeed --num_gpus=$NUM_GPUS \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 1 \
   --grad_accum 8 \
   --chunk_size 2048 \
   --context_chunks 8 \

@@ -385,6 +385,7 @@ def _read_last_line(filepath):
 
 
 class ContinuousIIDDataset(Dataset):
+    """Legacy dataset - replaced by DocumentStreamDataset for document-aware training"""
     def __init__(self, filepath, chunk_size, context_chunks=1, seed=42, samples_per_epoch=10000, batch_size=1, global_rank=0):
         super().__init__()
         self.filepath = filepath
@@ -400,7 +401,7 @@ class ContinuousIIDDataset(Dataset):
 
         if global_rank == 0:
             print(f"ContinuousIIDDataset: Using file {filepath} ({len(self.mmap):,} bytes)")
-            print(f"Training with {samples_per_epoch // batch_size} meta-steps per epoch.")
+            print(f"Training with {samples_per_epoch} samples per epoch.")
             print(f"Effective sequence length: {self.total_seq_len} ({self.context_chunks} chunks of {self.chunk_size})")
 
     def __len__(self):
@@ -421,8 +422,14 @@ class ContinuousIIDDataset(Dataset):
 
 class DocumentStreamDataset(Dataset):
     """
-    Streams through documents sequentially, respecting boundaries.
-    Each GPU starts at a random position and reads forever.
+    Document-aware streaming dataset for training.
+    
+    Key features:
+    - Respects document boundaries (0x1e delimiter)
+    - Each GPU starts at different random position
+    - Resets model hidden state at document boundaries
+    - Tracks per-GPU statistics (not global)
+    - Enables dynamic optimization at document ends
     """
     def __init__(self, filepath, chunk_size, seed=42, global_rank=0):
         super().__init__()
@@ -556,7 +563,7 @@ def get_args():
     parser.add_argument('--ff_mult', type=float, default=4.0, help='feedforward multiplier for MinGRU (ffn_dim = dim * ff_mult)')
     parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
     parser.add_argument('--context_chunks', type=int, default=1, help='Number of consecutive chunks to process for TBPTT. Effective seq_len = chunk_size * context_chunks.')
-    parser.add_argument('--batch_size', type=str, default="4", help='batch size per GPU')
+    parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
     parser.add_argument('--grad_accum', type=int, default=1, help='gradient accumulation steps')
@@ -725,17 +732,14 @@ def main():
         with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
             json.dump(model_config, f, indent=2)
 
-        ### NEW: EXPLANATION OF THE TRAINING DYNAMICS ###
-        print("\n--- Training Dynamics ---")
-        print(f"A 'step' is one chunk of size {chunk_size}.")
-        print(f"TBPTT context is carried for {args.context_chunks} chunks before reset.")
-        print(f"Gradient accumulation steps: {args.grad_accum}")
-        if args.grad_accum > 1:
-            print(f"--> An optimizer step will occur every {args.grad_accum} chunk-steps.")
-            print(f"--> Effective batch size (tokens): {batch_size * chunk_size * args.grad_accum}")
-        else:
-            print("--> An optimizer step will occur on every chunk-step.")
-        print("-------------------------\n")
+        ### DOCUMENT STREAMING TRAINING DYNAMICS ###
+        print("\n--- Document Streaming Training ---")
+        print(f"Document delimiter: 0x1e (each GPU reads different documents)")
+        print(f"Chunk size: {chunk_size} tokens")
+        print(f"Dynamic optimization: at document boundaries OR every {args.grad_accum} chunks (whichever comes first)")
+        print(f"Hidden state: resets at document boundaries for proper context")
+        print(f"Per-GPU token tracking: each GPU processes different portions of the dataset")
+        print("-------------------------------------\n")
 
 
     model = get_model(model_config).to(device)
@@ -748,14 +752,9 @@ def main():
     
     if args.schedulefree: optimizer.train()
 
-    # Check batch size requirement for document streaming
+    # Document streaming enforces batch_size=1
     if batch_size != 1:
-        raise ValueError(f"Document streaming mode requires batch_size=1, got {batch_size}")
-
-    if global_rank == 0:
-        print(f"\nUsing DocumentStreamDataset with sequential document reading")
-        print(f"Each GPU will start at a random position and read continuously")
-        print(f"Document delimiter: 0x1e")
+        raise ValueError(f"Document streaming requires batch_size=1, got {batch_size}")
 
     train_dataset = DocumentStreamWrapper(
         args.data, 
@@ -896,11 +895,11 @@ def main():
 
         # Get next chunk with document boundary info
         chunk_data, is_doc_end, actual_length = next(data_iterator)
-        chunk = chunk_data.to(device, non_blocking=True)
+        chunk = chunk_data.to(device, non_blocking=True)  # Already has batch dimension [1, seq_len]
         
         # Forward pass
         loss, next_hidden_state = model(
-            chunk.unsqueeze(0),  # Add batch dimension back
+            chunk,  # Already has correct batch dimension
             return_loss=True,
             return_prev_hiddens=True,
             prev_hiddens=hidden_state
