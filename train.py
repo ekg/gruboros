@@ -878,8 +878,9 @@ def main():
     hidden_state = None
     optimizer.zero_grad()
     
-    # Track accumulated steps for dynamic optimization
+    # Track accumulated steps and total actual tokens for dynamic optimization
     accumulated_steps = 0
+    total_actual_tokens = 0
 
     while step < train_steps:
         # Check for and apply any pending model updates
@@ -892,6 +893,7 @@ def main():
             evolutionary_node.optimizer = optimizer
             optimizer.zero_grad()
             accumulated_steps = 0  # Reset accumulation counter
+            total_actual_tokens = 0  # Reset token counter
 
         # Get next chunk with document boundary info
         chunk_data, is_doc_end, actual_length = next(data_iterator)
@@ -912,10 +914,13 @@ def main():
         
         chunk_loss = loss.detach().item()
         
-        # Dynamic scaling based on accumulated steps (not fixed grad_accum)
+        # Track accumulation progress
         accumulated_steps += 1
-        scaled_loss = loss / accumulated_steps
-        scaled_loss.backward()
+        total_actual_tokens += actual_length
+        
+        # Use the loss as-is (already scaled by actual_length if partial)
+        # No artificial division by steps - let each chunk contribute proportionally
+        loss.backward()
         
         # Handle hidden state based on document boundary
         if is_doc_end:
@@ -932,7 +937,8 @@ def main():
         if should_optimize:
             optimizer.step()
             optimizer.zero_grad()
-            accumulated_steps = 0  # Reset counter
+            accumulated_steps = 0  # Reset step counter
+            total_actual_tokens = 0  # Reset token counter
             
             evolutionary_node.update_fitness(chunk_loss, step)
             evolutionary_node.check_for_updates()
