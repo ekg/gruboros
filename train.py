@@ -907,7 +907,8 @@ def main():
         
         # Scale loss by actual chunk length if this is a partial chunk
         if actual_length < chunk_size:
-            loss = loss * (actual_length / chunk_size)
+            scale_factor = torch.tensor(actual_length / chunk_size, device=loss.device, dtype=loss.dtype)
+            loss = loss * scale_factor
         
         chunk_loss = loss.detach().item()
         
