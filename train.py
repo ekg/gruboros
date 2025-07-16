@@ -948,9 +948,9 @@ def main():
         log_metrics(step, chunk_loss, current_ema_fitness, status, doc_stats, accumulated_steps, should_optimize)
         
         if global_rank == 0:
-            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} docs={doc_stats['documents_processed']} acc={accumulated_steps}"
-            if should_optimize:
-                pbar_str += " [OPT]"
+            elapsed = time.time() - start_time
+            tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
+            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} docs={doc_stats['documents_processed']} tok/s={tokens_per_sec:.0f}"
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"
             pbar.set_postfix_str(pbar_str)
