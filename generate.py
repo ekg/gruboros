@@ -136,6 +136,48 @@ def locally_typical_sampling(logits, temperature=1.0, typical_p=0.9, typical_mas
     
     return original_idx.unsqueeze(0)
 
+def min_p_sampling(logits, temperature=1.0, min_p=0.1):
+    """
+    Min-P sampling: Include all tokens with probability >= min_p * max_prob
+    
+    Args:
+        logits: Raw model logits [batch_size, vocab_size]
+        temperature: Temperature for softmax
+        min_p: Minimum probability threshold as fraction of max probability
+    
+    Returns:
+        Sampled token indices
+    """
+    if temperature == 0.0:
+        return logits.argmax(dim=-1, keepdim=True)
+    
+    # Apply temperature and get probabilities
+    logits = logits / temperature
+    probs = F.softmax(logits, dim=-1)
+    
+    # Find maximum probability
+    max_prob, _ = probs.max(dim=-1, keepdim=True)
+    
+    # Create threshold: min_p * max_prob
+    threshold = min_p * max_prob
+    
+    # Create mask for tokens above threshold
+    mask = probs >= threshold
+    
+    # Ensure at least one token is selected
+    if not mask.any(dim=-1).all():
+        # If no tokens meet threshold, select the maximum
+        mask = probs == max_prob
+    
+    # Zero out probabilities below threshold
+    filtered_probs = probs * mask.float()
+    
+    # Renormalize
+    filtered_probs = filtered_probs / filtered_probs.sum(dim=-1, keepdim=True)
+    
+    # Sample from filtered distribution
+    return torch.multinomial(filtered_probs, num_samples=1)
+
 def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False, device=None):
     """
     Load a trained minLM model from checkpoint. (Largely unchanged, but still good)
@@ -214,7 +256,8 @@ def generate(
     temperature: float = 1.0,
     top_k: int = 0,
     top_p: float = 0.0,
-    typical_p: float = 0.0,  # Add this parameter
+    typical_p: float = 0.0,
+    min_p: float = 0.0,  # Add min-p parameter
     device: str = 'cuda',
     stream: bool = True
 ):
@@ -227,6 +270,7 @@ def generate(
         generation_length: Number of tokens to generate.
         temperature, top_k, top_p: Standard sampling parameters.
         typical_p: If > 0, use locally typical sampling instead of top-k/top-p.
+        min_p: If > 0, use min-p sampling instead of top-k/top-p.
         device: Device to run on.
         stream: Whether to print tokens as they are generated.
     """
@@ -249,6 +293,8 @@ def generate(
         # Choose sampling method
         if typical_p > 0:
             prev_token = locally_typical_sampling(last_logits, temperature, typical_p)
+        elif min_p > 0:
+            prev_token = min_p_sampling(last_logits, temperature, min_p)
         else:
             prev_token = sample(last_logits, temperature, top_k, top_p)
         
@@ -274,6 +320,8 @@ def generate(
             # Sample the next token
             if typical_p > 0:
                 prev_token = locally_typical_sampling(logits[:, -1, :], temperature, typical_p)
+            elif min_p > 0:
+                prev_token = min_p_sampling(logits[:, -1, :], temperature, min_p)
             else:
                 prev_token = sample(logits[:, -1, :], temperature, top_k, top_p)
             
@@ -348,6 +396,10 @@ def main():
     parser.add_argument("--typical_p", type=float, default=0.9,
                         help="Typical sampling threshold (0.8-0.95 recommended). Only used with --typical.")
     
+    parser.add_argument("--min_p", type=float, default=0.0,
+                        help="Min-P sampling threshold (0.02-0.1 recommended). "
+                             "Include tokens with prob >= min_p * max_prob.")
+    
     # --- Existing sampling controls (only used if --typical is not set) ---
     parser.add_argument("--top_p", type=float, default=0.9,
                         help="Nucleus sampling probability. (e.g., 0.9). Set to 0 to disable.")
@@ -383,10 +435,18 @@ def main():
     # Clear logging of sampling method
     if args.typical:
         sampling_params = f"Typical sampling with p={args.typical_p}, T={args.temperature}"
-        # When using typical sampling, set top_p and top_k to 0
+        # When using typical sampling, set other methods to 0
         top_p_value = 0.0
         top_k_value = 0
         typical_p_value = args.typical_p
+        min_p_value = 0.0
+    elif args.min_p > 0:
+        sampling_params = f"Min-P sampling with p={args.min_p}, T={args.temperature}"
+        # When using min-p sampling, set other methods to 0
+        top_p_value = 0.0
+        top_k_value = 0
+        typical_p_value = 0.0
+        min_p_value = args.min_p
     else:
         sampling_params = f"T={args.temperature}"
         if args.top_p > 0:
@@ -396,13 +456,14 @@ def main():
         top_p_value = args.top_p
         top_k_value = args.top_k
         typical_p_value = 0.0
+        min_p_value = 0.0
     
     print(f"\nINFO: Generating {generation_length} tokens with sampling: {sampling_params}")
     
     generated_tensor = generate(
         model, prompt, generation_length,
         args.temperature, top_k_value, top_p_value,
-        typical_p_value,  # Pass typical_p to generate
+        typical_p_value, min_p_value,  # Pass typical_p and min_p to generate
         device, args.stream
     )
     
