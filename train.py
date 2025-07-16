@@ -779,7 +779,7 @@ def main():
         header = [
             "rank", "step", "time_elapsed_s", "train_loss", "ema_loss", 
             "total_tokens_processed", "tokens_per_sec", "learning_rate",
-            "documents_completed", "current_position_gb",
+            "documents_completed", "current_position_gb", "accumulated_steps", "optimized",
             # --- NEW COLUMNS ---
             "initiated_mixes", "received_mixes", "won_mixes", "lost_mixes", "failed_mixes"
         ]
@@ -842,7 +842,7 @@ def main():
     # --- 4. UNIFIED TRAINING LOOP ---
     
     # Modified log_metrics function
-    def log_metrics(step, train_loss, ema_loss, mix_status, doc_stats):
+    def log_metrics(step, train_loss, ema_loss, mix_status, doc_stats, acc_steps, optimized):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         
@@ -858,6 +858,8 @@ def main():
             f"{tokens_per_sec:.2f}", f"{current_lr:.8f}",
             doc_stats['documents_processed'],  # NEW
             f"{doc_stats['current_position'] / 1e9:.3f}",  # NEW
+            acc_steps,  # NEW: accumulated steps
+            1 if optimized else 0,  # NEW: whether optimizer stepped
             mix_status['initiated_mixes'],
             mix_status['received_mixes'],
             mix_status['won_mixes'],
@@ -876,6 +878,9 @@ def main():
     data_iterator = iter(train_loader)
     hidden_state = None
     optimizer.zero_grad()
+    
+    # Track accumulated steps for dynamic optimization
+    accumulated_steps = 0
 
     while step < train_steps:
         # Check for and apply any pending model updates
@@ -887,6 +892,7 @@ def main():
             if args.schedulefree: optimizer.train()
             evolutionary_node.optimizer = optimizer
             optimizer.zero_grad()
+            accumulated_steps = 0  # Reset accumulation counter
 
         # Get next chunk with document boundary info
         chunk_data, is_doc_end, actual_length = next(data_iterator)
@@ -905,7 +911,10 @@ def main():
             loss = loss * (actual_length / chunk_size)
         
         chunk_loss = loss.detach().item()
-        scaled_loss = loss / args.grad_accum
+        
+        # Dynamic scaling based on accumulated steps (not fixed grad_accum)
+        accumulated_steps += 1
+        scaled_loss = loss / accumulated_steps
         scaled_loss.backward()
         
         # Handle hidden state based on document boundary
@@ -917,10 +926,13 @@ def main():
             if next_hidden_state:
                 hidden_state = [h.detach() for h in next_hidden_state]
         
-        # Only do evolutionary operations after gradient accumulation
-        if (step + 1) % args.grad_accum == 0:
+        # Dynamic optimization: optimize at document end OR when hitting upper bound
+        should_optimize = is_doc_end or accumulated_steps >= args.grad_accum
+        
+        if should_optimize:
             optimizer.step()
             optimizer.zero_grad()
+            accumulated_steps = 0  # Reset counter
             
             evolutionary_node.update_fitness(chunk_loss, step)
             evolutionary_node.check_for_updates()
@@ -933,10 +945,12 @@ def main():
         # Get status and log with document stats
         status = evolutionary_node.get_status()
         doc_stats = train_dataset.stream_dataset.get_stats()
-        log_metrics(step, chunk_loss, current_ema_fitness, status, doc_stats)
+        log_metrics(step, chunk_loss, current_ema_fitness, status, doc_stats, accumulated_steps, should_optimize)
         
         if global_rank == 0:
-            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} docs={doc_stats['documents_processed']}"
+            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} docs={doc_stats['documents_processed']} acc={accumulated_steps}"
+            if should_optimize:
+                pbar_str += " [OPT]"
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"
             pbar.set_postfix_str(pbar_str)
