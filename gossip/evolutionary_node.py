@@ -62,7 +62,7 @@ class EvolutionaryTrainingNode:
                  recombination_alpha: float = 0.5,
                  optimizer_recombination: str = 'reset',
                  gossip_temp_dir: Optional[str] = None,
-                 fitness_decay_factor: float = 0.95,
+                 fitness_window_size: int = 1000,
                  use_node_local_lock: bool = False,
                  use_filesystem_coordinator: bool = False,
                  save_callback: Optional[callable] = None):
@@ -100,7 +100,7 @@ class EvolutionaryTrainingNode:
         # Thread-safe communication
         self.incoming_updates = queue.Queue()  # Background thread -> Main thread
         self.step_notifications = queue.Queue()  # Main thread -> Background thread
-        self.fitness_tracker = FitnessTracker(decay_factor=fitness_decay_factor)
+        self.fitness_tracker = FitnessTracker(window_size=fitness_window_size)
         self.fitness_lock = threading.Lock()
         
         # NEW: Add async weight management

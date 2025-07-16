@@ -238,9 +238,9 @@ class CheckpointManager:
         except Exception as e:
             print(f"Rank 0: Temp file cleanup failed: {e}")
 
-def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, ema_fitness):
+def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, median_fitness):
     """Save checkpoint atomically with loss in the filename."""
-    filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}_loss_{ema_fitness:.4f}.pt"
+    filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}_loss_{median_fitness:.4f}.pt"
     temp_file = os.path.join(checkpoint_dir, filename + ".tmp")
     final_file = os.path.join(checkpoint_dir, filename)
     
@@ -579,8 +579,8 @@ def get_args():
                         help='Probability of attempting evolutionary mixing each step (0.0-1.0).')
     parser.add_argument('--gossip_temp_dir', type=str, default=None,
                         help='Directory for temporary gossip payloads. Defaults to $SCRATCH or /tmp.')
-    parser.add_argument('--gossip_fitness_decay', type=float, default=0.995,
-                        help='Decay factor for the EMA loss used as fitness (e.g., 0.9 to 0.995).')
+    parser.add_argument('--gossip_fitness_window', type=int, default=1000,
+                        help='Window size for median-based fitness (number of steps to consider).')
     parser.add_argument('--gossip-node-local-lock', dest='use_gossip_lock', action='store_true', default=False,
                         help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')
     
@@ -772,7 +772,7 @@ def main():
     metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{global_rank:03d}.tsv")
     with open(metrics_log_path, 'w') as f:
         header = [
-            "rank", "step", "time_elapsed_s", "train_loss", "ema_loss", 
+            "rank", "step", "time_elapsed_s", "train_loss", "median_loss", 
             "total_tokens_processed", "tokens_per_sec", "learning_rate",
             "documents_completed", "current_position_gb", "accumulated_steps", "optimized",
             # --- NEW COLUMNS ---
@@ -796,7 +796,7 @@ def main():
         save_probability = base_save_probability
 
     def create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config):
-        def opportunistic_save_callback(step, current_ema_fitness, opportunistic=False):
+        def opportunistic_save_callback(step, current_median_fitness, opportunistic=False):
             if opportunistic:
                 save_prob = save_probability * 5.0  # 5x more likely for winners
             else:
@@ -806,9 +806,9 @@ def main():
                 checkpoint_data = {
                     'step': step, 'model_state_dict': model.state_dict(), 
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'ema_fitness': current_ema_fitness, 'model_config': model_config
+                    'median_fitness': current_median_fitness, 'model_config': model_config
                 }
-                return save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_ema_fitness)
+                return save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_median_fitness)
             return False
         return opportunistic_save_callback
 
@@ -820,7 +820,7 @@ def main():
         tp_size=1, mixing_probability=args.gossip_mixing_rate, output_dir=checkpoint_dir,
         merge_method=args.gossip_merge_method, recombination_alpha=args.gossip_recombination_alpha,
         optimizer_recombination=args.gossip_optimizer_recombination, gossip_temp_dir=args.gossip_temp_dir,
-        fitness_decay_factor=args.gossip_fitness_decay,
+        fitness_window_size=args.gossip_fitness_window,
         use_node_local_lock=args.use_gossip_lock,
         use_filesystem_coordinator=args.filesystem_coordinator,
         save_callback=save_callback
@@ -837,7 +837,7 @@ def main():
     # --- 4. UNIFIED TRAINING LOOP ---
     
     # Modified log_metrics function
-    def log_metrics(step, train_loss, ema_loss, mix_status, doc_stats, acc_steps, optimized):
+    def log_metrics(step, train_loss, median_loss, mix_status, doc_stats, acc_steps, optimized):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         
@@ -848,7 +848,7 @@ def main():
         
         values = [str(v) for v in [
             global_rank, step, f"{elapsed:.2f}", f"{train_loss:.6f}",
-            f"{ema_loss:.6f}" if ema_loss is not None else "NA",
+            f"{median_loss:.6f}" if median_loss is not None else "NA",
             total_tokens_processed,  # Per-GPU tokens
             f"{tokens_per_sec:.2f}", f"{current_lr:.8f}",
             doc_stats['documents_processed'],  # NEW
@@ -936,20 +936,20 @@ def main():
             evolutionary_node.update_fitness(chunk_loss, step)
             evolutionary_node.check_for_updates()
             evolutionary_node.request_mix()
-            current_ema_fitness = evolutionary_node.get_current_fitness()
+            current_median_fitness = evolutionary_node.get_current_fitness()
         else:
             evolutionary_node.update_fitness(chunk_loss, step)
-            current_ema_fitness = evolutionary_node.get_current_fitness()
+            current_median_fitness = evolutionary_node.get_current_fitness()
         
         # Get status and log with document stats
         status = evolutionary_node.get_status()
         doc_stats = train_dataset.stream_dataset.get_stats()
-        log_metrics(step, chunk_loss, current_ema_fitness, status, doc_stats, accumulated_steps, should_optimize)
+        log_metrics(step, chunk_loss, current_median_fitness, status, doc_stats, accumulated_steps, should_optimize)
         
         if global_rank == 0:
             elapsed = time.time() - start_time
             tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
-            pbar_str = f"loss={chunk_loss:.4f} ema={status['fitness']:.4f} docs={doc_stats['documents_processed']} tok/s={tokens_per_sec:.0f}"
+            pbar_str = f"loss={chunk_loss:.4f} med={status['fitness']:.4f} docs={doc_stats['documents_processed']} tok/s={tokens_per_sec:.0f}"
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"
             pbar.set_postfix_str(pbar_str)
@@ -970,11 +970,11 @@ def main():
             if args.use_gossip_lock:
                 try:
                     with file_lock(evolutionary_node.node_lock_path, timeout=0.01):
-                        save_callback(step, current_ema_fitness, opportunistic=False)
+                        save_callback(step, current_median_fitness, opportunistic=False)
                 except TimeoutError:
                     pass  # Winners save opportunistically, so this is OK
             else:
-                save_callback(step, current_ema_fitness, opportunistic=False)
+                save_callback(step, current_median_fitness, opportunistic=False)
         
         step += 1
 
