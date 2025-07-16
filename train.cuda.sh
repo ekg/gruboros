@@ -58,10 +58,10 @@ deepspeed --num_gpus=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --params 1g \
-  --dim 1024 \
+  --dim 1536 \
   --expansion_factor 3.0 \
   --ff_mult 1.5 \
-  --train_steps 2000000 \
+  --train_steps 10000000 \
   --save_every 500 \
   --lr 0.001 \
   --sf_beta 0.9 \
@@ -72,8 +72,8 @@ deepspeed --num_gpus=$NUM_GPUS \
   --chunk_size 2048 \
   --context_chunks 8 \
   --keep_checkpoints 5 \
-  --keep_elite 10 \
-  --archive_rate 0.02 \
+  --keep_elite 32 \
+  --archive_rate 0.0067 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.3 \
   --gossip_optimizer_recombination interpolate \
