@@ -13,7 +13,6 @@ import re
 from typing import Dict, Optional
 from dataclasses import dataclass
 from pathlib import Path
-import torch.distributed as dist
 from .fitness_tracker import FitnessTracker
 from .network_utils import NetworkUtils
 from .structured_logger import GossipLogger
@@ -123,11 +122,6 @@ class EvolutionaryTrainingNode:
         if self.global_rank == 0:
             os.makedirs(self.gossip_temp_dir, exist_ok=True)
             print(f"Gossip temporary directory set to: {self.gossip_temp_dir}")
-        if self.world_size > 1:
-            # Import dist here to avoid circular imports
-            import torch.distributed as dist
-            if dist.is_initialized():
-                dist.barrier()
         
         # Pre-allocate pinned memory buffers for common model sizes
         self._setup_pinned_buffers()
@@ -175,9 +169,9 @@ class EvolutionaryTrainingNode:
                 self.logger.log_event("NODE_LOCK_INIT", message=f"Initialized lock file at {self.node_lock_path}")
 
             # All ranks must wait for local_rank 0 on their respective nodes to create the file.
-            # A barrier across all processes in the world is the simplest way to ensure this.
-            if self.world_size > 1 and dist.is_initialized():
-                dist.barrier()
+            # Simple sleep to ensure file creation
+            if self.world_size > 1:
+                time.sleep(0.1)  # Give rank 0 time to create lock file
             self.logger.log_event("NODE_LOCK_ENABLED", message=f"Lock file: {self.node_lock_path}")
 
         # New gossip metrics

@@ -1,9 +1,7 @@
 import os, random, numpy as np
 import torch, torch.nn as nn
-import torch.distributed as dist
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, IterableDataset
-from torch.utils.data.distributed import DistributedSampler
 import time
 import argparse
 import mmap
@@ -26,6 +24,35 @@ import atexit
 from mingru.minLM import minLM
 import logging
 from gossip import EvolutionaryTrainingNode
+from pathlib import Path
+
+def simple_barrier(barrier_name='default', timeout=300):
+    """File-based barrier without MPI"""
+    global_rank = int(os.environ.get('RANK', os.environ.get('SLURM_PROCID', '0')))
+    world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SLURM_NPROCS', '1')))
+    
+    if world_size <= 1:
+        return
+    
+    barrier_dir = os.path.join(os.environ.get('GOSSIP_TEMP_DIR', '/tmp'), 'barriers', barrier_name)
+    os.makedirs(barrier_dir, exist_ok=True)
+    barrier_file = os.path.join(barrier_dir, f'rank_{global_rank}.ready')
+    
+    # Signal ready
+    Path(barrier_file).touch()
+    
+    # Wait for all ranks
+    start_time = time.time()
+    while len(glob.glob(os.path.join(barrier_dir, 'rank_*.ready'))) < world_size:
+        if time.time() - start_time > timeout:
+            print(f"Rank {global_rank}: Barrier timeout, continuing anyway...")
+            break
+        time.sleep(0.1)
+    
+    # Cleanup
+    if global_rank == 0:
+        time.sleep(0.5)  # Let others pass
+        shutil.rmtree(barrier_dir, ignore_errors=True)
 
 class CheckpointManager:
     """Background thread for rank 0 to handle symlinks and cleanup"""
@@ -294,21 +321,6 @@ def configure_backend(args):
         torch.set_float32_matmul_precision('high')
     return use_rocm
 
-def debug_distributed_info(global_rank):
-    """Print debug information about the distributed environment"""
-    print(f"\n----- Rank {global_rank} Distributed Environment Debug Info -----")
-    print(f"MASTER_ADDR: {os.environ.get('MASTER_ADDR', 'Not set')}")
-    print(f"MASTER_PORT: {os.environ.get('MASTER_PORT', 'Not set')}")
-    print(f"RANK: {os.environ.get('RANK', 'Not set')}")
-    print(f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'Not set')}")
-    print(f"LOCAL_RANK: {os.environ.get('LOCAL_RANK', 'Not set')}")
-    if torch.cuda.is_available():
-        print(f"Current Device: {torch.cuda.current_device()} ({torch.cuda.get_device_name(torch.cuda.current_device())})")
-    if dist.is_initialized():
-        print(f"Distributed is initialized: World={dist.get_world_size()}, Rank={dist.get_rank()}, Backend={dist.get_backend()}")
-    else:
-        print(f"Distributed is NOT initialized")
-    print(f"------------------------------------------\n")
 
 SEED = 42
 random.seed(SEED); np.random.seed(SEED)
@@ -615,14 +627,6 @@ def main():
     local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('SLURM_LOCALID', '0')))
     world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SLURM_NPROCS', '1')))
 
-    # --- START OF FIX ---
-    # On HPC systems with MPI integration (like Frontier), the process group
-    # may be initialized automatically when torch.distributed is imported.
-    # We must check if it's already initialized before trying to do it ourselves.
-    if world_size > 1 and not dist.is_initialized():
-        print(f"Rank {global_rank}: Manually initializing process group with 'gloo' backend.")
-        dist.init_process_group(backend='gloo', timeout=timedelta(seconds=7200))
-    # --- END OF FIX ---
     
     # --- START OF DEFINITIVE FIX ---
     # When using srun with --gpus-per-task, each process sees only one GPU, indexed at 0.
@@ -676,11 +680,7 @@ def main():
         os.makedirs(checkpoint_dir, exist_ok=True)
 
     if world_size > 1:
-        dist.barrier()
-        if global_rank != 0:
-            # For debugging, let's see what other ranks think their environment is
-            debug_distributed_info(global_rank)
-        dist.barrier()
+        simple_barrier('setup')
 
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
