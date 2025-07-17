@@ -654,7 +654,6 @@ def main():
     # --- FIX: ROBUST DIRECTORY CREATION and Debugging ---
     # Rank 0 creates the output directory, all others wait for it to be ready.
     if global_rank == 0:
-        debug_distributed_info(global_rank)
         print(f"\nRe-seeded Python's random module per-rank to ensure stochastic mixing.\n")
 
     # --- 2. CONFIGURATION AND SETUP ---

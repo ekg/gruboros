@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH -A BIF148
-#SBATCH -J minLM_gossip_srun_gloo
+#SBATCH -J llm_gossip
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
 #SBATCH -t 00:20:00
@@ -24,23 +24,13 @@ eval "$(micromamba shell hook --shell bash)"
 micromamba activate gruboros
 module load PrgEnv-gnu gcc/11.2.0 rocm/6.2.4 craype-accel-amd-gfx90a
 
-# --- Distributed Settings for srun + gloo ---
+# --- Environment Settings ---
 export OMP_NUM_THREADS=1
 export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
 
-# 1. Set the Master Address: srun needs this for the gloo backend to rendezvous.
-#    This is the canonical way to get the head node's hostname in a SLURM job.
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-
-# 2. Set the Master Port: Any free port will do.
-export MASTER_PORT=3442
-
-# 3. Critical for Performance: Tell gloo to use the High-Speed Network Interface.
-export GLOO_SOCKET_IFNAME=hsn0
-
 # --- Paths and Directories (Unchanged) ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_32k_srun_gloo"
+NAME="1g_2k"
 GIT_HASH=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
 
 if [ -n "$GIT_HASH" ]; then
