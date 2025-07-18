@@ -666,13 +666,6 @@ def main():
     resume_step = 0
     # Use args.output directly, which is now guaranteed to exist.
     checkpoint_dir = args.output or f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    if resuming:
-        # This logic is a bit complex, let's simplify and make it safer.
-        if os.path.isfile(args.resume):
-             checkpoint_dir = os.path.dirname(args.resume)
-        else:
-             # If a directory is passed, assume it's the checkpoint dir.
-             checkpoint_dir = args.resume
 
     # Rank 0 creates the checkpoint directory, all others wait for it to be ready.
     if global_rank == 0:
