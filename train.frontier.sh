@@ -69,7 +69,7 @@ export LOCAL_RANK=\$SLURM_LOCALID
   --expansion_factor 3.0 \
   --ff_mult 1.5 \
   --train_steps 10000000 \
-  --save_every 500 \
+  --save_every 50 \
   --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
@@ -85,7 +85,7 @@ export LOCAL_RANK=\$SLURM_LOCALID
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.002 \
   --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
-  --gossip_fitness_window 1000 \
+  --gossip_fitness_window 10000 \
   --gossip-node-local-lock \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
