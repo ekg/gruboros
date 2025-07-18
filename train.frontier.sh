@@ -6,7 +6,7 @@
 #SBATCH -e logs/minLM_gossip-%j.err
 #SBATCH -t 02:00:00
 #SBATCH -p batch
-#SBATCH -N 64
+#SBATCH -N 4
 #SBATCH -q debug
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
@@ -39,6 +39,7 @@ else
     export OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 fi
 export DATA="/lustre/orion/bif148/scratch/erikgarrison/commonpile/commapile.txt"
+export RESUME_FROM="/lustre/orion/bif148/scratch/erikgarrison/gruboros.tune.1/resume/latest.pt"
 export GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
 # --- Pre-create Directories (Unchanged, this is good practice) ---
@@ -63,6 +64,7 @@ export LOCAL_RANK=\$SLURM_LOCALID
 ( python train.py \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
+  --resume \"$RESUME_FROM\" \
   --params 1g \
   --dim 1536 \
   --expansion_factor 3.0 \
