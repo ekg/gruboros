@@ -419,6 +419,24 @@ class EvolutionaryTrainingNode:
             server_sock.close()
     
     def _handle_incoming_request(self, client_sock, addr):
+        """
+        Wrapper function to acquire the node-local lock before handling the request.
+        This prevents concurrent incoming requests from causing OOM kills due to
+        simultaneous torch.load() operations on the same node.
+        """
+        if self.use_node_local_lock:
+            try:
+                # Use a longer timeout as we are passively waiting, not actively competing
+                with file_lock(self.node_lock_path, timeout=10.0):
+                    self._do_handle_request(client_sock, addr)
+            except TimeoutError:
+                self.logger.log_event("INCOMING_REQUEST_SKIPPED", message="Node lock busy, dropping incoming request.")
+                client_sock.close()
+        else:
+            # Original behavior if locking is disabled
+            self._do_handle_request(client_sock, addr)
+
+    def _do_handle_request(self, client_sock, addr):
         """Background thread: handle one incoming gossip request"""
         peer_addr = f"{addr[0]}:{addr[1]}"
         correlation_id = None
