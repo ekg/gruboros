@@ -4,9 +4,10 @@
 #SBATCH -J llm_gossip
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 04:00:00
+#SBATCH -t 02:00:00
 #SBATCH -p batch
 #SBATCH -N 256
+#SBATCH -q debug
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH --gpus-per-task=1
@@ -38,7 +39,7 @@ else
     export OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 fi
 export DATA="/lustre/orion/bif148/scratch/erikgarrison/commonpile/commapile.txt"
-export RESUME_FROM="/lustre/orion/bif148/scratch/erikgarrison/gruboros.tune.1/resume/latest.pt"
+export RESUME_FROM="/lustre/orion/bif148/scratch/erikgarrison/gruboros.test.1/resume/latest.pt"
 export GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
 # --- Pre-create Directories (Unchanged, this is good practice) ---
