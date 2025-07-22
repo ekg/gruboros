@@ -46,11 +46,10 @@ def file_lock(lock_path, timeout=0.1):
 
 @dataclass
 class WeightUpdate:
-    state_dict: dict
-    optimizer_state_dict: Optional[dict]  # Added optimizer state transfer
+    payload_path: str # Path to the temporary file with state dicts
     source_node: str
-    source_ema_loss: float  # Added EMA loss transfer
-    correlation_id: str    # Added correlation tracking
+    source_ema_loss: float
+    correlation_id: str
 
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
@@ -222,24 +221,36 @@ class EvolutionaryTrainingNode:
             return None
     
     def _start_async_weight_transfer(self, update: WeightUpdate):
-        """Start transferring weights on background CUDA stream"""
+        if self.use_node_local_lock:
+            try:
+                with file_lock(self.node_lock_path, timeout=5.0):
+                    self._load_and_transfer_payload(update)
+            except TimeoutError:
+                self.logger.log_event("UPDATE_SKIPPED_LOCK", message="Node lock busy, skipping weight update application.")
+                if os.path.exists(update.payload_path): os.remove(update.payload_path)
+        else:
+            self._load_and_transfer_payload(update)
+
+    def _load_and_transfer_payload(self, update: WeightUpdate):
         with self.weight_transfer_lock:
-            # Move to background stream for async transfer
-            with torch.cuda.stream(self.weight_stream):
-                device = next(self.model.parameters()).device
+            try:
+                loaded_data = torch.load(update.payload_path, map_location='cpu')
+                setattr(update, 'state_dict', loaded_data['model_state_dict'])
+                setattr(update, 'optimizer_state_dict', loaded_data['optimizer_state_dict'])
+                os.remove(update.payload_path)
                 
-                # Pin memory and transfer asynchronously
-                for name, param in update.state_dict.items():
-                    if not param.is_pinned():
-                        param = param.pin_memory()
-                    # Non-blocking transfer to GPU
-                    update.state_dict[name] = param.to(device, non_blocking=True)
+                with torch.cuda.stream(self.weight_stream):
+                    device = next(self.model.parameters()).device
+                    for name, param in update.state_dict.items():
+                        update.state_dict[name] = param.pin_memory().to(device, non_blocking=True)
+                    self.weight_ready_event.record(self.weight_stream)
                 
-                # Record event when transfer is complete
-                self.weight_ready_event.record(self.weight_stream)
-            
-            # Store for later application
-            self.pending_update = update
+                self.pending_update = update
+                del loaded_data
+            except Exception as e:
+                self.logger.log_event("PAYLOAD_LOAD_ERROR", message=str(e))
+                if os.path.exists(update.payload_path): os.remove(update.payload_path)
+                self.pending_update = None
     
     def apply_pending_update(self) -> tuple[bool, bool]:
         """
@@ -419,22 +430,7 @@ class EvolutionaryTrainingNode:
             server_sock.close()
     
     def _handle_incoming_request(self, client_sock, addr):
-        """
-        Wrapper function to acquire the node-local lock before handling the request.
-        This prevents concurrent incoming requests from causing OOM kills due to
-        simultaneous torch.load() operations on the same node.
-        """
-        if self.use_node_local_lock:
-            try:
-                # Use a longer timeout as we are passively waiting, not actively competing
-                with file_lock(self.node_lock_path, timeout=10.0):
-                    self._do_handle_request(client_sock, addr)
-            except TimeoutError:
-                self.logger.log_event("INCOMING_REQUEST_SKIPPED", message="Node lock busy, dropping incoming request.")
-                client_sock.close()
-        else:
-            # Original behavior if locking is disabled
-            self._do_handle_request(client_sock, addr)
+        self._do_handle_request(client_sock, addr)
 
     def _do_handle_request(self, client_sock, addr):
         """Background thread: handle one incoming gossip request"""
@@ -489,19 +485,11 @@ class EvolutionaryTrainingNode:
                 # We lose - receive their weights
                 self.mixes_lost += 1
                 client_sock.send(b"SEND_ME_WEIGHTS")
-                # Extend timeout for weight transfer
                 client_sock.settimeout(120.0)
-                new_weights, new_optimizer_state, source_fitness, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
+                payload_path, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
                 
-                if new_weights:
-                    # Queue the update for main thread (don't apply here!)
-                    update = WeightUpdate(
-                        state_dict=new_weights,
-                        optimizer_state_dict=new_optimizer_state,
-                        source_node=peer_addr,
-                        source_ema_loss=source_ema_loss,
-                        correlation_id=correlation_id
-                    )
+                if payload_path:
+                    update = WeightUpdate(payload_path=payload_path, source_node=peer_addr, source_ema_loss=source_ema_loss, correlation_id=correlation_id)
                     self.incoming_updates.put(update)
                     self.logger.log_event("WEIGHT_UPDATE_QUEUED", 
                                          step=self.current_step,
@@ -566,16 +554,9 @@ class EvolutionaryTrainingNode:
             if response == b"SENDING_WEIGHTS":
                 # Peer is sending, so we lost this exchange
                 self.mixes_lost += 1
-                new_weights, new_optimizer_state, source_fitness, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)
-                if new_weights:
-                    update = WeightUpdate(
-                        state_dict=new_weights,
-                        optimizer_state_dict=new_optimizer_state,
-                        source_node=peer_address,
-                        source_ema_loss=source_ema_loss,
-                        correlation_id=correlation_id
-                    )
-                    self.incoming_updates.put(update)
+                payload_path, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)
+                if payload_path:
+                    self.incoming_updates.put(WeightUpdate(payload_path=payload_path, source_node=peer_address, source_ema_loss=source_ema_loss, correlation_id=correlation_id))
                     
             elif response == b"SEND_ME_WEIGHTS":
                 # We are sending, so we won this exchange
@@ -674,67 +655,21 @@ class EvolutionaryTrainingNode:
                 except OSError as e:
                     self.logger.log_event("TEMP_FILE_CLEANUP_ERROR", message=f"Failed to remove {temp_filename}: {e}")
     
-    def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[dict], Optional[dict], Optional[float], Optional[float]]:
-        """Receive weights and optimizer state by streaming to a temporary file."""
-        start_time = time.time()
-        
-        temp_filename = os.path.join(self.gossip_temp_dir, f"gossip_payload_{uuid.uuid4()}.pt")
-
+    def _receive_weights_from_peer(self, sock, correlation_id: str) -> tuple[Optional[str], Optional[float]]:
+        start_time = time.time(); temp_filename = os.path.join(self.gossip_temp_dir, f"gossip_payload_{uuid.uuid4()}.pt")
         try:
-            # Receive 8-byte length prefix
-            length_data = b''
-            while len(length_data) < 8:
-                chunk = sock.recv(8 - len(length_data))
-                if not chunk:
-                    return None, None, None, None
-                length_data += chunk
-            
-            expected_size = struct.unpack('!Q', length_data)[0]
-            
-            # Stream from socket directly to temp file
-            bytes_received = 0
+            length_data = b'';
+            while len(length_data) < 8: length_data += sock.recv(8 - len(length_data))
+            expected_size = struct.unpack('!Q', length_data)[0]; bytes_received = 0
             with open(temp_filename, 'wb') as f:
-                while bytes_received < expected_size:
-                    remaining = expected_size - bytes_received
-                    chunk = sock.recv(min(4 * 1024 * 1024, remaining))
-                    if not chunk:
-                        raise ConnectionError("Connection broke while receiving weight payload.")
-                    f.write(chunk)
-                    bytes_received += len(chunk)
-
-            # Load from the completed temporary file
-            transfer_data = torch.load(temp_filename, map_location='cpu', weights_only=False)
-
-            transfer_time = (time.time() - start_time) * 1000
-            throughput = expected_size / 1e6 / (transfer_time / 1000) if transfer_time > 0 else 0
-            
-            source_model_state = transfer_data.get('model_state_dict')
-            source_optimizer_state = transfer_data.get('optimizer_state_dict')
-            source_ema_loss = transfer_data.get('ema_loss', float('inf'))
-            
-            self.logger.log_event("WEIGHT_RECEIVE_COMPLETE",
-                                 step=self.current_step,
-                                 correlation_id=correlation_id,
-                                 data_size_bytes=expected_size,
-                                 transfer_time_ms=transfer_time,
-                                 fitness=source_ema_loss,
-                                 message=f"Throughput: {throughput:.2f} MB/s")
-            
-            return source_model_state, source_optimizer_state, source_ema_loss, source_ema_loss
-            
+                while bytes_received < expected_size: chunk = sock.recv(min(4096*1024, expected_size - bytes_received)); f.write(chunk); bytes_received += len(chunk)
+            loaded_data = torch.load(temp_filename, map_location='cpu'); source_ema_loss = loaded_data.get('ema_loss', float('inf'))
+            self.logger.log_event("WEIGHT_RECEIVE_COMPLETE", step=self.current_step, correlation_id=correlation_id, data_size_bytes=expected_size, transfer_time_ms=(time.time() - start_time) * 1000, fitness=source_ema_loss)
+            return temp_filename, source_ema_loss
         except Exception as e:
-            self.logger.log_event("WEIGHT_RECEIVE_ERROR", 
-                                 step=self.current_step,
-                                 correlation_id=correlation_id,
-                                 message=str(e))
-            return None, None, None, None
-        finally:
-            # Robustly clean up the temporary file
-            if os.path.exists(temp_filename):
-                try:
-                    os.remove(temp_filename)
-                except OSError as e:
-                    self.logger.log_event("TEMP_FILE_CLEANUP_ERROR", message=f"Failed to remove {temp_filename}: {e}")
+            self.logger.log_event("WEIGHT_RECEIVE_ERROR", step=self.current_step, correlation_id=correlation_id, message=str(e))
+            if os.path.exists(temp_filename): os.remove(temp_filename)
+            return None, None
     
     def stop_gossip_protocol(self):
         """Stop the background threads"""
