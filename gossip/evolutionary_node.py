@@ -21,16 +21,13 @@ import tempfile
 import uuid
 import fcntl
 import contextlib
+import gc
 
 @contextlib.contextmanager
-def file_lock(lock_path, timeout=0.1):
-    """
-    A non-blocking file-based lock for inter-process synchronization on a single node.
-    If the lock cannot be acquired within the timeout, it raises a TimeoutError.
-    This is a self-contained copy for modularity.
-    """
-    lock_file = open(lock_path, 'w')
+def file_lock(lock_path, timeout=10.0):
+    lock_file = None
     try:
+        lock_file = open(lock_path, 'a')
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
@@ -38,11 +35,12 @@ def file_lock(lock_path, timeout=0.1):
                 yield
                 return
             except BlockingIOError:
-                time.sleep(0.01)
+                time.sleep(0.05)
         raise TimeoutError(f"Could not acquire lock on {lock_path} within {timeout}s")
     finally:
-        fcntl.flock(lock_file, fcntl.LOCK_UN)
-        lock_file.close()
+        if lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
 
 @dataclass
 class WeightUpdate:
@@ -234,9 +232,12 @@ class EvolutionaryTrainingNode:
     def _load_and_transfer_payload(self, update: WeightUpdate):
         with self.weight_transfer_lock:
             try:
+                # ### CRITICAL CHANGE 1: Load, use, delete, and GC all inside the lock ###
                 loaded_data = torch.load(update.payload_path, map_location='cpu')
+                
                 setattr(update, 'state_dict', loaded_data['model_state_dict'])
                 setattr(update, 'optimizer_state_dict', loaded_data['optimizer_state_dict'])
+                
                 os.remove(update.payload_path)
                 
                 with torch.cuda.stream(self.weight_stream):
@@ -246,7 +247,13 @@ class EvolutionaryTrainingNode:
                     self.weight_ready_event.record(self.weight_stream)
                 
                 self.pending_update = update
+                
+                # ### CRITICAL CHANGE 2: Explicitly release memory ###
+                del loaded_data['model_state_dict']
+                del loaded_data['optimizer_state_dict']
                 del loaded_data
+                gc.collect() # Force garbage collection before the lock is released
+
             except Exception as e:
                 self.logger.log_event("PAYLOAD_LOAD_ERROR", message=str(e))
                 if os.path.exists(update.payload_path): os.remove(update.payload_path)
