@@ -83,7 +83,7 @@ export LOCAL_RANK=\$SLURM_LOCALID
   --archive_rate 0.2 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.3 \
-  --gossip_optimizer_recombination interpolate \
+  --gossip_optimizer_recombination reset \
   --gossip_mixing_rate 0.002 \
   --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
   --gossip_fitness_window 10000 \
