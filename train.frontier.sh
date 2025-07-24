@@ -79,8 +79,8 @@ export LOCAL_RANK=\$SLURM_LOCALID
   --chunk_size 2048 \
   --context_chunks 8 \
   --keep_checkpoints 5 \
-  --keep_elite 32 \
-  --archive_rate 0.2 \
+  --keep_elite 16 \
+  --archive_rate 0.05 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.3 \
   --gossip_optimizer_recombination reset \
