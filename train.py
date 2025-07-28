@@ -968,7 +968,7 @@ def main():
                 except TimeoutError:
                     pass  # Winners save opportunistically, so this is OK
             else:
-                save_callback(step, current_median_fitness, opportunistic=False)
+                save_callback(step, current_validation_fitness, opportunistic=False)
         
         step += 1
 
