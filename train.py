@@ -865,7 +865,14 @@ def main():
             f.write('\t'.join(values) + '\n')
 
     # Main training loop
-    pbar = tqdm(total=train_steps, desc="Training", initial=resume_step, disable=(global_rank != 0))
+    pbar = tqdm(
+        total=train_steps, 
+        desc="Train", 
+        initial=resume_step, 
+        disable=(global_rank != 0),
+        ncols=120,  # Fixed width
+        bar_format='{desc}: {percentage:3.0f}%|{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+    )
     step = resume_step
     data_iterator = iter(train_loader)
     hidden_state = None
@@ -946,7 +953,7 @@ def main():
         if global_rank == 0:
             elapsed = time.time() - start_time
             tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
-            pbar_str = f"loss={chunk_loss:.4f} med={status['fitness']:.4f} docs={doc_stats['documents_processed']} tok/s={tokens_per_sec:.0f}"
+            pbar_str = f"L={chunk_loss:.3f} V={status['fitness']:.3f} D={doc_stats['documents_processed']} T/s={tokens_per_sec:.0f}"
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"
             pbar.set_postfix_str(pbar_str)
