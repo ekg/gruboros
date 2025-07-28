@@ -26,14 +26,28 @@ import contextlib
 import gc
 import psutil
 
+def get_memory_log_path(rank: int):
+    """Get the memory log file path for this rank"""
+    # Try to use the output directory from environment or fall back to current dir
+    output_dir = os.environ.get('GRUBOROS_OUTPUT_DIR', '.')
+    os.makedirs(os.path.join(output_dir, 'memory_logs'), exist_ok=True)
+    return os.path.join(output_dir, 'memory_logs', f'memory_rank_{rank}.log')
+
 def log_memory_usage(rank: int, message: str):
-    """Logs current memory usage for debugging"""
+    """Logs current memory usage to a dedicated file"""
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
     rss_gb = mem_info.rss / (1024**3)
     vm = psutil.virtual_memory()
     available_gb = vm.available / (1024**3)
-    print(f"[Rank {rank}] {message}: Process RSS: {rss_gb:.2f} GB, Node Available: {available_gb:.2f} GB", flush=True)
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    log_message = f"[{timestamp}] {message}: Process RSS: {rss_gb:.2f} GB, Node Available: {available_gb:.2f} GB\n"
+    
+    # Write to memory log file
+    log_path = get_memory_log_path(rank)
+    with open(log_path, 'a') as f:
+        f.write(log_message)
 
 def check_memory_headroom(rank: int, required_bytes: int, message: str) -> bool:
     """Check if there's enough memory headroom for an operation"""
@@ -45,7 +59,12 @@ def check_memory_headroom(rank: int, required_bytes: int, message: str) -> bool:
     required_gb = total_required / (1024**3)
     
     if available_gb < required_gb:
-        print(f"[Rank {rank}] MEMORY WARNING - {message}: Need {required_gb:.2f} GB, only {available_gb:.2f} GB available", flush=True)
+        # Log warning to memory log file
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        log_message = f"[{timestamp}] MEMORY WARNING - {message}: Need {required_gb:.2f} GB, only {available_gb:.2f} GB available\n"
+        log_path = get_memory_log_path(rank)
+        with open(log_path, 'a') as f:
+            f.write(log_message)
         return False
     return True
 

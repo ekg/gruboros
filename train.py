@@ -673,6 +673,9 @@ def main():
 
     if world_size > 1:
         simple_barrier('setup')
+    
+    # Set environment variable for memory logging
+    os.environ['GRUBOROS_OUTPUT_DIR'] = checkpoint_dir
 
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
