@@ -265,9 +265,9 @@ class CheckpointManager:
         except Exception as e:
             print(f"Rank 0: Temp file cleanup failed: {e}")
 
-def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, median_fitness):
+def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, validation_fitness):
     """Save checkpoint atomically with loss in the filename."""
-    filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}_loss_{median_fitness:.4f}.pt"
+    filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}_loss_{validation_fitness:.4f}.pt"
     temp_file = os.path.join(checkpoint_dir, filename + ".tmp")
     final_file = os.path.join(checkpoint_dir, filename)
     
@@ -788,7 +788,7 @@ def main():
         save_probability = base_save_probability
 
     def create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config):
-        def opportunistic_save_callback(step, current_median_fitness, opportunistic=False):
+        def opportunistic_save_callback(step, current_validation_fitness, opportunistic=False):
             if opportunistic:
                 save_prob = save_probability * 5.0  # 5x more likely for winners
             else:
@@ -798,9 +798,9 @@ def main():
                 checkpoint_data = {
                     'step': step, 'model_state_dict': model.state_dict(), 
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'median_fitness': current_median_fitness, 'model_config': model_config
+                    'validation_fitness': current_validation_fitness, 'model_config': model_config
                 }
-                return save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_median_fitness)
+                return save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_validation_fitness)
             return False
         return opportunistic_save_callback
 
@@ -815,7 +815,9 @@ def main():
         fitness_window_size=args.gossip_fitness_window,
         use_node_local_lock=args.use_gossip_lock,
         use_filesystem_coordinator=args.filesystem_coordinator,
-        save_callback=save_callback
+        save_callback=save_callback,
+        data_path=args.data,
+        chunk_size=chunk_size
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0:
@@ -829,7 +831,7 @@ def main():
     # --- 4. UNIFIED TRAINING LOOP ---
     
     # Modified log_metrics function
-    def log_metrics(step, train_loss, median_loss, mix_status, doc_stats, acc_steps, optimized):
+    def log_metrics(step, train_loss, validation_fitness, mix_status, doc_stats, acc_steps, optimized):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         
@@ -840,7 +842,7 @@ def main():
         
         values = [str(v) for v in [
             global_rank, step, f"{elapsed:.2f}", f"{train_loss:.6f}",
-            f"{median_loss:.6f}" if median_loss is not None else "NA",
+            f"{validation_fitness:.6f}" if validation_fitness != float('inf') else "NA",
             total_tokens_processed,  # Per-GPU tokens
             f"{tokens_per_sec:.2f}", f"{current_lr:.8f}",
             doc_stats['documents_processed'],  # NEW
@@ -928,15 +930,15 @@ def main():
             evolutionary_node.update_fitness(chunk_loss, step)
             evolutionary_node.check_for_updates()
             evolutionary_node.request_mix()
-            current_median_fitness = evolutionary_node.get_current_fitness()
+            current_validation_fitness = evolutionary_node.get_current_fitness()
         else:
             evolutionary_node.update_fitness(chunk_loss, step)
-            current_median_fitness = evolutionary_node.get_current_fitness()
+            current_validation_fitness = evolutionary_node.get_current_fitness()
         
         # Get status and log with document stats
         status = evolutionary_node.get_status()
         doc_stats = train_dataset.stream_dataset.get_stats()
-        log_metrics(step, chunk_loss, current_median_fitness, status, doc_stats, accumulated_steps, should_optimize)
+        log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize)
         
         if global_rank == 0:
             elapsed = time.time() - start_time
@@ -962,7 +964,7 @@ def main():
             if args.use_gossip_lock:
                 try:
                     with file_lock(evolutionary_node.node_lock_path, timeout=0.01):
-                        save_callback(step, current_median_fitness, opportunistic=False)
+                        save_callback(step, current_validation_fitness, opportunistic=False)
                 except TimeoutError:
                     pass  # Winners save opportunistically, so this is OK
             else:

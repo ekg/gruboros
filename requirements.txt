@@ -54,3 +54,4 @@ urllib3 @ file:///home/conda/feedstock_root/build_artifacts/urllib3_174432357884
 zstandard==0.23.0
 numpy>=1.21.0
 uvloop
+scipy>=1.7.0

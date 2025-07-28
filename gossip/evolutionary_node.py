@@ -9,10 +9,13 @@ import queue
 import struct
 import glob
 import re
-from typing import Dict, Optional
+import json
+import numpy as np
+from scipy import stats
+from typing import Dict, Optional, List
 from dataclasses import dataclass
 from pathlib import Path
-from .fitness_tracker import FitnessTracker
+from .validation_tracker import ValidationTracker
 from .network_utils import NetworkUtils
 from .structured_logger import GossipLogger
 from .filesystem_coordinator import FilesystemCoordinator
@@ -84,7 +87,9 @@ class EvolutionaryTrainingNode:
                  fitness_window_size: int = 1000,
                  use_node_local_lock: bool = False,
                  use_filesystem_coordinator: bool = False,
-                 save_callback: Optional[callable] = None):
+                 save_callback: Optional[callable] = None,
+                 data_path: str = None,
+                 chunk_size: int = None):
         
         self.node_id = node_id
         self.model = model
@@ -113,8 +118,20 @@ class EvolutionaryTrainingNode:
         self.mixing_rng = random.Random(42 + self.global_rank * 1000)
         self.incoming_updates = queue.Queue()
         self.step_notifications = queue.Queue()
-        self.fitness_tracker = FitnessTracker(window_size=fitness_window_size)
-        self.fitness_lock = threading.Lock()
+        
+        # Replace fitness_tracker with validation_tracker
+        self.validation_tracker = ValidationTracker(
+            data_path=data_path,
+            chunk_size=chunk_size,
+            validation_interval=100,
+            chunks_per_validation=4,
+            window_size=1000
+        )
+        self.validation_lock = threading.Lock()
+        
+        # For gossip mixing decisions
+        self.gossip_validation_chunks = 32
+        self.current_step = 0
         
         self.pending_update = None
         self.weight_stream = torch.cuda.Stream()
@@ -158,12 +175,36 @@ class EvolutionaryTrainingNode:
         self.logger.log_event("NODE_STARTUP", message=f"TP_size={self.tp_size}, mixing_prob={self.mixing_probability}")
 
     def update_fitness(self, loss_value: float, step: int):
-        with self.fitness_lock: self.fitness_tracker.update(loss_value)
-        try: self.step_notifications.put_nowait(step)
-        except queue.Full: pass
+        """Called every step, but only validates periodically"""
+        self.current_step = step
+        
+        # Check if we should run validation
+        if self.validation_tracker.should_validate(step):
+            with self.validation_lock:
+                fitness = self.validation_tracker.run_validation(
+                    self.model, 
+                    step, 
+                    seed=self.global_rank * 1000
+                )
+                
+            # Log validation event
+            self.logger.log_event(
+                "VALIDATION_UPDATE",
+                step=step,
+                fitness=fitness,
+                message=f"Validated on {self.validation_tracker.chunks_per_validation} chunks"
+            )
+        
+        # Notify gossip thread about step
+        try:
+            self.step_notifications.put_nowait(step)
+        except queue.Full:
+            pass
 
     def get_current_fitness(self) -> float:
-        with self.fitness_lock: return self.fitness_tracker.get_fitness()
+        """Return validation-based fitness"""
+        with self.validation_lock:
+            return self.validation_tracker.get_fitness()
 
     def check_for_updates(self) -> Optional[WeightUpdate]:
         try:
@@ -253,11 +294,16 @@ class EvolutionaryTrainingNode:
                                         winner_tensor = winner_p_state[key].to(loser_tensor.device)
                                         loser_tensor.mul_(1.0 - alpha).add_(winner_tensor, alpha=alpha)
                 elif self.optimizer_recombination == 'reset': needs_optimizer_reset = True
+                
+                # Inherit validation fitness for recombination
+                if hasattr(self.pending_update, 'source_ema_loss'):
+                    with self.validation_lock:
+                        self.validation_tracker.inherit_fitness(self.pending_update.source_ema_loss)
             else:
                 self.model.load_state_dict(self.pending_update.state_dict)
                 if self.pending_update.optimizer_state_dict: 
                     self.optimizer.load_state_dict(self.pending_update.optimizer_state_dict)
-                with self.fitness_lock: self.fitness_tracker.inherit_fitness(self.pending_update.source_ema_loss)
+                with self.validation_lock: self.validation_tracker.inherit_fitness(self.pending_update.source_ema_loss)
             
             self.successful_mixes += 1; self.pending_update = None
             return True, needs_optimizer_reset
@@ -300,66 +346,236 @@ class EvolutionaryTrainingNode:
         finally: server_sock.close()
     
     def _do_handle_request(self, client_sock, addr):
-        peer_addr = f"{addr[0]}:{addr[1]}"; correlation_id = None; self.inbound_mixes_attempted += 1
+        """Handle incoming gossip request with statistical validation"""
+        peer_addr = f"{addr[0]}:{addr[1]}"
+        correlation_id = self.logger.generate_correlation_id()
+        self.inbound_mixes_attempted += 1
+        
         try:
-            NetworkUtils.optimize_socket(client_sock); client_sock.settimeout(5.0)
-            data = client_sock.recv(1024).decode()
-            if not data.startswith("EMA_LOSS:"): return
-            parts = data.split(":"); peer_fitness, correlation_id = (float(parts[1]), parts[3]) if len(parts) >= 4 and parts[2] == "CID" else (float(parts[1]), self.logger.generate_correlation_id())
-            our_fitness = self.get_current_fitness()
-            self.logger.log_event("INCOMING_FITNESS_COMPARISON", step=self.current_step, fitness=our_fitness, correlation_id=correlation_id, peer_addr=peer_addr, message=f"peer_fitness={peer_fitness:.4f}")
+            NetworkUtils.optimize_socket(client_sock)
+            client_sock.settimeout(30.0)
             
-            if our_fitness < peer_fitness:
-                self.mixes_won += 1
-                # Tell peer if we'll send optimizer state
-                send_optimizer = self.optimizer_recombination == 'interpolate'
-                client_sock.send(f"SENDING_WEIGHTS:{send_optimizer}".encode())
-                client_sock.settimeout(120.0)
-                self._send_our_weights_to_peer(client_sock, correlation_id, send_optimizer)
-                if self.save_callback:
-                    try: self.save_callback(self.current_step, our_fitness, opportunistic=True)
-                    except Exception as e: self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
+            # 1. Generate validation positions
+            seed = int(time.time() * 1000) % (2**32)
+            rng = np.random.RandomState(seed)
+            max_start = self.validation_tracker.max_start
+            positions = rng.randint(0, max_start, size=self.gossip_validation_chunks).tolist()
+            
+            # 2. Send validation challenge
+            challenge = json.dumps({
+                'positions': positions,
+                'chunk_size': self.validation_tracker.chunk_size,
+                'correlation_id': correlation_id
+            })
+            client_sock.send(f"VALIDATE:{challenge}".encode())
+            
+            # 3. Wait for peer's validation results
+            peer_data = b''
+            while len(peer_data) < 4:
+                peer_data += client_sock.recv(4 - len(peer_data))
+            
+            result_size = struct.unpack('!I', peer_data)[0]
+            peer_results_data = b''
+            while len(peer_results_data) < result_size:
+                peer_results_data += client_sock.recv(result_size - len(peer_results_data))
+            
+            peer_losses = np.array(json.loads(peer_results_data.decode()))
+            
+            # 4. Run our validation on same positions
+            our_losses = self.validation_tracker.evaluate_positions(self.model, positions)
+            
+            # 5. Send our results
+            our_results = json.dumps(our_losses.tolist()).encode()
+            client_sock.send(struct.pack('!I', len(our_results)))
+            client_sock.send(our_results)
+            
+            # 6. Statistical test
+            t_stat, p_value = stats.ttest_rel(our_losses, peer_losses)
+            our_mean = np.mean(our_losses)
+            peer_mean = np.mean(peer_losses)
+            
+            self.logger.log_event(
+                "VALIDATION_COMPARISON",
+                step=self.current_step,
+                correlation_id=correlation_id,
+                peer_addr=peer_addr,
+                message=f"p={p_value:.4f}, our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, t={t_stat:.3f}"
+            )
+            
+            # 7. Make decision based on p-value
+            if p_value < 0.05:  # Statistically significant difference
+                if our_mean < peer_mean:
+                    # We win
+                    self.mixes_won += 1
+                    send_optimizer = self.optimizer_recombination == 'interpolate'
+                    client_sock.send(f"WINNER:SENDING_WEIGHTS:{send_optimizer}".encode())
+                    client_sock.settimeout(120.0)
+                    self._send_our_weights_to_peer(client_sock, correlation_id, send_optimizer)
+                    
+                    # Opportunistic save
+                    if self.save_callback:
+                        try:
+                            self.save_callback(self.current_step, our_mean, opportunistic=True)
+                        except Exception as e:
+                            self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
+                else:
+                    # We lose
+                    self.mixes_lost += 1
+                    client_sock.send(f"LOSER:SEND_ME_WEIGHTS:{self.optimizer_recombination}".encode())
+                    client_sock.settimeout(120.0)
+                    payload_path, source_fitness = self._receive_weights_from_peer(client_sock, correlation_id)
+                    
+                    if payload_path:
+                        update = WeightUpdate(
+                            payload_path=payload_path,
+                            source_node=peer_addr,
+                            source_ema_loss=source_fitness,
+                            correlation_id=correlation_id
+                        )
+                        self.incoming_updates.put(update)
+                        self.logger.log_event(
+                            "WEIGHT_UPDATE_QUEUED",
+                            step=self.current_step,
+                            correlation_id=correlation_id,
+                            peer_addr=peer_addr,
+                            fitness=source_fitness
+                        )
             else:
-                self.mixes_lost += 1
-                # Tell peer our optimizer policy so they know what to send
-                client_sock.send(f"SEND_ME_WEIGHTS:{self.optimizer_recombination}".encode())
-                client_sock.settimeout(120.0)
-                payload_path, source_ema_loss = self._receive_weights_from_peer(client_sock, correlation_id)
-                if payload_path:
-                    update = WeightUpdate(payload_path=payload_path, source_node=peer_addr, source_ema_loss=source_ema_loss, correlation_id=correlation_id)
-                    self.incoming_updates.put(update); self.logger.log_event("WEIGHT_UPDATE_QUEUED", step=self.current_step, correlation_id=correlation_id, peer_addr=peer_addr, fitness=source_ema_loss)
-        except Exception as e: self.logger.log_event("INCOMING_REQUEST_ERROR", step=self.current_step, correlation_id=correlation_id, peer_addr=peer_addr, message=str(e))
-        finally: client_sock.close()
+                # No significant difference
+                client_sock.send(b"NO_MIX:NO_SIGNIFICANT_DIFFERENCE")
+                self.logger.log_event(
+                    "NO_SIGNIFICANT_DIFFERENCE",
+                    step=self.current_step,
+                    correlation_id=correlation_id,
+                    peer_addr=peer_addr,
+                    message=f"p={p_value:.3f} > 0.05"
+                )
+                
+        except Exception as e:
+            self.logger.log_event(
+                "INCOMING_REQUEST_ERROR",
+                step=self.current_step,
+                correlation_id=correlation_id,
+                peer_addr=peer_addr,
+                message=str(e)
+            )
+        finally:
+            client_sock.close()
 
     def _try_mix_with_peer(self):
-        if not self.peer_list: return
-        self.outbound_mixes_attempted += 1; correlation_id = self.logger.generate_correlation_id()
-        local_identity = self.logger.node_identity; other_peers = [p for p in self.peer_list.keys() if p != local_identity]
-        if not other_peers: return
-        peer_address = self.mixing_rng.choice(other_peers)
-        self.logger.log_event("MIX_ATTEMPT_START", step=self.current_step, correlation_id=correlation_id, peer_addr=peer_address, fitness=self.get_current_fitness())
-        host, port = peer_address.split(':'); sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM); NetworkUtils.optimize_socket(sock)
-        try:
-            sock.settimeout(3.0); sock.connect((host, int(port)))
-            our_fitness = self.get_current_fitness(); sock.send(f"EMA_LOSS:{our_fitness:.6f}:CID:{correlation_id}".encode()); sock.settimeout(5.0); response_str = sock.recv(1024).decode()
-            sock.settimeout(120.0)
+        """Initiate mixing with validation-based comparison"""
+        if not self.peer_list:
+            return
             
-            if response_str.startswith("SENDING_WEIGHTS"):
+        self.outbound_mixes_attempted += 1
+        correlation_id = self.logger.generate_correlation_id()
+        
+        # Select random peer
+        local_identity = self.logger.node_identity
+        other_peers = [p for p in self.peer_list.keys() if p != local_identity]
+        if not other_peers:
+            return
+            
+        peer_address = self.mixing_rng.choice(other_peers)
+        
+        self.logger.log_event(
+            "MIX_ATTEMPT_START",
+            step=self.current_step,
+            correlation_id=correlation_id,
+            peer_addr=peer_address,
+            fitness=self.get_current_fitness()
+        )
+        
+        host, port = peer_address.split(':')
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        NetworkUtils.optimize_socket(sock)
+        
+        try:
+            sock.settimeout(10.0)
+            sock.connect((host, int(port)))
+            
+            # Receive validation challenge
+            challenge_data = sock.recv(4096).decode()
+            if not challenge_data.startswith("VALIDATE:"):
+                return
+                
+            challenge = json.loads(challenge_data[9:])
+            positions = challenge['positions']
+            
+            # Run validation
+            our_losses = self.validation_tracker.evaluate_positions(self.model, positions)
+            
+            # Send our results
+            our_results = json.dumps(our_losses.tolist()).encode()
+            sock.send(struct.pack('!I', len(our_results)))
+            sock.send(our_results)
+            
+            # Receive peer results
+            peer_data = b''
+            while len(peer_data) < 4:
+                peer_data += sock.recv(4 - len(peer_data))
+                
+            result_size = struct.unpack('!I', peer_data)[0]
+            peer_results_data = b''
+            while len(peer_results_data) < result_size:
+                peer_results_data += sock.recv(result_size - len(peer_results_data))
+                
+            peer_losses = np.array(json.loads(peer_results_data.decode()))
+            
+            # Wait for decision
+            sock.settimeout(30.0)
+            decision = sock.recv(1024).decode()
+            
+            if decision.startswith("WINNER:SENDING_WEIGHTS"):
+                # They won, we receive
                 self.mixes_lost += 1
-                payload_path, source_ema_loss = self._receive_weights_from_peer(sock, correlation_id)
-                if payload_path: self.incoming_updates.put(WeightUpdate(payload_path=payload_path, source_node=peer_address, source_ema_loss=source_ema_loss, correlation_id=correlation_id))
-            elif response_str.startswith("SEND_ME_WEIGHTS"):
+                sock.settimeout(120.0)
+                payload_path, source_fitness = self._receive_weights_from_peer(sock, correlation_id)
+                if payload_path:
+                    self.incoming_updates.put(WeightUpdate(
+                        payload_path=payload_path,
+                        source_node=peer_address,
+                        source_ema_loss=source_fitness,
+                        correlation_id=correlation_id
+                    ))
+                    
+            elif decision.startswith("LOSER:SEND_ME_WEIGHTS"):
+                # We won, send weights
                 self.mixes_won += 1
-                # Check if peer needs optimizer state
-                loser_optimizer_policy = response_str.split(':')[-1] if ':' in response_str else 'reset'
-                send_optimizer = loser_optimizer_policy == 'interpolate'
+                loser_policy = decision.split(':')[-1] if ':' in decision else 'reset'
+                send_optimizer = loser_policy == 'interpolate'
+                sock.settimeout(120.0)
                 self._send_our_weights_to_peer(sock, correlation_id, send_optimizer)
+                
+                # Opportunistic save
                 if self.save_callback:
-                    try: self.save_callback(self.current_step, our_fitness, opportunistic=True)
-                    except Exception as e: self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
+                    try:
+                        fitness = self.get_current_fitness()
+                        self.save_callback(self.current_step, fitness, opportunistic=True)
+                    except Exception as e:
+                        self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
+                        
+            elif decision.startswith("NO_MIX"):
+                # No significant difference
+                self.logger.log_event(
+                    "NO_MIX_PEER_DECISION",
+                    step=self.current_step,
+                    correlation_id=correlation_id,
+                    peer_addr=peer_address
+                )
+                
             self.mixing_attempts += 1
-        except Exception as e: self.logger.log_event("MIX_ATTEMPT_FAILED", step=self.current_step, correlation_id=correlation_id, peer_addr=peer_address, message=str(e))
-        finally: sock.close()
+            
+        except Exception as e:
+            self.logger.log_event(
+                "MIX_ATTEMPT_FAILED",
+                step=self.current_step,
+                correlation_id=correlation_id,
+                peer_addr=peer_address,
+                message=str(e)
+            )
+        finally:
+            sock.close()
 
     def _send_our_weights_to_peer(self, sock, correlation_id: str, send_optimizer_state: bool = True):
         start_time = time.time(); temp_filename = os.path.join(self.gossip_temp_dir, f"gossip_payload_{uuid.uuid4()}.pt")
@@ -367,8 +583,12 @@ class EvolutionaryTrainingNode:
             log_memory_usage(self.global_rank, "Before creating payload")
             
             model_cpu_state = {name: param.cpu() for name, param in self.model.state_dict().items()}
-            our_ema_loss = self.get_current_fitness()
-            transfer_data = {'model_state_dict': model_cpu_state, 'ema_loss': our_ema_loss}
+            our_fitness = self.get_current_fitness()  # Now validation-based
+            transfer_data = {
+                'model_state_dict': model_cpu_state,
+                'validation_fitness': our_fitness,  # Changed from ema_loss
+                'ema_loss': our_fitness  # Keep for compatibility
+            }
             
             # Only include optimizer state if requested by the receiving peer
             if send_optimizer_state:
@@ -384,7 +604,7 @@ class EvolutionaryTrainingNode:
             file_size = os.path.getsize(temp_filename); sock.send(struct.pack('!Q', file_size))
             with open(temp_filename, 'rb') as f:
                 while chunk := f.read(4 * 1024 * 1024): sock.sendall(chunk)
-            self.logger.log_event("WEIGHT_SEND_COMPLETE", step=self.current_step, correlation_id=correlation_id, data_size_bytes=file_size, transfer_time_ms=(time.time() - start_time) * 1000, fitness=our_ema_loss, message=f"Optimizer included: {send_optimizer_state}")
+            self.logger.log_event("WEIGHT_SEND_COMPLETE", step=self.current_step, correlation_id=correlation_id, data_size_bytes=file_size, transfer_time_ms=(time.time() - start_time) * 1000, fitness=our_fitness, message=f"Optimizer included: {send_optimizer_state}")
         except Exception as e: self.logger.log_event("WEIGHT_SEND_ERROR", step=self.current_step, correlation_id=correlation_id, message=str(e))
         finally:
             if os.path.exists(temp_filename): os.remove(temp_filename)
