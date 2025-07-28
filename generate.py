@@ -484,7 +484,7 @@ def load_primer_text(primer_file=None, primer_length=None, primer_text=None, exp
         byte_data = text.encode('utf-8')
         tokens = list(byte_data)  # This gives us values 0-255
         if primer_length and len(tokens) > primer_length:
-            print(f"WARNING: Primer file truncated from {len(tokens)} to {primer_length} tokens.")
+            print(f"INFO: Primer file truncated from {len(tokens)} to {primer_length} bytes (use --primer_length to change).")
             tokens = tokens[:primer_length]
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
     else:
@@ -543,7 +543,7 @@ def main():
     
     parser.add_argument("--primer_file", type=str, default=None, help="File with primer text.")
     parser.add_argument("--primer_text", type=str, default=None, help="Direct primer text.")
-    parser.add_argument("--primer_length", type=str, default="1k", help="Max primer length (e.g., 256, 1k).")
+    parser.add_argument("--primer_length", type=str, default=None, help="Max primer length (e.g., 256, 1k). If not specified, reads entire file.")
     parser.add_argument("--force_primer_length", action="store_true", help="Force truncation of --primer_text.")
     
     parser.add_argument("--output_file", type=str, default=None, help="File to save the full generated text.")
