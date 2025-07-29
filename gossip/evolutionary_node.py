@@ -226,106 +226,281 @@ class EvolutionaryTrainingNode:
             return self.validation_tracker.get_fitness()
 
     def check_for_updates(self) -> Optional[WeightUpdate]:
+        """Check for incoming weight updates and start transfer"""
         try:
             update = self.incoming_updates.get_nowait()
-            self._start_async_weight_transfer(update)
-            return update
-        except queue.Empty: return None
+            # We now process immediately instead of staging
+            was_applied, needs_reset = self._start_async_weight_transfer(update)
+            if was_applied:
+                return update
+            return None
+        except queue.Empty:
+            return None
 
-    def _start_async_weight_transfer(self, update: WeightUpdate):
+    def _start_async_weight_transfer(self, update: WeightUpdate) -> tuple[bool, bool]:
         if self.use_node_local_lock:
             try:
                 with file_lock(self.node_lock_path, timeout=15.0):
-                    self._load_and_transfer_payload(update)
+                    return self._load_and_transfer_payload(update)
             except TimeoutError:
                 self.logger.log_event("UPDATE_SKIPPED_LOCK", message="Node lock busy, skipping weight update application.")
                 if os.path.exists(update.payload_path): os.remove(update.payload_path)
+                return False, False
         else:
-            self._load_and_transfer_payload(update)
+            return self._load_and_transfer_payload(update)
 
     def _load_and_transfer_payload(self, update: WeightUpdate):
+        """Load weights using PyTorch's native memory mapping to minimize memory usage"""
         with self.weight_transfer_lock:
             try:
-                payload_size = os.path.getsize(update.payload_path)
-                log_memory_usage(self.global_rank, "Before torch.load")
+                log_memory_usage(self.global_rank, "Before mmap load")
                 
-                if not check_memory_headroom(self.global_rank, payload_size, "torch.load operation"):
-                    self.logger.log_event("UPDATE_SKIPPED_MEMORY", message="Insufficient memory headroom, skipping update")
-                    if os.path.exists(update.payload_path): os.remove(update.payload_path)
-                    return
-
-                loaded_data = torch.load(update.payload_path, map_location='cpu')
-                log_memory_usage(self.global_rank, "After torch.load")
+                device = next(self.model.parameters()).device
                 
-                setattr(update, 'state_dict', loaded_data['model_state_dict'])
-                setattr(update, 'optimizer_state_dict', loaded_data.get('optimizer_state_dict'))
+                # Step 1: Memory-map the checkpoint (no actual loading yet!)
+                mmap_checkpoint = torch.load(
+                    update.payload_path,
+                    map_location='cpu',
+                    mmap=True,  # This is the key!
+                    weights_only=False  # We need optimizer state too
+                )
                 
+                # Extract metadata without loading tensors
+                source_ema_loss = mmap_checkpoint.get('ema_loss', float('inf'))
+                
+                # Step 2: Process weights one at a time to minimize memory
+                if self.merge_method == 'recombination':
+                    needs_optimizer_reset = self._apply_recombination_mmap(
+                        mmap_checkpoint, device, self.recombination_alpha
+                    )
+                else:  # clonal replacement
+                    needs_optimizer_reset = self._apply_clonal_mmap(
+                        mmap_checkpoint, device
+                    )
+                
+                # Update fitness tracker
+                with self.validation_lock:
+                    self.validation_tracker.inherit_fitness(source_ema_loss)
+                
+                # Clean up - mmap checkpoint will be released
+                del mmap_checkpoint
+                gc.collect()
+                
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                
+                # Remove the payload file
                 os.remove(update.payload_path)
                 
-                with torch.cuda.stream(self.weight_stream):
-                    device = next(self.model.parameters()).device
-                    for name, param in update.state_dict.items():
-                        update.state_dict[name] = param.pin_memory().to(device, non_blocking=True)
-                    self.weight_ready_event.record(self.weight_stream)
+                self.successful_mixes += 1
+                self.logger.log_event(
+                    "MMAP_UPDATE_APPLIED",
+                    step=self.current_step,
+                    correlation_id=update.correlation_id,
+                    message=f"Memory-mapped update completed"
+                )
                 
-                self.pending_update = update
+                log_memory_usage(self.global_rank, "After mmap update")
                 
-                # Critical memory release sequence
-                del loaded_data['model_state_dict']
-                if 'optimizer_state_dict' in loaded_data:
-                    del loaded_data['optimizer_state_dict']
-                del loaded_data
-                gc.collect()
-                time.sleep(0.1)  # Brief pause for OS to reclaim memory
+                return True, needs_optimizer_reset
                 
-                log_memory_usage(self.global_rank, "After memory cleanup and before lock release")
-
             except Exception as e:
-                self.logger.log_event("PAYLOAD_LOAD_ERROR", message=str(e))
-                if os.path.exists(update.payload_path): os.remove(update.payload_path)
-                self.pending_update = None
+                self.logger.log_event("MMAP_LOAD_ERROR", message=str(e))
+                if os.path.exists(update.payload_path):
+                    os.remove(update.payload_path)
+                return False, False
+
+    def _apply_recombination_mmap(self, mmap_checkpoint, device, alpha):
+        """Apply recombination using memory-mapped weights"""
+        with torch.no_grad():
+            # Get the state dict (still memory-mapped, not loaded!)
+            mmap_state_dict = mmap_checkpoint['model_state_dict']
+            
+            # Process each parameter individually
+            for name, param in self.model.named_parameters():
+                if name in mmap_state_dict:
+                    # This is when the tensor actually gets loaded from disk
+                    incoming_tensor = mmap_state_dict[name]
+                    
+                    # Since mmap tensors are read-only, we must copy to device
+                    # This loads only this parameter into memory
+                    incoming_device = incoming_tensor.to(device, non_blocking=True)
+                    
+                    # Blend directly into existing parameter
+                    param.mul_(1.0 - alpha).add_(incoming_device, alpha=alpha)
+                    
+                    # Immediately free the device copy
+                    del incoming_device
+                    
+                    # Force CUDA to release memory
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+            
+            # Synchronize to ensure all transfers complete
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+        
+        # Handle optimizer state if needed
+        if self.optimizer_recombination == 'interpolate' and 'optimizer_state_dict' in mmap_checkpoint:
+            return self._apply_optimizer_recombination_mmap(
+                mmap_checkpoint['optimizer_state_dict'], device, alpha
+            )
+        elif self.optimizer_recombination == 'reset':
+            return True  # Needs reset
+        
+        return False
+
+    def _apply_clonal_mmap(self, mmap_checkpoint, device):
+        """Apply clonal replacement using memory-mapped weights"""
+        with torch.no_grad():
+            mmap_state_dict = mmap_checkpoint['model_state_dict']
+            
+            # Copy each parameter individually
+            for name, param in self.model.named_parameters():
+                if name in mmap_state_dict:
+                    # Load from mmap and copy directly to parameter
+                    incoming_tensor = mmap_state_dict[name]
+                    param.copy_(incoming_tensor.to(device, non_blocking=True))
+                    
+                    # Clear CUDA cache after each parameter
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+            
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+        
+        # Load optimizer state if available
+        if 'optimizer_state_dict' in mmap_checkpoint:
+            self._load_optimizer_state_mmap(
+                mmap_checkpoint['optimizer_state_dict'], device
+            )
+        
+        return False  # No reset needed
+
+    def _apply_optimizer_recombination_mmap(self, mmap_opt_state, device, alpha):
+        """Blend optimizer states using memory mapping"""
+        with torch.no_grad():
+            incoming_state = mmap_opt_state['state']
+            
+            for param_idx, param_state in self.optimizer.state.items():
+                if param_idx in incoming_state:
+                    incoming_param_state = incoming_state[param_idx]
+                    
+                    # Blend momentum buffers
+                    for buffer_name in ['exp_avg', 'exp_avg_sq']:
+                        if buffer_name in param_state and buffer_name in incoming_param_state:
+                            # Load only this buffer from mmap
+                            incoming_buffer = incoming_param_state[buffer_name].to(
+                                device, non_blocking=True
+                            )
+                            
+                            # Blend in-place
+                            param_state[buffer_name].mul_(1.0 - alpha).add_(
+                                incoming_buffer, alpha=alpha
+                            )
+                            
+                            del incoming_buffer
+                            
+                            if device.type == 'cuda':
+                                torch.cuda.empty_cache()
+        
+        return False  # No reset needed
+
+    def _load_optimizer_state_mmap(self, mmap_opt_state, device):
+        """Load optimizer state from memory-mapped checkpoint"""
+        with torch.no_grad():
+            # Update param groups
+            if 'param_groups' in mmap_opt_state:
+                for i, group in enumerate(mmap_opt_state['param_groups']):
+                    if i < len(self.optimizer.param_groups):
+                        for key in ['lr', 'betas', 'eps', 'weight_decay']:
+                            if key in group:
+                                self.optimizer.param_groups[i][key] = group[key]
+            
+            # Update state tensors
+            incoming_state = mmap_opt_state['state']
+            
+            for param_idx in self.optimizer.state:
+                if param_idx in incoming_state:
+                    current_param_state = self.optimizer.state[param_idx]
+                    incoming_param_state = incoming_state[param_idx]
+                    
+                    # Copy tensor states one at a time
+                    for key in ['exp_avg', 'exp_avg_sq']:
+                        if key in incoming_param_state and key in current_param_state:
+                            mmap_tensor = incoming_param_state[key]
+                            current_param_state[key].copy_(
+                                mmap_tensor.to(device, non_blocking=True)
+                            )
+                            
+                            if device.type == 'cuda':
+                                torch.cuda.empty_cache()
+                    
+                    # Copy scalar states
+                    for key in ['step']:
+                        if key in incoming_param_state:
+                            current_param_state[key] = incoming_param_state[key]
+
+    def _apply_large_tensor_recombination(self, param, mmap_tensor, device, alpha, 
+                                         chunk_size_mb=100):
+        """Mix very large tensors in chunks to minimize memory peaks"""
+        
+        # Calculate chunk size in elements
+        bytes_per_element = param.element_size()
+        chunk_elements = (chunk_size_mb * 1024 * 1024) // bytes_per_element
+        
+        param_flat = param.view(-1)
+        total_elements = param_flat.numel()
+        
+        # Process in chunks
+        for start_idx in range(0, total_elements, chunk_elements):
+            end_idx = min(start_idx + chunk_elements, total_elements)
+            
+            # Load only this chunk from mmap
+            chunk_slice = slice(start_idx, end_idx)
+            mmap_chunk = mmap_tensor.view(-1)[chunk_slice]
+            
+            # Copy chunk to device
+            device_chunk = mmap_chunk.to(device, non_blocking=True)
+            
+            # Mix in-place
+            param_flat[chunk_slice].mul_(1.0 - alpha).add_(device_chunk, alpha=alpha)
+            
+            # Free chunk immediately
+            del device_chunk
+            
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+        
+        # Ensure param maintains its original shape
+        param.data = param_flat.view(param.shape)
+
+    def log_mmap_stats(self, phase: str, mmap_checkpoint):
+        """Log memory mapping statistics"""
+        if hasattr(mmap_checkpoint, '_mmap_info'):
+            # PyTorch might expose mmap info in future versions
+            self.logger.log_event(
+                "MMAP_STATS",
+                message=f"{phase}: Using memory-mapped checkpoint"
+            )
+        
+        # Log current memory state
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                self.logger.log_event(
+                    "GPU_MEMORY",
+                    message=f"{phase} - GPU {i}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
+                )
 
     def apply_pending_update(self) -> tuple[bool, bool]:
-        if self.pending_update is None: return False, False
-        with self.weight_transfer_lock:
-            torch.cuda.current_stream().wait_event(self.weight_ready_event)
-            needs_optimizer_reset = False
-            
-            if self.merge_method == 'recombination':
-                winner_model_state = self.pending_update.state_dict
-                alpha = self.recombination_alpha
-                with torch.no_grad():
-                    for name, loser_param in self.model.named_parameters():
-                        if name in winner_model_state and loser_param.dtype.is_floating_point:
-                            winner_param = winner_model_state[name].to(loser_param.device)
-                            loser_param.mul_(1.0 - alpha).add_(winner_param, alpha=alpha)
-                
-                if self.optimizer_recombination == 'interpolate' and self.pending_update.optimizer_state_dict:
-                    winner_optim_state = self.pending_update.optimizer_state_dict['state']
-                    loser_optim_state = self.optimizer.state
-                    with torch.no_grad():
-                        for p_id, winner_p_state in winner_optim_state.items():
-                            if p_id in loser_optim_state:
-                                loser_p_state = loser_optim_state[p_id]
-                                for key in ['exp_avg', 'exp_avg_sq']:
-                                    if key in loser_p_state and key in winner_p_state:
-                                        loser_tensor = loser_p_state[key]
-                                        winner_tensor = winner_p_state[key].to(loser_tensor.device)
-                                        loser_tensor.mul_(1.0 - alpha).add_(winner_tensor, alpha=alpha)
-                elif self.optimizer_recombination == 'reset': needs_optimizer_reset = True
-                
-                # Inherit validation fitness for recombination
-                if hasattr(self.pending_update, 'source_ema_loss'):
-                    with self.validation_lock:
-                        self.validation_tracker.inherit_fitness(self.pending_update.source_ema_loss)
-            else:
-                self.model.load_state_dict(self.pending_update.state_dict)
-                if self.pending_update.optimizer_state_dict: 
-                    self.optimizer.load_state_dict(self.pending_update.optimizer_state_dict)
-                with self.validation_lock: self.validation_tracker.inherit_fitness(self.pending_update.source_ema_loss)
-            
-            self.successful_mixes += 1; self.pending_update = None
-            return True, needs_optimizer_reset
+        """Apply any pending weight updates"""
+        try:
+            update = self.incoming_updates.get_nowait()
+            return self._start_async_weight_transfer(update)
+        except queue.Empty:
+            return False, False
 
     def start_gossip_protocol(self):
         if self.coordinator: self.coordinator.start()
@@ -597,34 +772,67 @@ class EvolutionaryTrainingNode:
             sock.close()
 
     def _send_our_weights_to_peer(self, sock, correlation_id: str, send_optimizer_state: bool = True):
-        start_time = time.time(); temp_filename = os.path.join(self.gossip_temp_dir, f"gossip_payload_{uuid.uuid4()}.pt")
+        """Save weights in a format compatible with memory mapping"""
+        start_time = time.time()
+        temp_filename = os.path.join(self.gossip_temp_dir, f"gossip_payload_{uuid.uuid4()}.pt")
+        
         try:
             log_memory_usage(self.global_rank, "Before creating payload")
             
-            model_cpu_state = {name: param.cpu() for name, param in self.model.state_dict().items()}
-            our_fitness = self.get_current_fitness()  # Now validation-based
-            transfer_data = {
-                'model_state_dict': model_cpu_state,
-                'validation_fitness': our_fitness,  # Changed from ema_loss
-                'ema_loss': our_fitness  # Keep for compatibility
+            # Build checkpoint dict - this is still in memory unfortunately
+            # But we'll save it in a way that supports mmap loading
+            checkpoint = {
+                'validation_fitness': self.get_current_fitness(),
+                'ema_loss': self.get_current_fitness(),  # Keep for compatibility
+                'model_state_dict': {
+                    name: param.detach().cpu() 
+                    for name, param in self.model.named_parameters()
+                }
             }
             
-            # Only include optimizer state if requested by the receiving peer
             if send_optimizer_state:
-                opt_state_dict = self.optimizer.state_dict(); optimizer_cpu_state = {'param_groups': opt_state_dict['param_groups'], 'state': {}}
-                for param_id, param_state in opt_state_dict['state'].items():
-                    optimizer_cpu_state['state'][param_id] = {k: v.cpu() if torch.is_tensor(v) else v for k, v in param_state.items()}
-                transfer_data['optimizer_state_dict'] = optimizer_cpu_state
+                opt_state = self.optimizer.state_dict()
+                checkpoint['optimizer_state_dict'] = {
+                    'param_groups': opt_state['param_groups'],
+                    'state': {
+                        param_id: {
+                            k: v.cpu() if torch.is_tensor(v) else v
+                            for k, v in param_state.items()
+                        }
+                        for param_id, param_state in opt_state['state'].items()
+                    }
+                }
                 log_memory_usage(self.global_rank, "After creating optimizer payload")
             else:
                 log_memory_usage(self.global_rank, "Skipping optimizer state (not requested)")
             
-            torch.save(transfer_data, temp_filename)
-            file_size = os.path.getsize(temp_filename); sock.send(struct.pack('!Q', file_size))
+            # Save with settings that enable memory mapping
+            torch.save(
+                checkpoint, 
+                temp_filename,
+                _use_new_zipfile_serialization=True  # Required for mmap!
+            )
+            
+            # Stream file to peer
+            file_size = os.path.getsize(temp_filename)
+            sock.send(struct.pack('!Q', file_size))
+            
             with open(temp_filename, 'rb') as f:
-                while chunk := f.read(4 * 1024 * 1024): sock.sendall(chunk)
-            self.logger.log_event("WEIGHT_SEND_COMPLETE", step=self.current_step, correlation_id=correlation_id, data_size_bytes=file_size, transfer_time_ms=(time.time() - start_time) * 1000, fitness=our_fitness, message=f"Optimizer included: {send_optimizer_state}")
-        except Exception as e: self.logger.log_event("WEIGHT_SEND_ERROR", step=self.current_step, correlation_id=correlation_id, message=str(e))
+                while chunk := f.read(4 * 1024 * 1024):
+                    sock.sendall(chunk)
+            
+            self.logger.log_event(
+                "WEIGHT_SEND_COMPLETE",
+                step=self.current_step,
+                correlation_id=correlation_id,
+                data_size_bytes=file_size,
+                transfer_time_ms=(time.time() - start_time) * 1000,
+                fitness=checkpoint['validation_fitness'],
+                message=f"Optimizer included: {send_optimizer_state}"
+            )
+            
+        except Exception as e:
+            self.logger.log_event("WEIGHT_SEND_ERROR", step=self.current_step, correlation_id=correlation_id, message=str(e))
         finally:
             if os.path.exists(temp_filename): os.remove(temp_filename)
 
