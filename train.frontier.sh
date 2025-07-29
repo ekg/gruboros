@@ -75,7 +75,7 @@ export LOCAL_RANK=\$SLURM_LOCALID
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --grad_accum 8 \
+  --grad_accum 1 \
   --chunk_size 2048 \
   --context_chunks 8 \
   --keep_checkpoints 5 \
