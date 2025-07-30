@@ -57,7 +57,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --params 3b \
+  --params 3g \
   --dim 2560 \
   --expansion_factor 2.0 \
   --ff_mult 3.0 \
