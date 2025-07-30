@@ -570,7 +570,6 @@ def get_args():
     parser.add_argument('--expansion_factor', type=float, default=1.5, help='state expansion factor for MinGRU inner dimension')
     parser.add_argument('--ff_mult', type=float, default=4.0, help='feedforward multiplier for MinGRU (ffn_dim = dim * ff_mult)')
     parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
-    parser.add_argument('--context_chunks', type=int, default=1, help='Number of consecutive chunks to process for TBPTT. Effective seq_len = chunk_size * context_chunks.')
     parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
