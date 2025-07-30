@@ -6,7 +6,8 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="3b_emergence"
+PARAMS="2g"
+NAME="${PARAMS}_ok"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -57,8 +58,8 @@ deepspeed --num_gpus=$NUM_GPUS \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --params 2g \
-  --dim 2560 \
+  --params $PARAMS \
+  --dim 2048 \
   --expansion_factor 2.0 \
   --ff_mult 3.0 \
   --train_steps 10000000 \
