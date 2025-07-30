@@ -4,7 +4,7 @@
 #SBATCH -J llm_gossip
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 01:00:00
+#SBATCH -t 02:00:00
 #SBATCH -p batch
 #SBATCH -N 2048
 #SBATCH -q debug
