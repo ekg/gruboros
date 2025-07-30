@@ -7,7 +7,7 @@ ulimit -n 65536
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 PARAMS="2g"
-NAME="${PARAMS}_ok"
+NAME="${PARAMS}"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
