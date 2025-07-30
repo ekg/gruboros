@@ -57,7 +57,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --params 3g \
+  --params 2g \
   --dim 2560 \
   --expansion_factor 2.0 \
   --ff_mult 3.0 \
@@ -68,7 +68,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --sf_beta2 0.999 \
   --weight_decay 0.0001 \
   --grad_accum 1 \
-  --chunk_size 32 \
+  --chunk_size 512 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
