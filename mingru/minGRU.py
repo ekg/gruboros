@@ -74,7 +74,7 @@ class minGRU(Module):
                 # We need to compute: log(prev * (1-gate) + hidden * gate)
                 
                 # Convert gate to log probabilities
-                eps = 1e-20  # for numerical stability
+                eps = torch.finfo(gate_sigmoid.dtype).eps
                 log_gate = torch.log(gate_sigmoid + eps)
                 log_one_minus_gate = torch.log(1 - gate_sigmoid + eps)
                 
@@ -87,7 +87,7 @@ class minGRU(Module):
             else:
                 # No previous state: out = hidden * gate
                 # In log space: log(out) = log(hidden) + log(gate)
-                log_out = log_hidden + torch.log(gate_sigmoid + 1e-20)
+                log_out = log_hidden + torch.log(gate_sigmoid + torch.finfo(gate_sigmoid.dtype).eps)
             
             # Hidden state STAYS in log space
             next_prev_hidden = log_out
