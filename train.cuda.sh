@@ -6,7 +6,8 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_ok"
+PARAMS="2g"
+NAME="${PARAMS}"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -50,38 +51,37 @@ echo "Using GLOO backend for initial process group."
 NUM_GPUS=8
 
 # --- Launch Training ---
-echo "Starting 'Thin & Deep' run for emergent behaviors."
+echo "Starting 3B parameter run with proper architecture for emergence."
 deepspeed --num_gpus=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --params 1g \
+  --params $PARAMS \
   --dim 2048 \
-  --expansion_factor 1.5 \
-  --ff_mult 1.0 \
+  --expansion_factor 2.0 \
+  --ff_mult 3.0 \
   --train_steps 10000000 \
   --save_every 500 \
-  --lr 0.001 \
+  --lr 0.0003 \
   --sf_beta 0.9 \
-  --sf_beta2 0.995 \
+  --sf_beta2 0.999 \
   --weight_decay 0.0001 \
-  --grad_accum 1 \
-  --chunk_size 2048 \
-  --context_chunks 8 \
+  --grad_accum 256 \
+  --chunk_size 512 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
   --gossip_merge_method recombination \
-  --gossip_recombination_alpha 0.3 \
+  --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.002 \
+  --gossip_mixing_rate 0.001 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_window 10000 \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
-  --elite-checkpoint-multiplier 5.0 \
+  --elite-checkpoint-multiplier 20.0 \
   --cuda
 
 echo "Training finished."
