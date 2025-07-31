@@ -74,9 +74,10 @@ class minGRU(Module):
                 # We need to compute: log(prev * (1-gate) + hidden * gate)
                 
                 # Convert gate to log probabilities
-                eps = torch.finfo(gate_sigmoid.dtype).eps
-                log_gate = torch.log(gate_sigmoid + eps)
-                log_one_minus_gate = torch.log(1 - gate_sigmoid + eps)
+                # Use a fixed epsilon that works well across dtypes
+                # 1e-8 for float32, but clamping is more robust for float16/bfloat16
+                log_gate = torch.log(gate_sigmoid.clamp(min=1e-8))
+                log_one_minus_gate = torch.log((1 - gate_sigmoid).clamp(min=1e-8))
                 
                 # Use log-sum-exp for the interpolation
                 # log(exp(log_prev * (1-g)) + exp(log_hidden * g))
@@ -87,7 +88,7 @@ class minGRU(Module):
             else:
                 # No previous state: out = hidden * gate
                 # In log space: log(out) = log(hidden) + log(gate)
-                log_out = log_hidden + torch.log(gate_sigmoid + torch.finfo(gate_sigmoid.dtype).eps)
+                log_out = log_hidden + torch.log(gate_sigmoid.clamp(min=1e-8))
             
             # Hidden state STAYS in log space
             next_prev_hidden = log_out
