@@ -61,7 +61,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --params $PARAMS \
   --dim 2048 \
   --expansion_factor 3.0 \
-  --ff_mult 1.0 \
+  --ff_mult 0 \
   --train_steps 10000000 \
   --save_every 500 \
   --lr 0.003 \

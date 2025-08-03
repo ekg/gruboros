@@ -66,8 +66,8 @@ class minLM(Module):
                 CausalDepthWiseConv1d(dim, conv_kernel_size) if enable_conv else None,
                 RMSNorm(dim),
                 min_rnn_klass(dim, expansion_factor = expansion),
-                RMSNorm(dim),
-                FeedForward(dim, mult = ff_mult),
+                RMSNorm(dim) if ff_mult > 0 else None,
+                FeedForward(dim, mult = ff_mult) if ff_mult > 0 else None,
                 nn.Dropout(dropout) if dropout > 0. else None
             ]))
 
@@ -127,7 +127,8 @@ class minLM(Module):
 
             # feedforward
 
-            x = ff(ff_norm(x)) + x
+            if exists(ff) and exists(ff_norm):
+                x = ff(ff_norm(x)) + x
             
             # dropout
             
@@ -195,7 +196,7 @@ class minLM(Module):
             
             # Initialize feedforward layers
             ff = layer[4]
-            if isinstance(ff, nn.Sequential):
+            if exists(ff) and isinstance(ff, nn.Sequential):
                 # First FF layer gets normal initialization
                 if len(ff) > 0 and isinstance(ff[0], nn.Linear):
                     nn.init.normal_(ff[0].weight, mean=0.0, std=std)
