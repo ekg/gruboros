@@ -108,7 +108,8 @@ class EvolutionaryTrainingNode:
                  use_filesystem_coordinator: bool = False,
                  save_callback: Optional[callable] = None,
                  data_path: str = None,
-                 chunk_size: int = None):
+                 chunk_size: int = None,
+                 p_value_threshold: float = 0.01):
         
         self.node_id = node_id
         self.model = model
@@ -126,6 +127,7 @@ class EvolutionaryTrainingNode:
         self.use_filesystem_coordinator = use_filesystem_coordinator
         self.output_dir = output_dir
         self.save_callback = save_callback
+        self.p_value_threshold = p_value_threshold
         
         self.coordinator: Optional[FilesystemCoordinator] = None
         if self.use_filesystem_coordinator:
@@ -597,7 +599,7 @@ class EvolutionaryTrainingNode:
             )
             
             # 7. Make decision based on p-value
-            if p_value < 0.05:  # Statistically significant difference
+            if p_value < self.p_value_threshold:  # Statistically significant difference
                 if our_mean < peer_mean:
                     # We win
                     self.mixes_won += 1

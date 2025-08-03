@@ -594,6 +594,8 @@ def get_args():
                         help='Window size for median-based fitness (number of steps to consider).')
     parser.add_argument('--gossip-node-local-lock', dest='use_gossip_lock', action='store_true', default=False,
                         help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')
+    parser.add_argument('--gossip_p_value_threshold', type=float, default=0.01,
+                        help='P-value threshold for statistical significance in fitness comparison (default: 0.01).')
     
     # --- NEW: Filesystem-Augmented Evolution ---
     parser.add_argument('--filesystem-coordinator', action='store_true',
@@ -819,7 +821,8 @@ def main():
         use_filesystem_coordinator=args.filesystem_coordinator,
         save_callback=save_callback,
         data_path=args.data,
-        chunk_size=chunk_size
+        chunk_size=chunk_size,
+        p_value_threshold=args.gossip_p_value_threshold
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0:

@@ -60,13 +60,13 @@ deepspeed --num_gpus=$NUM_GPUS \
   --output "$OUTPUT_DIR" \
   --params $PARAMS \
   --dim 2048 \
-  --expansion_factor 2.0 \
-  --ff_mult 3.0 \
+  --expansion_factor 3.0 \
+  --ff_mult 1.0 \
   --train_steps 10000000 \
   --save_every 500 \
-  --lr 0.0003 \
+  --lr 0.003 \
   --sf_beta 0.9 \
-  --sf_beta2 0.999 \
+  --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --grad_accum 256 \
   --chunk_size 512 \
@@ -77,6 +77,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_recombination_alpha 0.5 \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.001 \
+  --gossip_p_value_threshold 0.01 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_window 10000 \
   --filesystem-coordinator \
