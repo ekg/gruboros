@@ -64,7 +64,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --ff_mult 0 \
   --train_steps 10000000 \
   --save_every 500 \
-  --lr 0.005 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
@@ -77,7 +77,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_recombination_alpha 0.2 \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.002 \
-  --gossip_p_value_threshold 0.05 \
+  --gossip_p_value_threshold 0.8 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_window 10000 \
   --filesystem-coordinator \
