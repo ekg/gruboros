@@ -663,7 +663,7 @@ class EvolutionaryTrainingNode:
                         step=self.current_step,
                         correlation_id=correlation_id,
                         peer_addr=peer_addr,
-                        message=f"p={p_value:.3f} <= {self.p_value_threshold} but means too close"
+                        message=f"Statistical tie: p={p_value:.3f} <= {self.p_value_threshold} but means equal ({our_mean:.4f})"
                     )
             else:
                 # No significant difference
@@ -718,6 +718,9 @@ class EvolutionaryTrainingNode:
         try:
             sock.settimeout(10.0)
             sock.connect((host, int(port)))
+            
+            # Increase timeout for validation phase
+            sock.settimeout(300.0)  # 5 minutes for validation
             
             # Receive validation challenge
             challenge_data = sock.recv(4096).decode()
