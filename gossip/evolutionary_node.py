@@ -192,6 +192,8 @@ class EvolutionaryTrainingNode:
         self.inbound_mixes_attempted = 0
         self.mixes_won = 0
         self.mixes_lost = 0
+        self.mixes_tied = 0  # Statistical ties (NO_SIGNIFICANT_DIFFERENCE or NO_CLEAR_WINNER)
+        self.mixes_failed = 0  # Technical failures (timeouts, errors)
         self.mixes_skipped_locked = 0
         self.peer_list: Dict[str, dict] = {}
         
@@ -657,6 +659,7 @@ class EvolutionaryTrainingNode:
                         )
                 else:
                     # Exact tie within statistical significance
+                    self.mixes_tied += 1
                     client_sock.send(b"NO_MIX:NO_CLEAR_WINNER")
                     self.logger.log_event(
                         "NO_CLEAR_WINNER",
@@ -667,6 +670,7 @@ class EvolutionaryTrainingNode:
                     )
             else:
                 # No significant difference
+                self.mixes_tied += 1
                 client_sock.send(b"NO_MIX:NO_SIGNIFICANT_DIFFERENCE")
                 self.logger.log_event(
                     "NO_SIGNIFICANT_DIFFERENCE",
@@ -829,6 +833,7 @@ class EvolutionaryTrainingNode:
             self.mixing_attempts += 1
             
         except socket.timeout as e:
+            self.mixes_failed += 1
             self.logger.log_event(
                 "MIX_TIMEOUT",
                 step=self.current_step,
@@ -837,6 +842,7 @@ class EvolutionaryTrainingNode:
                 message=f"Socket timeout: {str(e)}"
             )
         except ConnectionRefusedError as e:
+            self.mixes_failed += 1
             self.logger.log_event(
                 "MIX_CONNECTION_REFUSED",
                 step=self.current_step,
@@ -845,6 +851,7 @@ class EvolutionaryTrainingNode:
                 message=f"Connection refused by peer"
             )
         except Exception as e:
+            self.mixes_failed += 1
             self.logger.log_event(
                 "MIX_ATTEMPT_FAILED",
                 step=self.current_step,
@@ -951,10 +958,28 @@ class EvolutionaryTrainingNode:
     def request_mix(self): pass
 
     def get_status(self) -> dict:
-        outbound = self.outbound_mixes_attempted; inbound = self.inbound_mixes_attempted; won = self.mixes_won; lost = self.mixes_lost
-        failed_mixes = (outbound + inbound) - (won + lost)
-        status = {'node_id': self.node_id, 'fitness': self.get_current_fitness(), 'peer_count': len(self.peer_list), 'successful_mixes': self.successful_mixes, 'current_step': self.current_step, 'initiated_mixes': outbound, 'received_mixes': inbound, 'won_mixes': won, 'lost_mixes': lost, 'failed_mixes': failed_mixes}
-        if self.use_node_local_lock: status['skipped_due_to_lock'] = self.mixes_skipped_locked
+        outbound = self.outbound_mixes_attempted
+        inbound = self.inbound_mixes_attempted
+        won = self.mixes_won
+        lost = self.mixes_lost
+        tied = self.mixes_tied
+        failed = self.mixes_failed
+        
+        status = {
+            'node_id': self.node_id,
+            'fitness': self.get_current_fitness(),
+            'peer_count': len(self.peer_list),
+            'successful_mixes': self.successful_mixes,
+            'current_step': self.current_step,
+            'initiated_mixes': outbound,
+            'received_mixes': inbound,
+            'won_mixes': won,
+            'lost_mixes': lost,
+            'tied_mixes': tied,
+            'failed_mixes': failed
+        }
+        if self.use_node_local_lock:
+            status['skipped_due_to_lock'] = self.mixes_skipped_locked
         return status
 
     def attempt_rejuvenation(self, model: torch.nn.Module, alpha: float, tiebreaker_threshold: float = 0.005) -> tuple[bool, bool]:

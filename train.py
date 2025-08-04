@@ -778,7 +778,7 @@ def main():
             "tok_seen", "tok_sec", "lr",
             "docs", "gb_pos", "acc_steps", "opt",
             # --- NEW COLUMNS ---
-            "mix_out", "mix_in", "won", "lost", "failed"
+            "mix_out", "mix_in", "won", "lost", "tied", "failed"
         ]
         # Conditionally add the lock metric header
         if args.use_gossip_lock:
@@ -867,6 +867,7 @@ def main():
             mix_status['received_mixes'],
             mix_status['won_mixes'],
             mix_status['lost_mixes'],
+            mix_status.get('tied_mixes', 0),  # NEW: tied mixes
             mix_status['failed_mixes']
         ]]
         # Conditionally add the lock metric value
