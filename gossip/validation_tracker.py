@@ -36,9 +36,9 @@ class ValidationTracker:
         losses = self._evaluate_sequences(model, seed)
         mean_loss = np.mean(losses)
         
-        # Update our fitness tracking
-        self.validation_losses.append(mean_loss)
-        self.current_fitness = statistics.median(self.validation_losses)
+        # Update our fitness tracking - use most recent value directly
+        self.validation_losses.append(mean_loss)  # Keep history for analysis
+        self.current_fitness = mean_loss  # Use current result, not median
         self.last_validation_step = step
         
         return self.current_fitness
@@ -111,11 +111,11 @@ class ValidationTracker:
         return np.array(losses)
     
     def get_fitness(self) -> float:
-        """Return current median validation loss"""
+        """Return current validation loss (most recent)"""
         return self.current_fitness
     
     def inherit_fitness(self, source_fitness: float):
         """When receiving weights, inherit the source's validation fitness"""
-        self.validation_losses.clear()
+        # Don't clear history, just update current fitness
         self.validation_losses.append(source_fitness)
         self.current_fitness = source_fitness

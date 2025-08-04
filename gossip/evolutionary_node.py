@@ -581,8 +581,8 @@ class EvolutionaryTrainingNode:
             # Update our fitness with this validation result
             our_mean = np.mean(our_losses)
             with self.validation_lock:
-                self.validation_tracker.validation_losses.append(our_mean)
-                self.validation_tracker.current_fitness = statistics.median(self.validation_tracker.validation_losses)
+                self.validation_tracker.validation_losses.append(our_mean)  # Keep history
+                self.validation_tracker.current_fitness = our_mean  # Use current result directly
             
             # Log this fitness update
             self.logger.log_event(
@@ -716,8 +716,8 @@ class EvolutionaryTrainingNode:
             # Update our fitness with this validation result
             our_mean = np.mean(our_losses)
             with self.validation_lock:
-                self.validation_tracker.validation_losses.append(our_mean)
-                self.validation_tracker.current_fitness = statistics.median(self.validation_tracker.validation_losses)
+                self.validation_tracker.validation_losses.append(our_mean)  # Keep history
+                self.validation_tracker.current_fitness = our_mean  # Use current result directly
             
             # Log this fitness update
             self.logger.log_event(
