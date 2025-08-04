@@ -705,6 +705,13 @@ class EvolutionaryTrainingNode:
             # Receive validation challenge
             challenge_data = sock.recv(4096).decode()
             if not challenge_data.startswith("VALIDATE:"):
+                self.logger.log_event(
+                    "INVALID_CHALLENGE",
+                    step=self.current_step,
+                    correlation_id=correlation_id,
+                    peer_addr=peer_address,
+                    message=f"Expected VALIDATE:, got: {challenge_data[:50]}"
+                )
                 return
                 
             challenge = json.loads(challenge_data[9:])
@@ -798,13 +805,29 @@ class EvolutionaryTrainingNode:
                 
             self.mixing_attempts += 1
             
+        except socket.timeout as e:
+            self.logger.log_event(
+                "MIX_TIMEOUT",
+                step=self.current_step,
+                correlation_id=correlation_id,
+                peer_addr=peer_address,
+                message=f"Socket timeout: {str(e)}"
+            )
+        except ConnectionRefusedError as e:
+            self.logger.log_event(
+                "MIX_CONNECTION_REFUSED",
+                step=self.current_step,
+                correlation_id=correlation_id,
+                peer_addr=peer_address,
+                message=f"Connection refused by peer"
+            )
         except Exception as e:
             self.logger.log_event(
                 "MIX_ATTEMPT_FAILED",
                 step=self.current_step,
                 correlation_id=correlation_id,
                 peer_addr=peer_address,
-                message=str(e)
+                message=f"{type(e).__name__}: {str(e)}"
             )
         finally:
             sock.close()
