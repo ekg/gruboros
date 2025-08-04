@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from collections import deque
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import statistics
 import time
 
@@ -33,7 +33,7 @@ class ValidationTracker:
     
     def run_validation(self, model: torch.nn.Module, step: int, seed: int) -> float:
         """Run training-like validation and return mean loss"""
-        losses = self._evaluate_sequences(model, seed)
+        losses, _ = self._evaluate_sequences(model, seed, return_document_losses=False)
         mean_loss = np.mean(losses)
         
         # Update our fitness tracking - use most recent value directly
@@ -44,15 +44,22 @@ class ValidationTracker:
         return self.current_fitness
     
     def evaluate_for_gossip(self, model: torch.nn.Module, seed: int) -> np.ndarray:
-        """Same validation for gossip comparison - returns array of losses"""
-        return self._evaluate_sequences(model, seed)
+        """Same validation for gossip comparison - returns array of document losses"""
+        _, document_losses = self._evaluate_sequences(model, seed, return_document_losses=True)
+        return np.array(document_losses)
     
-    def _evaluate_sequences(self, model: torch.nn.Module, seed: int) -> np.ndarray:
-        """Core validation logic that mimics training exactly"""
+    def _evaluate_sequences(self, model: torch.nn.Module, seed: int, return_document_losses: bool = False) -> Tuple:
+        """Core validation logic that mimics training exactly
+        
+        Returns:
+            - sequence_losses: array of per-sequence average losses (for fitness)
+            - document_losses: array of per-document average losses (for t-test)
+        """
         model.eval()
         device = next(model.parameters()).device
         rng = np.random.RandomState(seed)
-        losses = []
+        sequence_losses = []
+        all_document_losses = []  # For t-test comparisons
         
         with torch.no_grad():
             for seq_idx in range(self.num_sequences):
@@ -66,7 +73,8 @@ class ValidationTracker:
                 
                 # Process one sequence
                 hidden_state = None
-                sequence_losses = []
+                sequence_chunks = []  # All chunks in this sequence
+                current_doc_chunks = []  # Chunks for current document
                 bytes_processed = 0
                 
                 while bytes_processed < self.sequence_length:
@@ -86,8 +94,18 @@ class ValidationTracker:
                                 # Process partial chunk before boundary
                                 chunk = torch.tensor(chunk_data, dtype=torch.long).unsqueeze(0).to(device)
                                 loss = model(chunk, return_loss=True, prev_hiddens=hidden_state)
-                                sequence_losses.append((loss.item(), len(chunk_data)))
-                                hidden_state = None  # Reset for new document
+                                chunk_info = (loss.item(), len(chunk_data))
+                                sequence_chunks.append(chunk_info)
+                                current_doc_chunks.append(chunk_info)
+                                
+                                # Compute document loss and save it
+                                if current_doc_chunks:
+                                    doc_loss = sum(l * t for l, t in current_doc_chunks) / sum(t for _, t in current_doc_chunks)
+                                    all_document_losses.append(doc_loss)
+                                
+                                # Reset for new document
+                                hidden_state = None
+                                current_doc_chunks = []
                                 chunk_data = []
                         else:
                             chunk_data.append(byte_val)
@@ -98,17 +116,28 @@ class ValidationTracker:
                         loss, next_hidden = model(chunk, return_loss=True, 
                                                 prev_hiddens=hidden_state, 
                                                 return_prev_hiddens=True)
-                        sequence_losses.append((loss.item(), len(chunk_data)))
+                        chunk_info = (loss.item(), len(chunk_data))
+                        sequence_chunks.append(chunk_info)
+                        current_doc_chunks.append(chunk_info)
                         hidden_state = next_hidden
                 
+                # Don't forget the last document if it didn't end with delimiter
+                if current_doc_chunks:
+                    doc_loss = sum(l * t for l, t in current_doc_chunks) / sum(t for _, t in current_doc_chunks)
+                    all_document_losses.append(doc_loss)
+                
                 # Compute weighted average loss for this sequence
-                if sequence_losses:
-                    total_loss = sum(loss * tokens for loss, tokens in sequence_losses)
-                    total_tokens = sum(tokens for _, tokens in sequence_losses)
-                    losses.append(total_loss / total_tokens)
+                if sequence_chunks:
+                    total_loss = sum(loss * tokens for loss, tokens in sequence_chunks)
+                    total_tokens = sum(tokens for _, tokens in sequence_chunks)
+                    sequence_losses.append(total_loss / total_tokens)
         
         model.train()
-        return np.array(losses)
+        
+        if return_document_losses:
+            return np.array(sequence_losses), all_document_losses
+        else:
+            return np.array(sequence_losses), None
     
     def get_fitness(self) -> float:
         """Return current validation loss (most recent)"""
