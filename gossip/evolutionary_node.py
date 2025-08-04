@@ -11,7 +11,6 @@ import glob
 import re
 import json
 import numpy as np
-from scipy import stats
 import statistics
 from typing import Dict, Optional, List
 from dataclasses import dataclass
@@ -597,70 +596,64 @@ class EvolutionaryTrainingNode:
             client_sock.send(struct.pack('!I', len(our_results)))
             client_sock.send(our_results)
             
-            # 6. Statistical test
-            t_stat, p_value = stats.ttest_rel(our_losses, peer_losses)
+            # 6. Simple comparison of mean losses
             our_mean = np.mean(our_losses)
             peer_mean = np.mean(peer_losses)
-            
-            # Handle NaN p-values (when losses are identical)
-            if np.isnan(p_value):
-                p_value = 1.0  # Treat as no difference
             
             self.logger.log_event(
                 "VALIDATION_COMPARISON",
                 step=self.current_step,
                 correlation_id=correlation_id,
                 peer_addr=peer_addr,
-                message=f"p={p_value:.4f}, our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, t={t_stat:.3f}, threshold={self.p_value_threshold}"
+                message=f"our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, diff={abs(our_mean - peer_mean):.6f}"
             )
             
-            # 7. Make decision based on p-value
-            if p_value <= self.p_value_threshold:  # Mix if p-value at or below threshold
-                if our_mean < peer_mean:
-                    # We win
-                    self.mixes_won += 1
-                    send_optimizer = self.optimizer_recombination == 'interpolate'
-                    client_sock.send(f"WINNER:SENDING_WEIGHTS:{send_optimizer}".encode())
-                    client_sock.settimeout(120.0)
-                    self._send_our_weights_to_peer(client_sock, correlation_id, send_optimizer)
-                    
-                    # Opportunistic save
-                    if self.save_callback:
-                        try:
-                            self.save_callback(self.current_step, our_mean, opportunistic=True)
-                        except Exception as e:
-                            self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
-                else:
-                    # We lose
-                    self.mixes_lost += 1
-                    client_sock.send(f"LOSER:SEND_ME_WEIGHTS:{self.optimizer_recombination}".encode())
-                    client_sock.settimeout(120.0)
-                    payload_path, source_fitness = self._receive_weights_from_peer(client_sock, correlation_id)
-                    
-                    if payload_path:
-                        update = WeightUpdate(
-                            payload_path=payload_path,
-                            source_node=peer_addr,
-                            source_ema_loss=source_fitness,
-                            correlation_id=correlation_id
-                        )
-                        self.incoming_updates.put(update)
-                        self.logger.log_event(
-                            "WEIGHT_UPDATE_QUEUED",
-                            step=self.current_step,
-                            correlation_id=correlation_id,
-                            peer_addr=peer_addr,
-                            fitness=source_fitness
-                        )
+            # 7. Always mix based on who has lower loss
+            if our_mean < peer_mean:
+                # We win
+                self.mixes_won += 1
+                send_optimizer = self.optimizer_recombination == 'interpolate'
+                client_sock.send(f"WINNER:SENDING_WEIGHTS:{send_optimizer}".encode())
+                client_sock.settimeout(120.0)
+                self._send_our_weights_to_peer(client_sock, correlation_id, send_optimizer)
+                
+                # Opportunistic save
+                if self.save_callback:
+                    try:
+                        self.save_callback(self.current_step, our_mean, opportunistic=True)
+                    except Exception as e:
+                        self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
+            elif peer_mean < our_mean:
+                # We lose
+                self.mixes_lost += 1
+                client_sock.send(f"LOSER:SEND_ME_WEIGHTS:{self.optimizer_recombination}".encode())
+                client_sock.settimeout(120.0)
+                payload_path, source_fitness = self._receive_weights_from_peer(client_sock, correlation_id)
+                
+                if payload_path:
+                    update = WeightUpdate(
+                        payload_path=payload_path,
+                        source_node=peer_addr,
+                        source_ema_loss=source_fitness,
+                        correlation_id=correlation_id
+                    )
+                    self.incoming_updates.put(update)
+                    self.logger.log_event(
+                        "WEIGHT_UPDATE_QUEUED",
+                        step=self.current_step,
+                        correlation_id=correlation_id,
+                        peer_addr=peer_addr,
+                        fitness=source_fitness
+                    )
             else:
-                # No significant difference
-                client_sock.send(b"NO_MIX:NO_SIGNIFICANT_DIFFERENCE")
+                # Exact tie (very rare)
+                client_sock.send(b"NO_MIX:IDENTICAL_PERFORMANCE")
                 self.logger.log_event(
-                    "NO_SIGNIFICANT_DIFFERENCE",
+                    "IDENTICAL_PERFORMANCE",
                     step=self.current_step,
                     correlation_id=correlation_id,
                     peer_addr=peer_addr,
-                    message=f"p={p_value:.3f} > {self.p_value_threshold}"
+                    message=f"Both models have exactly {our_mean:.6f} loss"
                 )
                 
         except Exception as e:
