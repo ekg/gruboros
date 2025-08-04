@@ -98,3 +98,4 @@ Rscript plot_train.R
 - No formal test suite - this is research code
 - Evolution works best with population size >= 4 GPUs
 - Memory-mapped files allow training on datasets larger than RAM
+- **Shell script limitation**: Cannot have inline comments after backslash line continuations in train.cuda.sh - they break the command

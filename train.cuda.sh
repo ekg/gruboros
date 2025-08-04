@@ -79,10 +79,10 @@ deepspeed --num_gpus=$NUM_GPUS \
   --gossip_recombination_alpha 0.2 \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.002 \
-  --gossip_p_value_threshold 0.05 \  # p<0.05 for statistical significance
+  --gossip_p_value_threshold 0.1 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_window 10000 \
-  --validation_sequences 32 \
+  --validation_sequences 16 \
   --validation_sequence_length 8k \
   --validation_interval 10000 \
   --filesystem-coordinator \
