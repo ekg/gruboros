@@ -11,6 +11,7 @@ import glob
 import re
 import json
 import numpy as np
+from scipy import stats
 import statistics
 from typing import Dict, Optional, List
 from dataclasses import dataclass
@@ -575,7 +576,9 @@ class EvolutionaryTrainingNode:
             peer_losses = np.array(json.loads(peer_results_data.decode()))
             
             # 4. Run our validation with same seed
+            validation_start = time.time()
             our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            validation_time = time.time() - validation_start
             
             # Update our fitness with this validation result
             our_mean = np.mean(our_losses)
@@ -588,6 +591,7 @@ class EvolutionaryTrainingNode:
                 "VALIDATION_UPDATE",
                 step=self.current_step,
                 fitness=self.validation_tracker.current_fitness,
+                validation_time_s=validation_time,
                 message=f"Updated from gossip challenge (mean: {our_mean:.4f})"
             )
             
@@ -596,25 +600,27 @@ class EvolutionaryTrainingNode:
             client_sock.send(struct.pack('!I', len(our_results)))
             client_sock.send(our_results)
             
-            # 6. Simple comparison of mean losses
-            our_mean = np.mean(our_losses)
+            # 6. Statistical test on document-level losses
+            t_stat, p_value = stats.ttest_rel(our_losses, peer_losses)
             peer_mean = np.mean(peer_losses)
             
-            # Add tiny random noise to break exact ties
-            if our_mean == peer_mean:
-                our_mean += np.random.normal(0, 1e-9)
+            # Handle NaN p-values (when losses are identical)
+            if np.isnan(p_value):
+                p_value = 1.0  # Treat as no difference
             
             self.logger.log_event(
                 "VALIDATION_COMPARISON",
                 step=self.current_step,
                 correlation_id=correlation_id,
                 peer_addr=peer_addr,
-                message=f"our_mean={our_mean:.6f}, peer_mean={peer_mean:.6f}, diff={abs(our_mean - peer_mean):.9f}"
+                validation_time_s=validation_time,
+                message=f"p={p_value:.4f}, our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, t={t_stat:.3f}, docs={len(our_losses)}"
             )
             
-            # 7. Always mix based on who has lower loss
-            if our_mean < peer_mean:
-                # We win
+            # 7. Make decision based on p-value (using threshold from CLI)
+            if p_value <= self.p_value_threshold:
+                if our_mean < peer_mean:
+                    # We win
                 self.mixes_won += 1
                 send_optimizer = self.optimizer_recombination == 'interpolate'
                 client_sock.send(f"WINNER:SENDING_WEIGHTS:{send_optimizer}".encode())
@@ -627,36 +633,47 @@ class EvolutionaryTrainingNode:
                         self.save_callback(self.current_step, our_mean, opportunistic=True)
                     except Exception as e:
                         self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
-            elif peer_mean < our_mean:
-                # We lose
-                self.mixes_lost += 1
-                client_sock.send(f"LOSER:SEND_ME_WEIGHTS:{self.optimizer_recombination}".encode())
-                client_sock.settimeout(120.0)
-                payload_path, source_fitness = self._receive_weights_from_peer(client_sock, correlation_id)
-                
-                if payload_path:
-                    update = WeightUpdate(
-                        payload_path=payload_path,
-                        source_node=peer_addr,
-                        source_ema_loss=source_fitness,
-                        correlation_id=correlation_id
-                    )
-                    self.incoming_updates.put(update)
+                elif peer_mean < our_mean:
+                    # We lose
+                    self.mixes_lost += 1
+                    client_sock.send(f"LOSER:SEND_ME_WEIGHTS:{self.optimizer_recombination}".encode())
+                    client_sock.settimeout(120.0)
+                    payload_path, source_fitness = self._receive_weights_from_peer(client_sock, correlation_id)
+                    
+                    if payload_path:
+                        update = WeightUpdate(
+                            payload_path=payload_path,
+                            source_node=peer_addr,
+                            source_ema_loss=source_fitness,
+                            correlation_id=correlation_id
+                        )
+                        self.incoming_updates.put(update)
+                        self.logger.log_event(
+                            "WEIGHT_UPDATE_QUEUED",
+                            step=self.current_step,
+                            correlation_id=correlation_id,
+                            peer_addr=peer_addr,
+                            fitness=source_fitness
+                        )
+                else:
+                    # Exact tie within statistical significance
+                    client_sock.send(b"NO_MIX:NO_CLEAR_WINNER")
                     self.logger.log_event(
-                        "WEIGHT_UPDATE_QUEUED",
+                        "NO_CLEAR_WINNER",
                         step=self.current_step,
                         correlation_id=correlation_id,
                         peer_addr=peer_addr,
-                        fitness=source_fitness
+                        message=f"p={p_value:.3f} <= {self.p_value_threshold} but means too close"
                     )
             else:
-                # This else should never be reached due to noise addition
+                # No significant difference
+                client_sock.send(b"NO_MIX:NO_SIGNIFICANT_DIFFERENCE")
                 self.logger.log_event(
-                    "IMPOSSIBLE_TIE",
+                    "NO_SIGNIFICANT_DIFFERENCE",
                     step=self.current_step,
                     correlation_id=correlation_id,
                     peer_addr=peer_addr,
-                    message=f"This should not happen with noise addition"
+                    message=f"p={p_value:.3f} > {self.p_value_threshold}"
                 )
                 
         except Exception as e:
@@ -718,7 +735,9 @@ class EvolutionaryTrainingNode:
             seed = challenge['seed']
             
             # Run validation with provided seed
+            validation_start = time.time()
             our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            validation_time = time.time() - validation_start
             
             # Update our fitness with this validation result
             our_mean = np.mean(our_losses)
@@ -731,6 +750,7 @@ class EvolutionaryTrainingNode:
                 "VALIDATION_UPDATE", 
                 step=self.current_step,
                 fitness=self.validation_tracker.current_fitness,
+                validation_time_s=validation_time,
                 message=f"Updated from gossip challenge (mean: {our_mean:.4f})"
             )
             
