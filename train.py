@@ -774,15 +774,15 @@ def main():
     metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{global_rank:03d}.tsv")
     with open(metrics_log_path, 'w') as f:
         header = [
-            "rank", "step", "time_elapsed_s", "train_loss", "val_loss", 
-            "total_tokens_processed", "tokens_per_sec", "learning_rate",
-            "documents_completed", "current_position_gb", "accumulated_steps", "optimized",
+            "rank", "step", "time_s", "loss", "val", 
+            "tok_seen", "tok_sec", "lr",
+            "docs", "gb_pos", "acc_steps", "opt",
             # --- NEW COLUMNS ---
-            "initiated_mixes", "received_mixes", "won_mixes", "lost_mixes", "failed_mixes"
+            "mix_out", "mix_in", "won", "lost", "failed"
         ]
         # Conditionally add the lock metric header
         if args.use_gossip_lock:
-            header.append("skipped_due_to_lock")
+            header.append("locked")
         f.write('\t'.join(header) + '\n')
 
     # Calculate save probability first

@@ -37,9 +37,9 @@ class GossipLogger:
         # Write TSV header
         if not self.log_file.exists():
             header = [
-                "unix_timestamp", "node_identity", "global_rank", "dp_rank",
-                "event_type", "step", "ema_loss", "correlation_id", 
-                "peer_addr", "data_size_mb", "transfer_time_ms", "validation_time_s", "message"
+                "time", "node", "rank", "dp_rank",
+                "event", "step", "loss", "corr_id", 
+                "peer", "mb", "xfer_ms", "val_s", "msg"
             ]
             with open(self.log_file, 'w') as f:
                 f.write('\t'.join(header) + '\n')
