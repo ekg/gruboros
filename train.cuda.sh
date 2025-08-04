@@ -76,15 +76,15 @@ deepspeed --num_gpus=$NUM_GPUS \
   --keep_elite 32 \
   --archive_rate 0.0067 \
   --gossip_merge_method recombination \
-  --gossip_recombination_alpha 0.2 \  # 80% loser, 20% winner weights
+  --gossip_recombination_alpha 0.2 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.002 \  # Mix attempt probability per step
-  --gossip_p_value_threshold 0.2 \  # p<0.2 required for mixing (80% confidence)
+  --gossip_mixing_rate 0.002 \
+  --gossip_p_value_threshold 0.2 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_window 10000 \
-  --validation_sequences 32 \  # Number of sequences per validation
-  --validation_sequence_length 8k \  # Bytes per validation sequence
-  --validation_interval 10000 \  # Steps between scheduled validations
+  --validation_sequences 32 \
+  --validation_sequence_length 8k \
+  --validation_interval 10000 \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \
