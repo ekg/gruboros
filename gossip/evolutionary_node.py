@@ -602,16 +602,20 @@ class EvolutionaryTrainingNode:
             our_mean = np.mean(our_losses)
             peer_mean = np.mean(peer_losses)
             
+            # Handle NaN p-values (when losses are identical)
+            if np.isnan(p_value):
+                p_value = 1.0  # Treat as no difference
+            
             self.logger.log_event(
                 "VALIDATION_COMPARISON",
                 step=self.current_step,
                 correlation_id=correlation_id,
                 peer_addr=peer_addr,
-                message=f"p={p_value:.4f}, our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, t={t_stat:.3f}"
+                message=f"p={p_value:.4f}, our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, t={t_stat:.3f}, threshold={self.p_value_threshold}"
             )
             
             # 7. Make decision based on p-value
-            if p_value < self.p_value_threshold:  # Statistically significant difference
+            if p_value <= self.p_value_threshold:  # Mix if p-value at or below threshold
                 if our_mean < peer_mean:
                     # We win
                     self.mixes_won += 1
@@ -656,7 +660,7 @@ class EvolutionaryTrainingNode:
                     step=self.current_step,
                     correlation_id=correlation_id,
                     peer_addr=peer_addr,
-                    message=f"p={p_value:.3f} > 0.05"
+                    message=f"p={p_value:.3f} > {self.p_value_threshold}"
                 )
                 
         except Exception as e:
