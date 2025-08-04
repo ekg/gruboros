@@ -600,12 +600,16 @@ class EvolutionaryTrainingNode:
             our_mean = np.mean(our_losses)
             peer_mean = np.mean(peer_losses)
             
+            # Add tiny random noise to break exact ties
+            if our_mean == peer_mean:
+                our_mean += np.random.normal(0, 1e-9)
+            
             self.logger.log_event(
                 "VALIDATION_COMPARISON",
                 step=self.current_step,
                 correlation_id=correlation_id,
                 peer_addr=peer_addr,
-                message=f"our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, diff={abs(our_mean - peer_mean):.6f}"
+                message=f"our_mean={our_mean:.6f}, peer_mean={peer_mean:.6f}, diff={abs(our_mean - peer_mean):.9f}"
             )
             
             # 7. Always mix based on who has lower loss
@@ -646,14 +650,13 @@ class EvolutionaryTrainingNode:
                         fitness=source_fitness
                     )
             else:
-                # Exact tie (very rare)
-                client_sock.send(b"NO_MIX:IDENTICAL_PERFORMANCE")
+                # This else should never be reached due to noise addition
                 self.logger.log_event(
-                    "IDENTICAL_PERFORMANCE",
+                    "IMPOSSIBLE_TIE",
                     step=self.current_step,
                     correlation_id=correlation_id,
                     peer_addr=peer_addr,
-                    message=f"Both models have exactly {our_mean:.6f} loss"
+                    message=f"This should not happen with noise addition"
                 )
                 
         except Exception as e:
@@ -740,6 +743,16 @@ class EvolutionaryTrainingNode:
                 peer_results_data += sock.recv(result_size - len(peer_results_data))
                 
             peer_losses = np.array(json.loads(peer_results_data.decode()))
+            
+            # Log what we see for debugging
+            peer_mean = np.mean(peer_losses)
+            self.logger.log_event(
+                "CLIENT_SIDE_COMPARISON",
+                step=self.current_step,
+                correlation_id=correlation_id,
+                peer_addr=peer_address,
+                message=f"our_mean={our_mean:.4f}, peer_mean={peer_mean:.4f}, we_would_{'win' if our_mean < peer_mean else 'lose' if peer_mean < our_mean else 'tie'}"
+            )
             
             # Wait for decision
             sock.settimeout(30.0)
