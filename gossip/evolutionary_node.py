@@ -550,7 +550,7 @@ class EvolutionaryTrainingNode:
         
         try:
             NetworkUtils.optimize_socket(client_sock)
-            client_sock.settimeout(30.0)
+            client_sock.settimeout(300.0)  # 5 minutes for validation
             
             # 1. Generate validation seed
             seed = int(time.time() * 1000) % (2**32)
@@ -762,7 +762,7 @@ class EvolutionaryTrainingNode:
             )
             
             # Wait for decision
-            sock.settimeout(30.0)
+            sock.settimeout(300.0)  # 5 minutes for peer to validate and decide
             decision = sock.recv(1024).decode()
             
             if decision.startswith("WINNER:SENDING_WEIGHTS"):
