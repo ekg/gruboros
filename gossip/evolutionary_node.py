@@ -621,18 +621,18 @@ class EvolutionaryTrainingNode:
             if p_value <= self.p_value_threshold:
                 if our_mean < peer_mean:
                     # We win
-                self.mixes_won += 1
-                send_optimizer = self.optimizer_recombination == 'interpolate'
-                client_sock.send(f"WINNER:SENDING_WEIGHTS:{send_optimizer}".encode())
-                client_sock.settimeout(120.0)
-                self._send_our_weights_to_peer(client_sock, correlation_id, send_optimizer)
-                
-                # Opportunistic save
-                if self.save_callback:
-                    try:
-                        self.save_callback(self.current_step, our_mean, opportunistic=True)
-                    except Exception as e:
-                        self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
+                    self.mixes_won += 1
+                    send_optimizer = self.optimizer_recombination == 'interpolate'
+                    client_sock.send(f"WINNER:SENDING_WEIGHTS:{send_optimizer}".encode())
+                    client_sock.settimeout(120.0)
+                    self._send_our_weights_to_peer(client_sock, correlation_id, send_optimizer)
+                    
+                    # Opportunistic save
+                    if self.save_callback:
+                        try:
+                            self.save_callback(self.current_step, our_mean, opportunistic=True)
+                        except Exception as e:
+                            self.logger.log_event("OPPORTUNISTIC_SAVE_FAILED", message=str(e))
                 elif peer_mean < our_mean:
                     # We lose
                     self.mixes_lost += 1
