@@ -591,7 +591,7 @@ def get_args():
     parser.add_argument('--gossip_temp_dir', type=str, default=None,
                         help='Directory for temporary gossip payloads. Defaults to $SCRATCH or /tmp.')
     parser.add_argument('--gossip_fitness_window', type=int, default=1000,
-                        help='Window size for median-based fitness (number of steps to consider).')
+                        help='Window size for fitness history tracking (kept for analysis but not used for fitness calculation).')
     parser.add_argument('--gossip-node-local-lock', dest='use_gossip_lock', action='store_true', default=False,
                         help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')
     parser.add_argument('--gossip_p_value_threshold', type=float, default=0.01,
@@ -774,7 +774,7 @@ def main():
     metrics_log_path = os.path.join(metrics_dir, f"training_metrics_rank_{global_rank:03d}.tsv")
     with open(metrics_log_path, 'w') as f:
         header = [
-            "rank", "step", "time_elapsed_s", "train_loss", "median_loss", 
+            "rank", "step", "time_elapsed_s", "train_loss", "val_loss", 
             "total_tokens_processed", "tokens_per_sec", "learning_rate",
             "documents_completed", "current_position_gb", "accumulated_steps", "optimized",
             # --- NEW COLUMNS ---
