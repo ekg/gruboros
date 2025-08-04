@@ -596,6 +596,12 @@ def get_args():
                         help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')
     parser.add_argument('--gossip_p_value_threshold', type=float, default=0.01,
                         help='P-value threshold for statistical significance in fitness comparison (default: 0.01).')
+    parser.add_argument('--validation_sequences', type=int, default=32,
+                        help='Number of sequences to evaluate during validation (default: 32)')
+    parser.add_argument('--validation_sequence_length', type=str, default='8k',
+                        help='Length of each validation sequence (default: 8k)')
+    parser.add_argument('--validation_interval', type=int, default=10000,
+                        help='Steps between full validation runs (default: 10000)')
     
     # --- NEW: Filesystem-Augmented Evolution ---
     parser.add_argument('--filesystem-coordinator', action='store_true',
@@ -822,7 +828,10 @@ def main():
         save_callback=save_callback,
         data_path=args.data,
         chunk_size=chunk_size,
-        p_value_threshold=args.gossip_p_value_threshold
+        p_value_threshold=args.gossip_p_value_threshold,
+        validation_interval=args.validation_interval,
+        validation_sequences=args.validation_sequences,
+        validation_sequence_length=int(parse_size_with_suffix(args.validation_sequence_length))
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0:

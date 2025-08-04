@@ -12,6 +12,7 @@ import re
 import json
 import numpy as np
 from scipy import stats
+import statistics
 from typing import Dict, Optional, List
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,7 +110,10 @@ class EvolutionaryTrainingNode:
                  save_callback: Optional[callable] = None,
                  data_path: str = None,
                  chunk_size: int = None,
-                 p_value_threshold: float = 0.01):
+                 p_value_threshold: float = 0.01,
+                 validation_interval: int = 10000,
+                 validation_sequences: int = 32,
+                 validation_sequence_length: int = 8192):
         
         self.node_id = node_id
         self.model = model
@@ -144,14 +148,12 @@ class EvolutionaryTrainingNode:
         self.validation_tracker = ValidationTracker(
             data_path=data_path,
             chunk_size=chunk_size,
-            validation_interval=100,
-            chunks_per_validation=4,
-            window_size=1000
+            validation_interval=validation_interval,
+            num_sequences=validation_sequences,
+            sequence_length=validation_sequence_length,
+            window_size=10
         )
         self.validation_lock = threading.Lock()
-        
-        # For gossip mixing decisions
-        self.gossip_validation_chunks = 32
         self.current_step = 0
         
         self.pending_update = None
@@ -213,7 +215,7 @@ class EvolutionaryTrainingNode:
                 "VALIDATION_UPDATE",
                 step=step,
                 fitness=fitness,
-                message=f"Validated on {self.validation_tracker.chunks_per_validation} chunks"
+                message=f"Validated on {self.validation_tracker.num_sequences} sequences of {self.validation_tracker.sequence_length} bytes"
             )
         
         # Notify gossip thread about step
@@ -551,16 +553,12 @@ class EvolutionaryTrainingNode:
             NetworkUtils.optimize_socket(client_sock)
             client_sock.settimeout(30.0)
             
-            # 1. Generate validation positions
+            # 1. Generate validation seed
             seed = int(time.time() * 1000) % (2**32)
-            rng = np.random.RandomState(seed)
-            max_start = self.validation_tracker.max_start
-            positions = rng.randint(0, max_start, size=self.gossip_validation_chunks).tolist()
             
             # 2. Send validation challenge
             challenge = json.dumps({
-                'positions': positions,
-                'chunk_size': self.validation_tracker.chunk_size,
+                'seed': seed,
                 'correlation_id': correlation_id
             })
             client_sock.send(f"VALIDATE:{challenge}".encode())
@@ -577,8 +575,22 @@ class EvolutionaryTrainingNode:
             
             peer_losses = np.array(json.loads(peer_results_data.decode()))
             
-            # 4. Run our validation on same positions
-            our_losses = self.validation_tracker.evaluate_positions(self.model, positions)
+            # 4. Run our validation with same seed
+            our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            
+            # Update our fitness with this validation result
+            our_mean = np.mean(our_losses)
+            with self.validation_lock:
+                self.validation_tracker.validation_losses.append(our_mean)
+                self.validation_tracker.current_fitness = statistics.median(self.validation_tracker.validation_losses)
+            
+            # Log this fitness update
+            self.logger.log_event(
+                "VALIDATION_UPDATE",
+                step=self.current_step,
+                fitness=self.validation_tracker.current_fitness,
+                message=f"Updated from gossip challenge (mean: {our_mean:.4f})"
+            )
             
             # 5. Send our results
             our_results = json.dumps(our_losses.tolist()).encode()
@@ -696,10 +708,24 @@ class EvolutionaryTrainingNode:
                 return
                 
             challenge = json.loads(challenge_data[9:])
-            positions = challenge['positions']
+            seed = challenge['seed']
             
-            # Run validation
-            our_losses = self.validation_tracker.evaluate_positions(self.model, positions)
+            # Run validation with provided seed
+            our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            
+            # Update our fitness with this validation result
+            our_mean = np.mean(our_losses)
+            with self.validation_lock:
+                self.validation_tracker.validation_losses.append(our_mean)
+                self.validation_tracker.current_fitness = statistics.median(self.validation_tracker.validation_losses)
+            
+            # Log this fitness update
+            self.logger.log_event(
+                "VALIDATION_UPDATE", 
+                step=self.current_step,
+                fitness=self.validation_tracker.current_fitness,
+                message=f"Updated from gossip challenge (mean: {our_mean:.4f})"
+            )
             
             # Send our results
             our_results = json.dumps(our_losses.tolist()).encode()
