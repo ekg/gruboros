@@ -103,7 +103,9 @@ class ValidationTracker:
                                     doc_loss = sum(l * t for l, t in current_doc_chunks) / sum(t for _, t in current_doc_chunks)
                                     all_document_losses.append(doc_loss)
                                 
-                                # Reset for new document
+                                # Reset for new document - explicitly delete to free memory
+                                if hidden_state is not None:
+                                    del hidden_state
                                 hidden_state = None
                                 current_doc_chunks = []
                                 chunk_data = []
@@ -131,6 +133,11 @@ class ValidationTracker:
                     total_loss = sum(loss * tokens for loss, tokens in sequence_chunks)
                     total_tokens = sum(tokens for _, tokens in sequence_chunks)
                     sequence_losses.append(total_loss / total_tokens)
+                
+                # Clean up hidden state after sequence
+                if hidden_state is not None:
+                    del hidden_state
+                    hidden_state = None
         
         model.train()
         

@@ -141,7 +141,7 @@ class EvolutionaryTrainingNode:
             self.coordinator.set_fitness_provider(self.get_current_fitness)
         
         self.mixing_rng = random.Random(42 + self.global_rank * 1000)
-        self.incoming_updates = queue.Queue()
+        self.incoming_updates = queue.Queue(maxsize=2)  # Limit pending updates to prevent memory growth
         self.step_notifications = queue.Queue()
         
         # Replace fitness_tracker with validation_tracker
@@ -414,6 +414,17 @@ class EvolutionaryTrainingNode:
 
     def _load_optimizer_state_mmap(self, mmap_opt_state, device):
         """Load optimizer state from memory-mapped checkpoint"""
+        # CRITICAL: Clear existing optimizer state first to prevent memory leak
+        for state in self.optimizer.state.values():
+            for k, v in list(state.items()):
+                if isinstance(v, torch.Tensor):
+                    del state[k]
+        self.optimizer.state.clear()
+        
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            
         with torch.no_grad():
             # Update param groups
             if 'param_groups' in mmap_opt_state:
