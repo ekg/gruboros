@@ -71,7 +71,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --grad_accum 1024 \
-  --chunk_size 2048 \
+  --chunk_size 1024 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
