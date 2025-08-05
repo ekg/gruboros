@@ -121,7 +121,12 @@ class ValidationTracker:
                         chunk_info = (loss.item(), len(chunk_data))
                         sequence_chunks.append(chunk_info)
                         current_doc_chunks.append(chunk_info)
-                        hidden_state = next_hidden
+                        
+                        # FIX: Detach hidden states to break the computation graph
+                        if next_hidden is not None:
+                            hidden_state = [h.detach() for h in next_hidden]
+                        else:
+                            hidden_state = None
                 
                 # Don't forget the last document if it didn't end with delimiter
                 if current_doc_chunks:
@@ -136,6 +141,10 @@ class ValidationTracker:
                 
                 # Clean up hidden state after sequence
                 if hidden_state is not None:
+                    # Extra safety: ensure complete cleanup
+                    if isinstance(hidden_state, list):
+                        for h in hidden_state:
+                            del h
                     del hidden_state
                     hidden_state = None
         
