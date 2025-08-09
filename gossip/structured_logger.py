@@ -37,9 +37,9 @@ class GossipLogger:
         # Write TSV header
         if not self.log_file.exists():
             header = [
-                "unix_timestamp", "node_identity", "global_rank", "dp_rank",
-                "event_type", "step", "ema_loss", "correlation_id", 
-                "peer_addr", "data_size_mb", "transfer_time_ms", "message"
+                "time", "node", "rank", "dp_rank",
+                "event", "step", "loss", "corr_id", 
+                "peer", "mb", "xfer_ms", "val_s", "msg"
             ]
             with open(self.log_file, 'w') as f:
                 f.write('\t'.join(header) + '\n')
@@ -49,7 +49,8 @@ class GossipLogger:
     def log_event(self, event_type: str, step: Optional[int] = None, 
                   fitness: Optional[float] = None, correlation_id: Optional[str] = None,
                   peer_addr: Optional[str] = None, data_size_bytes: Optional[int] = None,
-                  transfer_time_ms: Optional[float] = None, message: str = ""):
+                  transfer_time_ms: Optional[float] = None, validation_time_s: Optional[float] = None, 
+                  message: str = ""):
         
         timestamp = time.time()
         data_size_mb = data_size_bytes / 1e6 if data_size_bytes else None
@@ -66,6 +67,7 @@ class GossipLogger:
             peer_addr or "",
             f"{data_size_mb:.3f}" if data_size_mb is not None else "",
             f"{transfer_time_ms:.2f}" if transfer_time_ms is not None else "",
+            f"{validation_time_s:.1f}" if validation_time_s is not None else "",
             message
         ]
         

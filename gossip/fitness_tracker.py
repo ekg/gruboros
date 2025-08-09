@@ -1,18 +1,24 @@
 import numpy as np
+import statistics
 from typing import Optional
+from collections import deque
 
 class FitnessTracker:
-    def __init__(self, decay_factor: float = 0.95):
-        self.ema_loss: Optional[float] = None  # Rolling exponential moving average
-        self.alpha = 1.0 - decay_factor  # Convert to EMA alpha
+    def __init__(self, window_size: int = 1000):
+        self.fitness_window = deque(maxlen=window_size)
+        self.current_fitness = float('inf')
         self.step_count = 0
         
     def update(self, loss_value: float):
-        """Update fitness based on recent loss using exponential moving average"""
-        if self.ema_loss is None:
-            self.ema_loss = loss_value
+        """Update fitness using windowed median"""
+        self.fitness_window.append(loss_value)
+        
+        # Calculate median if we have enough samples
+        if len(self.fitness_window) >= 10:  # Minimum samples for stable median
+            self.current_fitness = statistics.median(self.fitness_window)
         else:
-            self.ema_loss = self.alpha * loss_value + (1 - self.alpha) * self.ema_loss
+            # Use mean during initial warmup
+            self.current_fitness = sum(self.fitness_window) / len(self.fitness_window)
         
         self.step_count += 1
         
@@ -21,20 +27,23 @@ class FitnessTracker:
             current_fitness = self.get_fitness()
             import logging
             logger = logging.getLogger('fitness_tracker')
-            logger.debug(f"Fitness update: loss={loss_value:.4f}, fitness={current_fitness:.4f}, ema_loss={self.ema_loss:.4f}")
+            logger.debug(f"Fitness update: loss={loss_value:.4f}, fitness={current_fitness:.4f}, window_size={len(self.fitness_window)}")
     
     def get_fitness(self) -> float:
-        """Return EMA loss directly (lower is better)"""
-        return self.ema_loss if self.ema_loss is not None else float('inf')
+        """Return median loss (lower is better)"""
+        return self.current_fitness
     
     def get_recent_loss(self) -> float:
-        """Get current EMA loss"""
-        return self.ema_loss if self.ema_loss is not None else float('inf')
+        """Get current median loss"""
+        return self.current_fitness
     
-    def inherit_fitness(self, source_ema_loss: float):
-        """Inherit EMA loss from source model when completely overwritten"""
-        self.ema_loss = source_ema_loss
+    def inherit_fitness(self, source_median_loss: float):
+        """Inherit median loss from source model when completely overwritten"""
+        # Clear current window and seed with source fitness
+        self.fitness_window.clear()
+        self.fitness_window.append(source_median_loss)
+        self.current_fitness = source_median_loss
         
         import logging
         logger = logging.getLogger('fitness_tracker')
-        logger.debug(f"Inherited ema_loss {source_ema_loss:.4f}")
+        logger.debug(f"Inherited median_loss {source_median_loss:.4f}")

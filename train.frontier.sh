@@ -1,12 +1,13 @@
 #!/bin/bash
 
 #SBATCH -A BIF148
-#SBATCH -J minLM_gossip_srun_gloo
+#SBATCH -J llm_gossip
 #SBATCH -o logs/minLM_gossip-%j.out
 #SBATCH -e logs/minLM_gossip-%j.err
-#SBATCH -t 24:00:00
-#SBATCH -p extended
+#SBATCH -t 02:00:00
+#SBATCH -p batch
 #SBATCH -N 64
+#SBATCH -q debug
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH --gpus-per-task=1
@@ -23,23 +24,13 @@ eval "$(micromamba shell hook --shell bash)"
 micromamba activate gruboros
 module load PrgEnv-gnu gcc/11.2.0 rocm/6.2.4 craype-accel-amd-gfx90a
 
-# --- Distributed Settings for srun + gloo ---
+# --- Environment Settings ---
 export OMP_NUM_THREADS=1
 export RANKS_PER_NODE=$SLURM_NTASKS_PER_NODE
 
-# 1. Set the Master Address: srun needs this for the gloo backend to rendezvous.
-#    This is the canonical way to get the head node's hostname in a SLURM job.
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-
-# 2. Set the Master Port: Any free port will do.
-export MASTER_PORT=3442
-
-# 3. Critical for Performance: Tell gloo to use the High-Speed Network Interface.
-export GLOO_SOCKET_IFNAME=hsn0
-
 # --- Paths and Directories (Unchanged) ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="1g_32k_srun_gloo"
+NAME="1g_2k"
 GIT_HASH=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
 
 if [ -n "$GIT_HASH" ]; then
@@ -48,6 +39,7 @@ else
     export OUTPUT_DIR="./outputs/${TIMESTAMP}_${NAME}"
 fi
 export DATA="/lustre/orion/bif148/scratch/erikgarrison/commonpile/commapile.txt"
+export RESUME_FROM="/lustre/orion/bif148/scratch/erikgarrison/gruboros.test.1/resume/latest.pt"
 export GOSSIP_TEMP_DIR="/mnt/bb/$(whoami)/gossip_temp/${SLURM_JOB_ID}"
 
 # --- Pre-create Directories (Unchanged, this is good practice) ---
@@ -72,29 +64,28 @@ export LOCAL_RANK=\$SLURM_LOCALID
 ( python train.py \
   --data \"$DATA\" \
   --output \"$OUTPUT_DIR\" \
+  --resume \"$RESUME_FROM\" \
   --params 1g \
-  --dim 1024 \
+  --dim 1536 \
   --expansion_factor 3.0 \
   --ff_mult 1.5 \
-  --train_steps 1000000 \
-  --save_every 500 \
+  --train_steps 10000000 \
+  --save_every 50 \
   --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --batch_size 1 \
-  --grad_accum 8 \
+  --grad_accum 1 \
   --chunk_size 2048 \
-  --context_chunks 8 \
   --keep_checkpoints 5 \
-  --keep_elite 30 \
-  --archive_rate 0.2 \
+  --keep_elite 16 \
+  --archive_rate 0.05 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.3 \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.002 \
   --gossip_temp_dir \"$GOSSIP_TEMP_DIR\" \
-  --gossip_fitness_decay 0.995 \
+  --gossip_fitness_window 10000 \
   --gossip-node-local-lock \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \

@@ -128,7 +128,7 @@ The current state-of-the-art training configuration is in `train.cuda.sh`:
 ### Key Training Parameters
 
 - **Model Size**: `--params 1g` (1 billion parameters)
-- **Context**: `--chunk_size 2048 --context_chunks 16` (32K effective context)
+- **Context**: `--chunk_size 2048` (document-aware streaming)
 - **Batch Size**: `--batch_size 1 --grad_accum 16` (effective batch size 16)
 - **Evolution**: `--gossip_mixing_rate 0.01` (1% mixing probability)
 - **Learning Rate**: `--lr 0.002` with Schedule-Free optimizer

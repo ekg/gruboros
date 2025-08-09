@@ -78,6 +78,215 @@ def sample(logits, temperature=1.0, top_k=0, top_p=0.0):
     probs = F.softmax(logits, dim=-1)
     return torch.multinomial(probs, num_samples=1)
 
+def locally_typical_sampling(logits, temperature=1.0, typical_p=0.9, typical_mass=0.9, epsilon=1e-10):
+    """
+    Locally typical sampling: Sample from tokens whose information content is close to expected.
+    
+    Args:
+        logits: Raw model logits [batch_size, vocab_size].
+        temperature: Controls randomness. Lower = less random.
+        typical_p: Mass of typical set to consider (similar to top_p).
+        typical_mass: Alternative to typical_p - include tokens until we have this much mass.
+        epsilon: Small value for numerical stability.
+    
+    Returns:
+        torch.Tensor: The sampled token indices.
+    """
+    if temperature == 0.0:
+        # Greedy sampling
+        return logits.argmax(dim=-1, keepdim=True)
+    
+    # Apply temperature
+    logits = logits / temperature
+    
+    # Get probabilities and log probabilities
+    probs = F.softmax(logits, dim=-1)
+    log_probs = F.log_softmax(logits, dim=-1)
+    
+    # Calculate entropy (expected information content)
+    entropy = -torch.sum(probs * log_probs, dim=-1, keepdim=True)
+    
+    # Calculate absolute deviation from entropy for each token
+    neg_log_probs = -log_probs
+    typicality = torch.abs(neg_log_probs - entropy)
+    
+    # Sort by typicality (ascending - most typical first)
+    sorted_typicality, sorted_indices = torch.sort(typicality, dim=-1)
+    sorted_probs = torch.gather(probs, -1, sorted_indices)
+    
+    # Calculate cumulative probabilities
+    cumsum_probs = torch.cumsum(sorted_probs, dim=-1)
+    
+    # Create mask for typical set (include tokens until we have typical_p mass)
+    mask = cumsum_probs < typical_p
+    # Ensure we include at least one token
+    mask[..., 0] = True
+    
+    # Zero out probabilities outside typical set
+    sorted_probs[~mask] = 0.0
+    
+    # Renormalize
+    sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+    
+    # Sample from the filtered distribution
+    sample_idx = torch.multinomial(sorted_probs.squeeze(0), num_samples=1)
+    
+    # Map back to original indices
+    original_idx = sorted_indices.squeeze(0)[sample_idx]
+    
+    return original_idx.unsqueeze(0)
+
+def min_p_sampling(logits, temperature=1.0, min_p=0.1):
+    """
+    Min-P sampling: Include all tokens with probability >= min_p * max_prob
+    
+    Args:
+        logits: Raw model logits [batch_size, vocab_size]
+        temperature: Temperature for softmax
+        min_p: Minimum probability threshold as fraction of max probability
+    
+    Returns:
+        Sampled token indices
+    """
+    if temperature == 0.0:
+        return logits.argmax(dim=-1, keepdim=True)
+    
+    # Apply temperature and get probabilities
+    logits = logits / temperature
+    probs = F.softmax(logits, dim=-1)
+    
+    # Find maximum probability
+    max_prob, _ = probs.max(dim=-1, keepdim=True)
+    
+    # Create threshold: min_p * max_prob
+    threshold = min_p * max_prob
+    
+    # Create mask for tokens above threshold
+    mask = probs >= threshold
+    
+    # Ensure at least one token is selected
+    if not mask.any(dim=-1).all():
+        # If no tokens meet threshold, select the maximum
+        mask = probs == max_prob
+    
+    # Zero out probabilities below threshold
+    filtered_probs = probs * mask.float()
+    
+    # Renormalize
+    filtered_probs = filtered_probs / filtered_probs.sum(dim=-1, keepdim=True)
+    
+    # Sample from filtered distribution
+    return torch.multinomial(filtered_probs, num_samples=1)
+
+def sample_gumbel(logits, temperature=1.0):
+    """
+    Pure log-space sampling. Never computes exp().
+    This is your PRIMARY fix for the repetition problem.
+    """
+    if temperature == 0.0:
+        return logits.argmax(dim=-1, keepdim=True)
+    
+    # Scale by temperature
+    scaled_logits = logits / temperature
+    
+    # Generate Gumbel noise: -log(-log(U)) where U ~ Uniform(0,1)
+    uniform = torch.rand_like(scaled_logits)
+    epsilon = 1e-20  # Prevent log(0)
+    gumbel_noise = -torch.log(-torch.log(uniform + epsilon) + epsilon)
+    
+    # Sample = argmax(logits + gumbel_noise)
+    # This is mathematically equivalent to sampling from softmax(logits)
+    # but never computes exp()!
+    return (scaled_logits + gumbel_noise).argmax(dim=-1, keepdim=True)
+
+def sample_log_space_filtered(logits, temperature=1.0, top_k=0, top_p=0.0):
+    """
+    Log-space sampling with filtering. Minimizes exp() usage.
+    Only uses exp() briefly for top-p cumulative sum.
+    """
+    if temperature == 0.0:
+        return logits.argmax(dim=-1, keepdim=True)
+    
+    scaled_logits = logits / temperature
+    
+    # Apply top-k filter (purely in logit space)
+    if top_k > 0:
+        top_k = min(top_k, scaled_logits.size(-1))
+        values, indices = torch.topk(scaled_logits, top_k, dim=-1)
+        filtered_logits = torch.full_like(scaled_logits, float('-inf'))
+        filtered_logits.scatter_(-1, indices, values)
+        scaled_logits = filtered_logits
+    
+    # Convert to log probabilities
+    log_probs = F.log_softmax(scaled_logits, dim=-1)
+    
+    # Apply top-p filter (requires one exp() for cumsum)
+    if top_p > 0.0:
+        sorted_log_probs, sorted_indices = torch.sort(log_probs, descending=True)
+        # This is the ONLY exp() - and it's on sorted values so numerical issues are minimized
+        sorted_probs = sorted_log_probs.exp()
+        cumsum = sorted_probs.cumsum(dim=-1)
+        
+        # Find cutoff
+        cutoff_mask = cumsum <= top_p
+        cutoff_mask[..., 0] = True  # Keep at least one
+        
+        # Shift mask to include first token that exceeds threshold
+        cutoff_mask[..., 1:] = cutoff_mask[..., 1:] | cutoff_mask[..., :-1]
+        
+        # Apply mask in log space
+        sorted_log_probs[~cutoff_mask] = float('-inf')
+        
+        # Scatter back
+        log_probs = log_probs.scatter(-1, sorted_indices, sorted_log_probs)
+    
+    # Gumbel-max sampling
+    uniform = torch.rand_like(log_probs)
+    gumbel_noise = -torch.log(-torch.log(uniform + 1e-20) + 1e-20)
+    
+    return (log_probs + gumbel_noise).argmax(dim=-1, keepdim=True)
+
+def typical_sampling_log_space(logits, temperature=1.0, typical_p=0.9):
+    """
+    Typical sampling adapted for log space.
+    Uses exp() only where absolutely necessary (entropy & cumsum).
+    Still MUCH better than traditional sampling for extreme logits.
+    """
+    if temperature == 0.0:
+        return logits.argmax(dim=-1, keepdim=True)
+    
+    log_probs = F.log_softmax(logits / temperature, dim=-1)
+    
+    # Compute entropy (requires exp, but controlled)
+    probs = log_probs.exp()
+    entropy = -(probs * log_probs).sum(dim=-1, keepdim=True)
+    
+    # Information content per token
+    neg_log_probs = -log_probs
+    
+    # Deviation from typical information
+    deviation = torch.abs(neg_log_probs - entropy)
+    
+    # Sort by typicality
+    sorted_dev, sorted_idx = torch.sort(deviation, dim=-1)
+    sorted_log_probs = log_probs.gather(-1, sorted_idx)
+    
+    # Find typical set (requires exp for cumsum)
+    sorted_probs = sorted_log_probs.exp()
+    cumsum = sorted_probs.cumsum(dim=-1)
+    mask = cumsum <= typical_p
+    mask[..., 0] = True
+    
+    # Filter in log space
+    sorted_log_probs[~mask] = float('-inf')
+    log_probs_filtered = log_probs.scatter(-1, sorted_idx, sorted_log_probs)
+    
+    # Gumbel sampling
+    uniform = torch.rand_like(log_probs_filtered)
+    gumbel = -torch.log(-torch.log(uniform + 1e-20) + 1e-20)
+    
+    return (log_probs_filtered + gumbel).argmax(dim=-1, keepdim=True)
+
 def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False, device=None):
     """
     Load a trained minLM model from checkpoint. (Largely unchanged, but still good)
@@ -156,6 +365,11 @@ def generate(
     temperature: float = 1.0,
     top_k: int = 0,
     top_p: float = 0.0,
+    typical_p: float = 0.0,
+    min_p: float = 0.0,  # Add min-p parameter
+    gumbel: bool = False,  # Add gumbel parameter
+    log_space_filtered: bool = False,  # Add log-space filtered parameter
+    typical_log: bool = False,  # Add typical-log parameter
     device: str = 'cuda',
     stream: bool = True
 ):
@@ -166,7 +380,12 @@ def generate(
         model: The minLM model.
         prompt: Starting prompt tensor [1, seq_len].
         generation_length: Number of tokens to generate.
-        temperature, top_k, top_p: Sampling parameters.
+        temperature, top_k, top_p: Standard sampling parameters.
+        typical_p: If > 0, use locally typical sampling instead of top-k/top-p.
+        min_p: If > 0, use min-p sampling instead of top-k/top-p.
+        gumbel: If True, use pure Gumbel-max (log-space) sampling.
+        log_space_filtered: If True, use log-space sampling with top-k/top-p filtering.
+        typical_log: If True, use typical sampling adapted for log space.
         device: Device to run on.
         stream: Whether to print tokens as they are generated.
     """
@@ -185,7 +404,20 @@ def generate(
 
         # The next token is sampled from the logits of the last token in the prompt
         last_logits = logits[:, -1, :] # Shape: [batch_size, vocab_size]
-        prev_token = sample(last_logits, temperature, top_k, top_p)
+        
+        # Choose sampling method
+        if gumbel:
+            prev_token = sample_gumbel(last_logits, temperature)
+        elif log_space_filtered:
+            prev_token = sample_log_space_filtered(last_logits, temperature, top_k, top_p)
+        elif typical_log:
+            prev_token = typical_sampling_log_space(last_logits, temperature, typical_p)
+        elif typical_p > 0:
+            prev_token = locally_typical_sampling(last_logits, temperature, typical_p)
+        elif min_p > 0:
+            prev_token = min_p_sampling(last_logits, temperature, min_p)
+        else:
+            prev_token = sample(last_logits, temperature, top_k, top_p)
         
         if stream:
             # Print the prompt itself for context
@@ -207,7 +439,19 @@ def generate(
             )
             
             # Sample the next token
-            prev_token = sample(logits[:, -1, :], temperature, top_k, top_p)
+            if gumbel:
+                prev_token = sample_gumbel(logits[:, -1, :], temperature)
+            elif log_space_filtered:
+                prev_token = sample_log_space_filtered(logits[:, -1, :], temperature, top_k, top_p)
+            elif typical_log:
+                prev_token = typical_sampling_log_space(logits[:, -1, :], temperature, typical_p)
+            elif typical_p > 0:
+                prev_token = locally_typical_sampling(logits[:, -1, :], temperature, typical_p)
+            elif min_p > 0:
+                prev_token = min_p_sampling(logits[:, -1, :], temperature, min_p)
+            else:
+                prev_token = sample(logits[:, -1, :], temperature, top_k, top_p)
+            
             token_val = prev_token.item()
             generated_tokens.append(token_val)
 
@@ -240,7 +484,7 @@ def load_primer_text(primer_file=None, primer_length=None, primer_text=None, exp
         byte_data = text.encode('utf-8')
         tokens = list(byte_data)  # This gives us values 0-255
         if primer_length and len(tokens) > primer_length:
-            print(f"WARNING: Primer file truncated from {len(tokens)} to {primer_length} tokens.")
+            print(f"INFO: Primer file truncated from {len(tokens)} to {primer_length} bytes (use --primer_length to change).")
             tokens = tokens[:primer_length]
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
     else:
@@ -273,7 +517,25 @@ def main():
     parser.add_argument("--generation_length", type=str, default="512", help="Tokens to generate (e.g., 512, 2k).")
     parser.add_argument("--temperature", type=float, default=0.85, help="Sampling temperature (0=greedy).")
     
-    # --- Clear sampling controls ---
+    # --- Sampling method controls ---
+    parser.add_argument("--typical", action="store_true", 
+                        help="Use locally typical sampling instead of top-p/top-k.")
+    parser.add_argument("--typical_p", type=float, default=0.9,
+                        help="Typical sampling threshold (0.8-0.95 recommended). Only used with --typical.")
+    
+    parser.add_argument("--min_p", type=float, default=0.0,
+                        help="Min-P sampling threshold (0.02-0.1 recommended). "
+                             "Include tokens with prob >= min_p * max_prob.")
+    
+    # --- New log-space sampling methods ---
+    parser.add_argument("--gumbel", action="store_true", 
+                        help="Use pure Gumbel-max (log-space) sampling")
+    parser.add_argument("--log-space-filtered", action="store_true",
+                        help="Use log-space sampling with top-k/top-p filtering")
+    parser.add_argument("--typical-log", action="store_true",
+                        help="Use typical sampling adapted for log space")
+    
+    # --- Existing sampling controls (only used if --typical is not set) ---
     parser.add_argument("--top_p", type=float, default=0.9,
                         help="Nucleus sampling probability. (e.g., 0.9). Set to 0 to disable.")
     parser.add_argument("--top_k", type=int, default=0,
@@ -281,7 +543,7 @@ def main():
     
     parser.add_argument("--primer_file", type=str, default=None, help="File with primer text.")
     parser.add_argument("--primer_text", type=str, default=None, help="Direct primer text.")
-    parser.add_argument("--primer_length", type=str, default="1k", help="Max primer length (e.g., 256, 1k).")
+    parser.add_argument("--primer_length", type=str, default=None, help="Max primer length (e.g., 256, 1k). If not specified, reads entire file.")
     parser.add_argument("--force_primer_length", action="store_true", help="Force truncation of --primer_text.")
     
     parser.add_argument("--output_file", type=str, default=None, help="File to save the full generated text.")
@@ -306,16 +568,80 @@ def main():
     ).long().to(device)
     
     # Clear logging of sampling method
-    sampling_params = f"T={args.temperature}"
-    if args.top_p > 0:
-        sampling_params += f", p={args.top_p}"
-    if args.top_k > 0:
-        sampling_params += f", k={args.top_k}"
+    if args.gumbel:
+        sampling_params = f"Gumbel-max (log-space) sampling, T={args.temperature}"
+        # When using gumbel sampling, set other methods to 0
+        top_p_value = 0.0
+        top_k_value = 0
+        typical_p_value = 0.0
+        min_p_value = 0.0
+        gumbel_flag = True
+        log_space_filtered_flag = False
+        typical_log_flag = False
+    elif args.log_space_filtered:
+        sampling_params = f"Log-space filtered sampling, T={args.temperature}"
+        if args.top_p > 0:
+            sampling_params += f", top_p={args.top_p}"
+        if args.top_k > 0:
+            sampling_params += f", top_k={args.top_k}"
+        top_p_value = args.top_p
+        top_k_value = args.top_k
+        typical_p_value = 0.0
+        min_p_value = 0.0
+        gumbel_flag = False
+        log_space_filtered_flag = True
+        typical_log_flag = False
+    elif args.typical_log:
+        sampling_params = f"Typical sampling (log-space) with p={args.typical_p}, T={args.temperature}"
+        # When using typical-log sampling, set other methods to 0
+        top_p_value = 0.0
+        top_k_value = 0
+        typical_p_value = args.typical_p
+        min_p_value = 0.0
+        gumbel_flag = False
+        log_space_filtered_flag = False
+        typical_log_flag = True
+    elif args.typical:
+        sampling_params = f"Typical sampling with p={args.typical_p}, T={args.temperature}"
+        # When using typical sampling, set other methods to 0
+        top_p_value = 0.0
+        top_k_value = 0
+        typical_p_value = args.typical_p
+        min_p_value = 0.0
+        gumbel_flag = False
+        log_space_filtered_flag = False
+        typical_log_flag = False
+    elif args.min_p > 0:
+        sampling_params = f"Min-P sampling with p={args.min_p}, T={args.temperature}"
+        # When using min-p sampling, set other methods to 0
+        top_p_value = 0.0
+        top_k_value = 0
+        typical_p_value = 0.0
+        min_p_value = args.min_p
+        gumbel_flag = False
+        log_space_filtered_flag = False
+        typical_log_flag = False
+    else:
+        sampling_params = f"T={args.temperature}"
+        if args.top_p > 0:
+            sampling_params += f", top_p={args.top_p}"
+        if args.top_k > 0:
+            sampling_params += f", top_k={args.top_k}"
+        top_p_value = args.top_p
+        top_k_value = args.top_k
+        typical_p_value = 0.0
+        min_p_value = 0.0
+        gumbel_flag = False
+        log_space_filtered_flag = False
+        typical_log_flag = False
+    
     print(f"\nINFO: Generating {generation_length} tokens with sampling: {sampling_params}")
     
     generated_tensor = generate(
         model, prompt, generation_length,
-        args.temperature, args.top_k, args.top_p,
+        args.temperature, top_k_value, top_p_value,
+        typical_p_value, min_p_value,  # Pass typical_p and min_p to generate
+        gumbel_flag, log_space_filtered_flag, typical_log_flag,  # Pass new flags
         device, args.stream
     )
     

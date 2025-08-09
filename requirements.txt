@@ -6,8 +6,6 @@ cffi @ file:///home/conda/feedstock_root/build_artifacts/cffi_1725560564262/work
 charset-normalizer @ file:///home/conda/feedstock_root/build_artifacts/charset-normalizer_1735929714516/work
 cmake==4.0.0
 colorama @ file:///home/conda/feedstock_root/build_artifacts/colorama_1733218098505/work
-deepspeed==0.16.6
-deepspeed-kernels==0.0.1.dev1698255861
 einops==0.8.1
 filelock @ file:///home/conda/feedstock_root/build_artifacts/filelock_1741969488311/work
 fsspec @ file:///home/conda/feedstock_root/build_artifacts/fsspec_1743437245292/work
@@ -56,3 +54,4 @@ urllib3 @ file:///home/conda/feedstock_root/build_artifacts/urllib3_174432357884
 zstandard==0.23.0
 numpy>=1.21.0
 uvloop
+scipy>=1.7.0

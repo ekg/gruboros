@@ -144,7 +144,7 @@ srun -u -n$TOTAL_RANKS -c2 --ntasks-per-node=8 --gpus-per-node=8 --gpu-bind=clos
     --output $OUTPUT_DIR \
     --train_steps 1000 \
     --validate_every 200 \
-    --save_every 500 \
+    --save_every 50 \
     --keep_checkpoints 5 \
     --port $MASTER_PORT \
     --deepspeed \
