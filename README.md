@@ -62,16 +62,58 @@ gruboros/
 ## Quick Start
 
 ### Prerequisites
-- Python 3.8+
-- PyTorch 2.0+
-- CUDA-capable GPU(s)
+- Python 3.8+ (3.11 recommended)
+- CUDA-capable GPU(s) with CUDA 11.8+ (CUDA 12.x recommended for H100s)
 - DeepSpeed (used as launcher only)
 
 ### Installation
+
+#### Option 1: Quick Setup with pip (Recommended for Stampede3)
 ```bash
 git clone <repository-url>
 cd gruboros
-pip install -r requirements.txt
+
+# For Stampede3 with H100s:
+module load gcc/13.1.0 cuda/12.2 python3/3.11.8
+./setup_stampede3_pip.sh
+
+# Or manually:
+python3 -m venv gruboros_env
+source gruboros_env/bin/activate
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements_clean.txt
+```
+
+#### Option 2: Using Micromamba/Conda
+```bash
+git clone <repository-url>
+cd gruboros
+
+# Create environment from file
+micromamba env create -f environment_minimal.yml
+micromamba activate gruboros
+
+# Install additional pip packages
+pip install accelerate
+pip install git+https://github.com/facebookresearch/schedule_free.git
+```
+
+#### Option 3: Manual Installation
+```bash
+# Core dependencies only
+pip install torch numpy psutil tqdm deepspeed accelerate
+pip install git+https://github.com/facebookresearch/schedule_free.git
+```
+
+### Verify Installation
+```bash
+python -c "
+import torch
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'GPU: {torch.cuda.get_device_name(0)}')
+"
 ```
 
 ### Training
