@@ -1,0 +1,201 @@
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+conda-forge/linux-64                                        Using cache
+conda-forge/noarch                                          Using cache
+
+Pinned packages:
+  - python 3.11.*
+
+
+Transaction
+
+  Prefix: /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+
+  All requested packages already installed
+
+
+Transaction starting
+
+Transaction finished
+
+To activate this environment, use:
+
+    micromamba activate gruboros
+
+Or to execute a single command in this environment, use:
+
+    micromamba run -n gruboros mycommand
+
+Detected 4 GPUs per node
+Job ID: 2245404
+Node list: c563-[002-003]
+Master addr: 129.114.122.191
+Output dir: /scratch/09647/erikgarrison/models/gruboros/20250816_123413_350m_enwik9_2node_0f6bbaa
+Data path: /scratch/09647/erikgarrison/train/enwik9
+Starting 350M parameter pure RNN training on 2 H100 nodes
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2245404
+
+Filesystem-Augmented Gossip protocol initialized and running.
+

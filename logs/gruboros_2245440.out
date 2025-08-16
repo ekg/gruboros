@@ -1,0 +1,39 @@
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+
+Pinned packages:
+  - python 3.11.*
+
+
+Transaction
+
+  Prefix: /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+
+  All requested packages already installed
+
+
+Transaction starting
+
+Transaction finished
+
+To activate this environment, use:
+
+    micromamba activate gruboros
+
+Or to execute a single command in this environment, use:
+
+    micromamba run -n gruboros mycommand
+
+Detected 4 GPUs per node
+Job ID: 2245440
+Node list: c562-010,c563-001
+Master addr: 129.114.122.189
+Output dir: /scratch/09647/erikgarrison/models/gruboros/20250816_124407_350m_enwik9_2node_019917f
+Data path: /scratch/09647/erikgarrison/train/enwik9
+Starting 350M parameter pure RNN training on 2 H100 nodes

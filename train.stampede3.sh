@@ -99,7 +99,7 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --ntasks-per-node=$GPUS_PER_NODE \
      --cpus-per-task=$((96 / GPUS_PER_NODE)) \
      --distribution=block:block \
-     bash -c "export RANK=\$SLURM_PROCID; export LOCAL_RANK=\$SLURM_LOCALID; python train.py \
+     ./run_training_task.sh \
      --data "$DATA_PATH" \
      --output "$OUTPUT_DIR" \
      --params 350m \
@@ -130,7 +130,7 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --filesystem-coordinator \
      --fitness-weighted-checkpointing \
      --elite-checkpoint-multiplier 20.0 \
-     --cuda"
+     --cuda
 
 echo "Training completed at $(date)"
 

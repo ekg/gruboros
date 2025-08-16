@@ -1,0 +1,179 @@
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+
+Pinned packages:
+  - python 3.11.*
+
+
+Transaction
+
+  Prefix: /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+
+  Updating specs:
+
+   - scipy
+
+
+  Package  Version  Build            Channel         Size
+───────────────────────────────────────────────────────────
+  Install:
+───────────────────────────────────────────────────────────
+
+  + scipy   1.16.1  py311h33d6a90_0  conda-forge     17MB
+
+  Summary:
+
+  Install: 1 packages
+
+  Total download: 17MB
+
+───────────────────────────────────────────────────────────
+
+
+
+Transaction starting
+Linking scipy-1.16.1-py311h33d6a90_0
+
+Transaction finished
+
+To activate this environment, use:
+
+    micromamba activate gruboros
+
+Or to execute a single command in this environment, use:
+
+    micromamba run -n gruboros mycommand
+
+Detected 4 GPUs per node
+Job ID: 2245241
+Node list: c562-010,c563-001
+Master addr: 129.114.122.189
+Output dir: /scratch/09647/erikgarrison/models/gruboros/20250816_115108_350m_enwik9_2node_a5c377b
+Data path: /scratch/09647/erikgarrison/train/enwik9
+Starting 350M parameter pure RNN training on 2 H100 nodes
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'enable_conv': False, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 1024 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
