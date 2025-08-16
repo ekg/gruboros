@@ -10,18 +10,15 @@
 set -e -x
 
 # --- Module Loading ---
-module load gcc/13.2.0
-module load cuda/12.8
-module load python/3.9.18
+module load gcc/13.1.0
+module load cuda/12.2
+module load python3/3.11.8
 module list
 
 # --- Environment Setup ---
 # Activate micromamba environment
-eval "$(micromamba shell hook --shell bash)"
+eval "$(micromamba shell hook)"
 micromamba activate gruboros
-
-# Ensure scipy is installed
-micromamba install -y scipy -c conda-forge || pip install scipy
 
 # --- Distributed Settings ---
 export MASTER_ADDR=$(hostname -i)
@@ -47,7 +44,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="350m_enwik9_2node"
+NAME="100m_enwik9_2node"
 
 # Get git commit hash
 GIT_HASH=""
@@ -89,8 +86,14 @@ echo "Master addr: $MASTER_ADDR"
 echo "Output dir: $OUTPUT_DIR"
 echo "Data path: $DATA_PATH"
 
+# --- Model Configuration for 100M Parameters ---
+# Approximate parameter calculation:
+# params ≈ 12 * dim^2 * depth (for MinGRU with expansion)
+# For 100M params with depth 24: dim ≈ 600
+# Let's use dim=640 for better divisibility
+
 # --- Launch Training ---
-echo "Starting 350M parameter pure RNN training on 2 H100 nodes"
+echo "Starting 100M parameter training on 2 H100 nodes (16 GPUs total)"
 
 # Use srun to launch on all allocated resources
 srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
@@ -100,34 +103,33 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      python train.py \
      --data "$DATA_PATH" \
      --output "$OUTPUT_DIR" \
-     --params 350m \
-     --dim 1024 \
-     --expansion_factor 4.0 \
-     --ff_mult 0 \
-     --train_steps 10000000 \
-     --save_every 500 \
-     --lr 0.001 \
+     --params 100m \
+     --dim 640 \
+     --depth 24 \
+     --expansion_factor 3.0 \
+     --ff_mult 2.0 \
+     --train_steps 500000 \
+     --save_every 1000 \
+     --lr 0.002 \
      --sf_beta 0.9 \
      --sf_beta2 0.995 \
      --weight_decay 0.0001 \
-     --grad_accum 1024 \
-     --chunk_size 1024 \
+     --batch_size 2 \
+     --grad_accum 4 \
+     --chunk_size 2048 \
+     --context_chunks 16 \
      --keep_checkpoints 5 \
-     --keep_elite 32 \
-     --archive_rate 0.0067 \
+     --keep_elite 10 \
+     --archive_rate 0.02 \
      --gossip_merge_method recombination \
-     --gossip_recombination_alpha 0.2 \
+     --gossip_recombination_alpha 0.3 \
      --gossip_optimizer_recombination interpolate \
-     --gossip_mixing_rate 0.002 \
+     --gossip_mixing_rate 0.001 \
      --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
-     --gossip_p_value_threshold 0.1 \
-     --gossip_fitness_window 10000 \
-     --validation_sequences 16 \
-     --validation_sequence_length 8k \
-     --validation_interval 10000 \
+     --gossip_fitness_decay 0.995 \
      --filesystem-coordinator \
      --fitness-weighted-checkpointing \
-     --elite-checkpoint-multiplier 20.0 \
+     --elite-checkpoint-multiplier 5.0 \
      --cuda
 
 echo "Training completed at $(date)"

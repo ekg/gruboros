@@ -27,7 +27,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 # Install other dependencies
 echo -e "\nInstalling other dependencies..."
-pip install numpy psutil tqdm deepspeed accelerate
+pip install numpy scipy psutil tqdm deepspeed accelerate
 pip install git+https://github.com/facebookresearch/schedule_free.git
 
 # Optional: pandas and pyarrow if needed

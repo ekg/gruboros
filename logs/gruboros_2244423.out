@@ -1,0 +1,15 @@
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Detected 4 GPUs per node
+Job ID: 2244423
+Node list: c561-[004-005]
+Master addr: 129.114.122.173
+Output dir: /scratch/09647/erikgarrison/models/gruboros/20250816_084728_350m_enwik9_2node_57e6cc3
+Data path: /scratch/09647/erikgarrison/train/enwik9
+Starting 350M parameter pure RNN training on 2 H100 nodes

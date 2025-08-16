@@ -1,0 +1,33 @@
+name: gruboros
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  # Core requirements
+  - python=3.11
+  - pytorch>=2.1.0
+  - pytorch-cuda=12.1  # H100s work best with CUDA 12.x
+  - torchvision  # Often needed alongside PyTorch
+  - torchaudio   # Often needed alongside PyTorch
+  - numpy
+  
+  # Essential packages from code analysis
+  - psutil
+  - tqdm
+  - pandas
+  - pyarrow
+  - scipy
+  
+  # Distributed training
+  - deepspeed
+  
+  # Build tools
+  - pip
+  - git
+  
+  # Pip packages
+  - pip:
+    - accelerate
+    - git+https://github.com/facebookresearch/schedule_free.git

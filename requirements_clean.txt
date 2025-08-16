@@ -1,0 +1,20 @@
+# Core ML packages
+torch>=2.1.0
+torchvision
+torchaudio
+numpy>=1.24.0
+
+# Distributed training
+deepspeed>=0.14.0
+accelerate>=0.25.0
+
+# Data processing
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# Utilities
+psutil>=5.9.0
+tqdm>=4.65.0
+
+# Schedule-free optimizer (direct from git)
+git+https://github.com/facebookresearch/schedule_free.git
