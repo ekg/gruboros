@@ -38,6 +38,7 @@ echo "Detected $GPUS_PER_NODE GPUs per node"
 export WORLD_SIZE=$((SLURM_NNODES * GPUS_PER_NODE))
 export RANK=$SLURM_PROCID
 export LOCAL_RANK=$SLURM_LOCALID
+export RANKS_PER_NODE=$GPUS_PER_NODE
 export TORCH_DISTRIBUTED_TIMEOUT=7200s  # 2 hour timeout for large models
 export OMP_NUM_THREADS=8
 export NCCL_DEBUG=INFO  # For debugging, remove in production
