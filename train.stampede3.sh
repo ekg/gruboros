@@ -12,7 +12,7 @@ set -e -x
 # --- Module Loading ---
 module load gcc/13.2.0
 module load cuda/12.8
-module load python3/3.9.18
+module load python/3.9.18
 module list
 
 # --- Environment Setup ---
