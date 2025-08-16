@@ -36,8 +36,9 @@ fi
 echo "Detected $GPUS_PER_NODE GPUs per node"
 
 export WORLD_SIZE=$((SLURM_NNODES * GPUS_PER_NODE))
-export RANK=$SLURM_PROCID
-export LOCAL_RANK=$SLURM_LOCALID
+# Don't set RANK and LOCAL_RANK here - srun will set them per task
+# export RANK=$SLURM_PROCID
+# export LOCAL_RANK=$SLURM_LOCALID
 export RANKS_PER_NODE=$GPUS_PER_NODE
 export TORCH_DISTRIBUTED_TIMEOUT=7200s  # 2 hour timeout for large models
 export OMP_NUM_THREADS=8
@@ -98,7 +99,7 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --ntasks-per-node=$GPUS_PER_NODE \
      --cpus-per-task=$((96 / GPUS_PER_NODE)) \
      --distribution=block:block \
-     python train.py \
+     bash -c "export RANK=\$SLURM_PROCID; export LOCAL_RANK=\$SLURM_LOCALID; python train.py \
      --data "$DATA_PATH" \
      --output "$OUTPUT_DIR" \
      --params 350m \
@@ -129,7 +130,7 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --filesystem-coordinator \
      --fitness-weighted-checkpointing \
      --elite-checkpoint-multiplier 20.0 \
-     --cuda
+     --cuda"
 
 echo "Training completed at $(date)"
 
