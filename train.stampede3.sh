@@ -17,7 +17,7 @@ module list
 
 # --- Environment Setup ---
 # Activate micromamba environment
-eval "$(micromamba shell hook)"
+eval "$(micromamba shell hook --shell bash)"
 micromamba activate gruboros
 
 # --- Distributed Settings ---
