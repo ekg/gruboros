@@ -454,16 +454,16 @@ class DocumentStreamDataset(Dataset):
         rng = random.Random(seed + global_rank * 1000)
         self.position = rng.randint(0, self.file_size - 1)
         
+        # Per-GPU statistics (initialize before calling _scan_to_next_document)
+        self.documents_processed = 0
+        self.bytes_processed = 0  # This is per-GPU!
+        self.wraps = 0
+        
         # Scan forward to next document boundary to start clean
         self._scan_to_next_document()
         
         # Buffer for accumulating bytes until we have a full chunk
         self.byte_buffer = []
-        
-        # Per-GPU statistics
-        self.documents_processed = 0
-        self.bytes_processed = 0  # This is per-GPU!
-        self.wraps = 0
         
         print(f"Rank {global_rank}: DocumentStreamDataset initialized at position {self.position}")
         
