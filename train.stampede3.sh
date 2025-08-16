@@ -108,7 +108,7 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --sf_beta 0.9 \
      --sf_beta2 0.995 \
      --weight_decay 0.0001 \
-     --grad_accum 1024 \
+     --grad_accum 8 \
      --chunk_size 1024 \
      --keep_checkpoints 5 \
      --keep_elite 32 \
