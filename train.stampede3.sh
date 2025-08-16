@@ -4,7 +4,7 @@
 #SBATCH -e logs/gruboros_%j.err   # Error file
 #SBATCH -p h100                   # H100 partition on Stampede3
 #SBATCH -N 2                      # Number of nodes
-#SBATCH --ntasks-per-node=4       # Number of tasks per node (will need to verify GPU count)
+#SBATCH --ntasks-per-node=4       # Tasks per node - should match GPU count (dynamically verified below)
 #SBATCH -t 24:00:00              # Time limit (24 hours)
 
 set -e -x
@@ -27,13 +27,31 @@ micromamba install -y scipy -c conda-forge || pip install scipy
 export MASTER_ADDR=$(hostname -i)
 export MASTER_PORT=29500
 
-# Detect GPUs per node (fallback to 4 if detection fails)
+# Detect GPUs per node dynamically
+# First try nvidia-smi
 GPUS_PER_NODE=$(nvidia-smi -L 2>/dev/null | wc -l)
+
+# If that fails, try SLURM environment variables
 if [ "$GPUS_PER_NODE" -eq 0 ]; then
-    echo "Warning: Could not detect GPUs, assuming 4 per node"
-    GPUS_PER_NODE=4
+    # Try to get from SLURM tasks per node
+    if [ -n "$SLURM_NTASKS_PER_NODE" ]; then
+        GPUS_PER_NODE=$SLURM_NTASKS_PER_NODE
+        echo "Using SLURM_NTASKS_PER_NODE: $GPUS_PER_NODE GPUs per node"
+    else
+        echo "Warning: Could not detect GPUs, defaulting to 4 per node"
+        echo "To override, set GPUS_PER_NODE environment variable"
+        GPUS_PER_NODE=4
+    fi
+else
+    echo "Detected $GPUS_PER_NODE GPUs per node via nvidia-smi"
 fi
-echo "Detected $GPUS_PER_NODE GPUs per node"
+
+# Verify this matches what SLURM allocated
+if [ -n "$SLURM_NTASKS_PER_NODE" ] && [ "$SLURM_NTASKS_PER_NODE" != "$GPUS_PER_NODE" ]; then
+    echo "WARNING: Mismatch between detected GPUs ($GPUS_PER_NODE) and SLURM tasks per node ($SLURM_NTASKS_PER_NODE)"
+    echo "Using SLURM value: $SLURM_NTASKS_PER_NODE"
+    GPUS_PER_NODE=$SLURM_NTASKS_PER_NODE
+fi
 
 export WORLD_SIZE=$((SLURM_NNODES * GPUS_PER_NODE))
 # Don't set RANK and LOCAL_RANK here - srun will set them per task
