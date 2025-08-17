@@ -1,5 +1,6 @@
 import os, random, numpy as np
 import torch, torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, IterableDataset
 import time
@@ -559,20 +560,30 @@ class MultiStreamDocumentDataset(IterableDataset):
             # Pad chunks to same size if needed (for batching)
             max_len = max(len(c) for c in batch_chunks)
             padded_chunks = []
-            for chunk in batch_chunks:
+            attention_mask = []
+            
+            for i, chunk in enumerate(batch_chunks):
+                actual_len = batch_lengths[i]
                 if len(chunk) < max_len:
                     # Pad with zeros (will be masked out)
                     padding = torch.zeros(max_len - len(chunk), dtype=torch.long)
                     padded_chunk = torch.cat([chunk, padding])
+                    # Create mask: 1 for real tokens, 0 for padding
+                    mask = torch.cat([torch.ones(actual_len, dtype=torch.bool), 
+                                     torch.zeros(max_len - actual_len, dtype=torch.bool)])
                 else:
                     padded_chunk = chunk
+                    mask = torch.ones(max_len, dtype=torch.bool)
+                    
                 padded_chunks.append(padded_chunk)
+                attention_mask.append(mask)
             
             # Stack into batch
             batch_tensor = torch.stack(padded_chunks)
+            mask_tensor = torch.stack(attention_mask)
             
-            # Return batch, boundaries per stream, and actual lengths
-            yield batch_tensor, batch_boundaries, batch_lengths
+            # Return batch, boundaries per stream, actual lengths, and mask
+            yield batch_tensor, batch_boundaries, batch_lengths, mask_tensor
 
 class DocumentStreamWrapper(IterableDataset):
     """
@@ -997,21 +1008,42 @@ def main():
             any_doc_end = is_doc_end
             
         else:
-            # Multiple streams - batch processing
-            batch_data, doc_boundaries, actual_lengths = next(data_iterator)
+            # Multiple streams - batch processing with mask
+            batch_data, doc_boundaries, actual_lengths, mask = next(data_iterator)
             batch = batch_data.to(device, non_blocking=True)  # [batch_size, seq_len]
+            mask = mask.to(device, non_blocking=True)  # [batch_size, seq_len]
             
-            # Forward pass with batch
-            losses, next_hidden_states = model(
+            # Forward pass with batch - need to handle loss masking manually
+            # since the model doesn't support masks natively
+            logits, next_hidden_states = model(
                 batch,
-                return_loss=True,
+                return_loss=False,  # Get logits instead of loss
                 return_prev_hiddens=True,
                 prev_hiddens=hidden_states if any(h is not None for h in hidden_states) else None
             )
             
-            # Average loss across batch
-            chunk_loss = losses.mean().detach().item()
-            losses.mean().backward()
+            # Compute masked loss manually
+            # Shift for next-token prediction
+            input_ids = batch[:, :-1]
+            labels = batch[:, 1:]
+            logits = logits[:, :-1, :]  # Remove last prediction
+            mask = mask[:, 1:]  # Shift mask too
+            
+            # Flatten for cross entropy
+            batch_size_actual, seq_len = labels.shape
+            losses = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                labels.reshape(-1),
+                reduction='none'
+            )
+            losses = losses.reshape(batch_size_actual, seq_len)
+            
+            # Apply mask and compute mean only over non-padded tokens
+            masked_losses = losses * mask.float()
+            loss = masked_losses.sum() / mask.float().sum()
+            
+            chunk_loss = loss.detach().item()
+            loss.backward()
             
             # Update hidden states per stream
             for i, is_boundary in enumerate(doc_boundaries):
