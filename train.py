@@ -1015,6 +1015,7 @@ def main():
             
             # Forward pass with batch - need to handle loss masking manually
             # since the model doesn't support masks natively
+            # When return_loss=False, model doesn't do the shifting, so we pass full sequence
             logits, next_hidden_states = model(
                 batch,
                 return_loss=False,  # Get logits instead of loss
@@ -1023,12 +1024,19 @@ def main():
             )
             
             # Compute masked loss manually
-            # Shift for next-token prediction
+            # Model returns logits for full sequence when return_loss=False
+            # We need to align: input[:-1] predicts target[1:]
             input_ids = batch[:, :-1]
             labels = batch[:, 1:]
-            logits = logits[:, :-1, :]  # Remove last prediction
-            mask = mask[:, 1:]  # Shift mask too
+            logits = logits[:, :-1, :]  # Use all but last logit
+            mask = mask[:, 1:]  # Shift mask to match labels
             
+            # Ensure dimensions are correct
+            if len(labels.shape) == 1:
+                labels = labels.unsqueeze(0)
+            if len(mask.shape) == 1:
+                mask = mask.unsqueeze(0)
+                
             # Flatten for cross entropy
             batch_size_actual, seq_len = labels.shape
             losses = F.cross_entropy(
