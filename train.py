@@ -529,16 +529,70 @@ class DocumentStreamDataset(Dataset):
         }
 
 
+class MultiStreamDocumentDataset(IterableDataset):
+    """
+    Multi-stream version that supports batch_size > 1
+    Each stream is independent with its own position and buffer
+    """
+    def __init__(self, filepath, chunk_size, batch_size=1, seed=42, global_rank=0):
+        self.batch_size = batch_size
+        # Create multiple independent streams
+        # Each stream gets a different seed offset to ensure different starting positions
+        self.streams = [
+            DocumentStreamDataset(filepath, chunk_size, seed + i * 10000, global_rank) 
+            for i in range(batch_size)
+        ]
+        
+    def __iter__(self):
+        while True:
+            batch_chunks = []
+            batch_boundaries = []
+            batch_lengths = []
+            
+            # Collect chunks from each stream
+            for stream in self.streams:
+                chunk, is_boundary, actual_length = stream.get_next_chunk()
+                batch_chunks.append(chunk)
+                batch_boundaries.append(is_boundary)
+                batch_lengths.append(actual_length)
+            
+            # Pad chunks to same size if needed (for batching)
+            max_len = max(len(c) for c in batch_chunks)
+            padded_chunks = []
+            for chunk in batch_chunks:
+                if len(chunk) < max_len:
+                    # Pad with zeros (will be masked out)
+                    padding = torch.zeros(max_len - len(chunk), dtype=torch.long)
+                    padded_chunk = torch.cat([chunk, padding])
+                else:
+                    padded_chunk = chunk
+                padded_chunks.append(padded_chunk)
+            
+            # Stack into batch
+            batch_tensor = torch.stack(padded_chunks)
+            
+            # Return batch, boundaries per stream, and actual lengths
+            yield batch_tensor, batch_boundaries, batch_lengths
+
 class DocumentStreamWrapper(IterableDataset):
     """
     Wrapper to make DocumentStreamDataset work with PyTorch DataLoader
+    Supports both single stream (batch_size=1) and multi-stream (batch_size>1)
     """
-    def __init__(self, filepath, chunk_size, seed=42, global_rank=0):
-        self.stream_dataset = DocumentStreamDataset(filepath, chunk_size, seed, global_rank)
+    def __init__(self, filepath, chunk_size, batch_size=1, seed=42, global_rank=0):
+        if batch_size == 1:
+            self.stream_dataset = DocumentStreamDataset(filepath, chunk_size, seed, global_rank)
+            self.batch_size = 1
+        else:
+            self.stream_dataset = MultiStreamDocumentDataset(filepath, chunk_size, batch_size, seed, global_rank)
+            self.batch_size = batch_size
         
     def __iter__(self):
-        while True:  # Infinite iterator
-            yield self.stream_dataset.get_next_chunk()
+        if self.batch_size == 1:
+            while True:  # Infinite iterator
+                yield self.stream_dataset.get_next_chunk()
+        else:
+            yield from self.stream_dataset
 
 def get_model(model_config):
     return minLM(**model_config)
@@ -750,21 +804,22 @@ def main():
     
     if args.schedulefree: optimizer.train()
 
-    # Document streaming enforces batch_size=1
-    if batch_size != 1:
-        raise ValueError(f"Document streaming requires batch_size=1, got {batch_size}")
+    # Document streaming now supports batch_size > 1
+    if batch_size > 1 and global_rank == 0:
+        print(f"Using multi-stream document dataset with batch_size={batch_size}")
 
     train_dataset = DocumentStreamWrapper(
         args.data, 
         chunk_size=chunk_size,
+        batch_size=batch_size,
         seed=SEED,
         global_rank=global_rank
     )
 
-    # Simplified DataLoader for streaming
+    # DataLoader with actual batch_size
     train_loader = DataLoader(
         train_dataset,
-        batch_size=1,  # Must be 1
+        batch_size=1,  # Always 1 because DocumentStreamWrapper handles batching internally
         num_workers=0,  # Keep it simple for streaming
         pin_memory=True
     )
@@ -887,7 +942,14 @@ def main():
     )
     step = resume_step
     data_iterator = iter(train_loader)
-    hidden_state = None
+    
+    # Initialize hidden states based on batch_size
+    if batch_size == 1:
+        hidden_state = None
+    else:
+        # Multiple streams - separate hidden state per stream
+        hidden_states = [None] * batch_size
+    
     optimizer.zero_grad()
     
     # Track accumulated steps and total actual tokens for dynamic optimization
@@ -907,41 +969,72 @@ def main():
             accumulated_steps = 0  # Reset accumulation counter
             total_actual_tokens = 0  # Reset token counter
 
-        # Get next chunk with document boundary info
-        chunk_data, is_doc_end, actual_length = next(data_iterator)
-        chunk = chunk_data.to(device, non_blocking=True)  # Already has batch dimension [1, seq_len]
-        
-        # Forward pass
-        loss, next_hidden_state = model(
-            chunk,  # Already has correct batch dimension
-            return_loss=True,
-            return_prev_hiddens=True,
-            prev_hiddens=hidden_state
-        )
-        
-        # No loss scaling needed - chunk is already the correct size
-        
-        chunk_loss = loss.detach().item()
-        
-        # Track accumulation progress
-        accumulated_steps += 1
-        total_actual_tokens += actual_length
-        
-        # Use the loss as-is (already scaled by actual_length if partial)
-        # No artificial division by steps - let each chunk contribute proportionally
-        loss.backward()
-        
-        # Handle hidden state based on document boundary
-        if is_doc_end:
-            # Document boundary - reset hidden state for next document
-            hidden_state = None
+        # Get next chunk(s) with document boundary info
+        if batch_size == 1:
+            # Single stream - original behavior
+            chunk_data, is_doc_end, actual_length = next(data_iterator)
+            chunk = chunk_data.to(device, non_blocking=True)
+            
+            # Forward pass
+            loss, next_hidden_state = model(
+                chunk,
+                return_loss=True,
+                return_prev_hiddens=True,
+                prev_hiddens=hidden_state
+            )
+            
+            chunk_loss = loss.detach().item()
+            total_actual_tokens += actual_length
+            
+            # Handle hidden state based on document boundary
+            if is_doc_end:
+                hidden_state = None
+            else:
+                if next_hidden_state:
+                    hidden_state = [h.detach() for h in next_hidden_state]
+                    
+            # Any document boundary triggers optimization consideration
+            any_doc_end = is_doc_end
+            
         else:
-            # Continue with hidden state for next chunk
-            if next_hidden_state:
-                hidden_state = [h.detach() for h in next_hidden_state]
+            # Multiple streams - batch processing
+            batch_data, doc_boundaries, actual_lengths = next(data_iterator)
+            batch = batch_data.to(device, non_blocking=True)  # [batch_size, seq_len]
+            
+            # Forward pass with batch
+            losses, next_hidden_states = model(
+                batch,
+                return_loss=True,
+                return_prev_hiddens=True,
+                prev_hiddens=hidden_states if any(h is not None for h in hidden_states) else None
+            )
+            
+            # Average loss across batch
+            chunk_loss = losses.mean().detach().item()
+            losses.mean().backward()
+            
+            # Update hidden states per stream
+            for i, is_boundary in enumerate(doc_boundaries):
+                if is_boundary:
+                    hidden_states[i] = None
+                else:
+                    if next_hidden_states:
+                        hidden_states[i] = [h[i].detach() for h in next_hidden_states]
+                        
+            # Track tokens from all streams
+            total_actual_tokens += sum(actual_lengths)
+            
+            # Optimize if ANY stream hits a document boundary
+            any_doc_end = any(doc_boundaries)
+        
+        accumulated_steps += 1
+        
+        # For batch_size=1, backward already done. For batch_size>1, done above
+        if batch_size == 1:
+            loss.backward()
         
         # Dynamic optimization: optimize at document end OR when hitting upper bound
-        should_optimize = is_doc_end or accumulated_steps >= args.grad_accum
+        should_optimize = any_doc_end or accumulated_steps >= args.grad_accum
         
         if should_optimize:
             optimizer.step()

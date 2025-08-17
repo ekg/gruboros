@@ -45,7 +45,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="350m_enwik9_4node_1k_grad64"
+NAME="350m_enwik9_4node_1k_batch4"
 
 # Get git commit hash
 GIT_HASH=""
@@ -88,7 +88,7 @@ echo "Output dir: $OUTPUT_DIR"
 echo "Data path: $DATA_PATH"
 
 # --- Launch Training ---
-echo "Starting 350M parameter pure RNN training on 4 H100 nodes with 1k chunk size, grad_accum=64"
+echo "Starting 350M parameter pure RNN training on 4 H100 nodes with 1k chunk size, batch_size=4"
 
 # Use srun to launch on all allocated resources
 srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
@@ -108,7 +108,8 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --sf_beta 0.9 \
      --sf_beta2 0.995 \
      --weight_decay 0.0001 \
-     --grad_accum 64 \
+     --batch_size 4 \
+     --grad_accum 16 \
      --chunk_size 1024 \
      --keep_checkpoints 5 \
      --keep_elite 32 \
