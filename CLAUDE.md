@@ -92,6 +92,16 @@ Rscript plot_train.R
 
 ## Important Notes
 
+### Job Submission Workflow
+- **ALWAYS commit changes before submitting jobs**: The output directory name includes the git commit hash, so you must commit any configuration changes before running `sbatch`. This ensures reproducibility and proper tracking of experiments.
+  ```bash
+  git add -A
+  git commit -m "Description of changes"
+  git push origin stampede3  # optional but recommended
+  sbatch train.stampede3.sh
+  ```
+
+### General Notes
 - Data must be raw text files (no tokenization needed)
 - Models process raw bytes 0-255 directly
 - Checkpoints named with loss values for easy identification
