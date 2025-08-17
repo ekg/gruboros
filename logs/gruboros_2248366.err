@@ -1,0 +1,321 @@
++ module load gcc/13.2.0
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
+
+Lmod is automatically replacing "intel/24.0" with "gcc/13.2.0".
+
+
+Due to MODULEPATH changes, the following have been reloaded:
+  1) impi/21.11
+
++ unset __lmod_sh_dbg
++ return 0
++ module load cuda/12.8
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
++ unset __lmod_sh_dbg
++ return 0
++ module load python/3.9.18
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
++ unset __lmod_sh_dbg
++ return 0
++ module list
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
+
+Currently Loaded Modules:
+  1) autotools/1.4   3) xalt/3.1.1   5) gcc/13.2.0   7) cuda/12.8     (g)
+  2) cmake/3.31.5    4) TACC         6) impi/21.11   8) python/3.9.18
+
+  Where:
+   g:  built for GPU
+
+ 
+
++ unset __lmod_sh_dbg
++ return 0
+++ micromamba shell hook --shell bash
++ eval '
+# Copyright (C) 2012 Anaconda, Inc
+# SPDX-License-Identifier: BSD-3-Clause
+
+__mamba_exe() (
+    "/home1/09647/erikgarrison/bin/micromamba" "${@}"
+)
+
+__mamba_hashr() {
+    if [ -n "${ZSH_VERSION:+x}" ]; then
+        \rehash
+    elif [ -n "${POSH_VERSION:+x}" ]; then
+        :  # pass
+    else
+        \hash -r
+    fi
+}
+
+__mamba_xctivate() {
+    \local ask_conda
+    ask_conda="$(PS1="${PS1:-}" __mamba_exe shell "${@}" --shell bash)" || \return
+    \eval "${ask_conda}"
+    __mamba_hashr
+}
+
+micromamba() {
+    \local cmd="${1-__missing__}"
+    case "${cmd}" in
+        activate|reactivate|deactivate)
+            __mamba_xctivate "${@}"
+            ;;
+        install|update|upgrade|remove|uninstall)
+            __mamba_exe "${@}" || \return
+            __mamba_xctivate reactivate
+            ;;
+        self-update)
+            __mamba_exe "${@}" || \return
+
+            # remove leftover backup file on Windows
+            if [ -f "/home1/09647/erikgarrison/bin/micromamba.bkup" ]; then
+                rm -f "/home1/09647/erikgarrison/bin/micromamba.bkup"
+            fi
+            ;;
+        *)
+            __mamba_exe "${@}"
+            ;;
+    esac
+}
+
+if [ -z "${CONDA_SHLVL+x}" ]; then
+    \export CONDA_SHLVL=0
+    # In dev-mode MAMBA_EXE is python.exe and on Windows
+    # it is in a different relative location to condabin.
+    if [ -n "${_CE_CONDA+x}" ] && [ -n "${WINDIR+x}" ]; then
+        PATH="${MAMBA_ROOT_PREFIX}/condabin:${PATH}"
+    else
+        PATH="${MAMBA_ROOT_PREFIX}/condabin:${PATH}"
+    fi
+    \export PATH
+
+    # We'\''re not allowing PS1 to be unbound. It must at least be set.
+    # However, we'\''re not exporting it, which can cause problems when starting a second shell
+    # via a first shell (i.e. starting zsh from bash).
+    if [ -z "${PS1+x}" ]; then
+        PS1=
+    fi
+fi
+
+if [ -n "${ZSH_VERSION:+x}" ]; then
+  if ! command -v compinit > /dev/null; then
+    autoload -U +X compinit && if [[ "${ZSH_DISABLE_COMPFIX-}" = true ]]; then
+      compinit -u
+    else
+      compinit
+    fi
+  fi
+  autoload -U +X bashcompinit && bashcompinit
+
+  _umamba_zsh_completions()
+  {
+    COMPREPLY=($(__mamba_exe completer "${(@s: :)${(@s: :)COMP_LINE}:1}"))
+  }
+
+  complete -o default -F _umamba_zsh_completions micromamba
+fi
+if [ -n "${BASH_VERSION:+x}" ]; then
+  _umamba_bash_completions()
+  {
+    COMPREPLY=($(__mamba_exe completer "${COMP_WORDS[@]:1}"))
+  }
+  complete -o default -F _umamba_bash_completions micromamba
+fi'
+++ '[' -z x ']'
+++ '[' -n '' ']'
+++ '[' -n x ']'
+++ complete -o default -F _umamba_bash_completions micromamba
++ micromamba activate gruboros
++ local cmd=activate
++ case "${cmd}" in
++ __mamba_xctivate activate gruboros
++ local ask_conda
+++ PS1=
+++ __mamba_exe shell activate gruboros --shell bash
+++ /home1/09647/erikgarrison/bin/micromamba shell activate gruboros --shell bash
++ ask_conda='PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_PREFIX='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_DEFAULT_ENV='\''gruboros'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
++ eval 'PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_PREFIX='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_DEFAULT_ENV='\''gruboros'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
+++ PS1='(gruboros) '
+++ export PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ export CONDA_PREFIX=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+++ CONDA_PREFIX=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+++ export CONDA_SHLVL=1
+++ CONDA_SHLVL=1
+++ export CONDA_DEFAULT_ENV=gruboros
+++ CONDA_DEFAULT_ENV=gruboros
+++ export 'CONDA_PROMPT_MODIFIER=(gruboros) '
+++ CONDA_PROMPT_MODIFIER='(gruboros) '
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh
++++ export CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ export MKL_INTERFACE_LAYER=LP64,GNU
++++ MKL_INTERFACE_LAYER=LP64,GNU
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh
++++ test -n ''
++++ xml_catalog_files_libxml2=
++++ XML_CATALOG_FILES=
++++ conda_catalog_files=
++++ ifs_libxml2=' 	
+'
++++ IFS=' '
++++ rem=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ for pre in ${rem}
++++ test '' = /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ conda_catalog_files=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ rem=
++++ IFS=' 	
+'
++++ conda_catalog_files='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ export 'XML_CATALOG_FILES=file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ XML_CATALOG_FILES='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ unset conda_catalog_files ifs_libxml2 rem
++ __mamba_hashr
++ '[' -n '' ']'
++ '[' -n '' ']'
++ hash -r
++ micromamba install -y scipy -c conda-forge
++ local cmd=install
++ case "${cmd}" in
++ __mamba_exe install -y scipy -c conda-forge
++ /home1/09647/erikgarrison/bin/micromamba install -y scipy -c conda-forge
++ __mamba_xctivate reactivate
++ local ask_conda
+++ PS1='(gruboros) '
+++ __mamba_exe shell reactivate --shell bash
+++ /home1/09647/erikgarrison/bin/micromamba shell reactivate --shell bash
++ ask_conda='. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libxml2_deactivate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libblas_mkl_deactivate.sh"
+PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
++ eval '. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libxml2_deactivate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libblas_mkl_deactivate.sh"
+PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libxml2_deactivate.sh
++++ test -n ''
++++ unset XML_CATALOG_FILES
++++ unset xml_catalog_files_libxml2
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libblas_mkl_deactivate.sh
++++ '[' '' = '' ']'
++++ unset MKL_INTERFACE_LAYER
++++ unset CONDA_MKL_INTERFACE_LAYER_BACKUP
+++ PS1='(gruboros) '
+++ export PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ export CONDA_SHLVL=1
+++ CONDA_SHLVL=1
+++ export 'CONDA_PROMPT_MODIFIER=(gruboros) '
+++ CONDA_PROMPT_MODIFIER='(gruboros) '
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh
++++ export CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ export MKL_INTERFACE_LAYER=LP64,GNU
++++ MKL_INTERFACE_LAYER=LP64,GNU
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh
++++ test -n ''
++++ xml_catalog_files_libxml2=
++++ XML_CATALOG_FILES=
++++ conda_catalog_files=
++++ ifs_libxml2=' 	
+'
++++ IFS=' '
++++ rem=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ for pre in ${rem}
++++ test '' = /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ conda_catalog_files=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ rem=
++++ IFS=' 	
+'
++++ conda_catalog_files='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ export 'XML_CATALOG_FILES=file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ XML_CATALOG_FILES='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ unset conda_catalog_files ifs_libxml2 rem
++ __mamba_hashr
++ '[' -n '' ']'
++ '[' -n '' ']'
++ hash -r
+++ hostname -i
++ export MASTER_ADDR=129.114.122.175
++ MASTER_ADDR=129.114.122.175
++ export MASTER_PORT=29500
++ MASTER_PORT=29500
++ GPUS_PER_NODE=4
++ echo 'Using 4 GPUs per node (Stampede3 H100 configuration)'
++ export WORLD_SIZE=16
++ WORLD_SIZE=16
++ export RANKS_PER_NODE=4
++ RANKS_PER_NODE=4
++ export TORCH_DISTRIBUTED_TIMEOUT=7200s
++ TORCH_DISTRIBUTED_TIMEOUT=7200s
++ export OMP_NUM_THREADS=8
++ OMP_NUM_THREADS=8
++ export NCCL_DEBUG=INFO
++ NCCL_DEBUG=INFO
++ ulimit -n 65536
+++ date +%Y%m%d_%H%M%S
++ TIMESTAMP=20250817_070838
++ NAME=350m_enwik9_4node_8k
++ GIT_HASH=
++ git rev-parse --is-inside-work-tree
+++ git rev-parse --short=7 HEAD
++ GIT_HASH=9055d3e
++ '[' -n 9055d3e ']'
++ OUTPUT_DIR=/scratch/09647/erikgarrison/models/gruboros/20250817_070838_350m_enwik9_4node_8k_9055d3e
++ DATA_PATH=/scratch/09647/erikgarrison/train/enwik9
++ '[' '!' -f /scratch/09647/erikgarrison/train/enwik9 ']'
++ mkdir -p /scratch/09647/erikgarrison/models/gruboros/20250817_070838_350m_enwik9_4node_8k_9055d3e/gossip /scratch/09647/erikgarrison/models/gruboros/20250817_070838_350m_enwik9_4node_8k_9055d3e/metrics /scratch/09647/erikgarrison/models/gruboros/20250817_070838_350m_enwik9_4node_8k_9055d3e/logs
++ mkdir -p logs
++ GOSSIP_TEMP_DIR=/tmp/gossip_2248366
++ mkdir -p /tmp/gossip_2248366
++ echo 'Job ID: 2248366'
++ echo 'Node list: c561-[006-007],c562-[004-005]'
++ echo 'Master addr: 129.114.122.175'
++ echo 'Output dir: /scratch/09647/erikgarrison/models/gruboros/20250817_070838_350m_enwik9_4node_8k_9055d3e'
++ echo 'Data path: /scratch/09647/erikgarrison/train/enwik9'
++ echo 'Starting 350M parameter pure RNN training on 4 H100 nodes with 8k chunk size'
++ srun --ntasks=16 --ntasks-per-node=4 --cpus-per-task=24 --distribution=block:block ./run_training_task.sh --data /scratch/09647/erikgarrison/train/enwik9 --output /scratch/09647/erikgarrison/models/gruboros/20250817_070838_350m_enwik9_4node_8k_9055d3e --params 350m --dim 1024 --expansion_factor 4.0 --ff_mult 0 --train_steps 10000000 --save_every 50 --lr 0.005 --sf_beta 0.9 --sf_beta2 0.995 --weight_decay 0.0001 --grad_accum 1 --chunk_size 8192 --keep_checkpoints 5 --keep_elite 32 --archive_rate 0.0067 --gossip_merge_method recombination --gossip_recombination_alpha 0.2 --gossip_optimizer_recombination interpolate --gossip_mixing_rate 0.02 --gossip_temp_dir /tmp/gossip_2248366 --gossip_p_value_threshold 0.1 --gossip_fitness_window 10000 --validation_sequences 16 --validation_sequence_length 8k --validation_interval 50 --filesystem-coordinator --fitness-weighted-checkpointing --elite-checkpoint-multiplier 20.0 --cuda
+Train:   0%|          | 0/10000000 [00:00<?, ?it/s] Train:   0%|          | 0/10000000 [00:01<?, ?it/s] , L=5.551 V=inf D=0 T/s=7459Train:   0%|          | 1/10000000 [00:01<3041:30:55,  1.09s/it] , L=5.551 V=inf D=0 T/s=7459Train:   0%|          | 1/10000000 [00:01<3041:30:55,  1.09s/it] , L=5.782 V=inf D=0 T/s=9281Train:   0%|          | 2/10000000 [00:01<2342:31:59,  1.19it/s] , L=5.782 V=inf D=0 T/s=9281Train:   0%|          | 2/10000000 [00:02<2342:31:59,  1.19it/s] , L=3.890 V=inf D=0 T/s=9249Train:   0%|          | 3/10000000 [00:02<2403:50:12,  1.16it/s] , L=3.890 V=inf D=0 T/s=9249Train:   0%|          | 3/10000000 [00:03<2403:50:12,  1.16it/s] , L=3.843 V=inf D=0 T/s=9244Train:   0%|          | 4/10000000 [00:03<2428:16:55,  1.14it/s] , L=3.843 V=inf D=0 T/s=9244Train:   0%|          | 4/10000000 [00:04<2428:16:55,  1.14it/s] , L=3.799 V=inf D=0 T/s=9239Train:   0%|          | 5/10000000 [00:04<2442:47:30,  1.14it/s] , L=3.799 V=inf D=0 T/s=9239Train:   0%|          | 5/10000000 [00:05<2442:47:30,  1.14it/s] , L=3.576 V=inf D=0 T/s=9234Train:   0%|          | 6/10000000 [00:05<2452:14:19,  1.13it/s] , L=3.576 V=inf D=0 T/s=9234Train:   0%|          | 6/10000000 [00:06<2452:14:19,  1.13it/s] , L=3.600 V=inf D=0 T/s=9232Train:   0%|          | 7/10000000 [00:06<2457:18:14,  1.13it/s] , L=3.600 V=inf D=0 T/s=9232Train:   0%|          | 7/10000000 [00:07<2457:18:14,  1.13it/s] , L=4.256 V=inf D=0 T/s=9230Train:   0%|          | 8/10000000 [00:07<2461:11:34,  1.13it/s] , L=4.256 V=inf D=0 T/s=9230Train:   0%|          | 8/10000000 [00:07<2461:11:34,  1.13it/s] , L=3.861 V=inf D=0 T/s=9229Train:   0%|          | 9/10000000 [00:07<2463:07:53,  1.13it/s] , L=3.861 V=inf D=0 T/s=9229Train:   0%|          | 9/10000000 [00:08<2463:07:53,  1.13it/s] , L=3.278 V=inf D=0 T/s=9228Train:   0%|          | 10/10000000 [00:08<2465:14:42,  1.13it/s] , L=3.278 V=inf D=0 T/s=9228Train:   0%|          | 10/10000000 [00:09<2465:14:42,  1.13it/s] , L=3.188 V=inf D=0 T/s=9227Train:   0%|          | 11/10000000 [00:09<2466:02:32,  1.13it/s] , L=3.188 V=inf D=0 T/s=9227Train:   0%|          | 11/10000000 [00:10<2466:02:32,  1.13it/s] , L=3.246 V=inf D=0 T/s=9225Train:   0%|          | 12/10000000 [00:10<2468:10:16,  1.13it/s] , L=3.246 V=inf D=0 T/s=9225Train:   0%|          | 12/10000000 [00:11<2468:10:16,  1.13it/s] , L=3.228 V=inf D=0 T/s=9224Train:   0%|          | 13/10000000 [00:11<2469:07:44,  1.13it/s] , L=3.228 V=inf D=0 T/s=9224Train:   0%|          | 13/10000000 [00:12<2469:07:44,  1.13it/s] , L=3.825 V=inf D=0 T/s=9225Train:   0%|          | 14/10000000 [00:12<2466:59:07,  1.13it/s] , L=3.825 V=inf D=0 T/s=9225Train:   0%|          | 14/10000000 [00:13<2466:59:07,  1.13it/s] , L=4.238 V=inf D=0 T/s=9224Train:   0%|          | 15/10000000 [00:13<2467:32:34,  1.13it/s] , L=4.238 V=inf D=0 T/s=9224Train:   0%|          | 15/10000000 [00:14<2467:32:34,  1.13it/s] , L=3.651 V=inf D=0 T/s=9224Train:   0%|          | 16/10000000 [00:14<2468:05:52,  1.13it/s] , L=3.651 V=inf D=0 T/s=9224Train:   0%|          | 16/10000000 [00:15<2468:05:52,  1.13it/s] , L=3.590 V=inf D=0 T/s=9223Train:   0%|          | 17/10000000 [00:15<2468:35:54,  1.13it/s] , L=3.590 V=inf D=0 T/s=9223Train:   0%|          | 17/10000000 [00:15<2468:35:54,  1.13it/s] , L=3.818 V=inf D=0 T/s=9223Train:   0%|          | 18/10000000 [00:15<2468:03:58,  1.13it/s] , L=3.818 V=inf D=0 T/s=9223Train:   0%|          | 18/10000000 [00:16<2468:03:58,  1.13it/s] , L=3.442 V=inf D=0 T/s=9223Train:   0%|          | 19/10000000 [00:16<2468:14:54,  1.13it/s] , L=3.442 V=inf D=0 T/s=9223Train:   0%|          | 19/10000000 [00:17<2468:14:54,  1.13it/s] , L=3.437 V=inf D=0 T/s=9223Train:   0%|          | 20/10000000 [00:17<2468:28:03,  1.13it/s] , L=3.437 V=inf D=0 T/s=9223Train:   0%|          | 20/10000000 [00:18<2468:28:03,  1.13it/s] , L=4.092 V=inf D=0 T/s=9223Train:   0%|          | 21/10000000 [00:18<2468:15:30,  1.13it/s] , L=4.092 V=inf D=0 T/s=9223Train:   0%|          | 21/10000000 [00:19<2468:15:30,  1.13it/s] , L=3.801 V=inf D=0 T/s=9222Train:   0%|          | 22/10000000 [00:19<2468:24:04,  1.13it/s] , L=3.801 V=inf D=0 T/s=9222Train:   0%|          | 22/10000000 [00:20<2468:24:04,  1.13it/s] , L=3.642 V=inf D=0 T/s=9222Train:   0%|          | 23/10000000 [00:20<2468:59:27,  1.13it/s] , L=3.642 V=inf D=0 T/s=9222Train:   0%|          | 23/10000000 [00:21<2468:59:27,  1.13it/s] , L=3.837 V=inf D=0 T/s=9221Train:   0%|          | 24/10000000 [00:21<2470:54:25,  1.12it/s] , L=3.837 V=inf D=0 T/s=9221Train:   0%|          | 24/10000000 [00:22<2470:54:25,  1.12it/s] , L=4.331 V=inf D=0 T/s=9220Train:   0%|          | 25/10000000 [00:22<2470:41:38,  1.12it/s] , L=4.331 V=inf D=0 T/s=9220Train:   0%|          | 25/10000000 [00:23<2470:41:38,  1.12it/s] , L=3.395 V=inf D=0 T/s=9222Train:   0%|          | 26/10000000 [00:23<2467:16:46,  1.13it/s] , L=3.395 V=inf D=0 T/s=9222Train:   0%|          | 26/10000000 [00:23<2467:16:46,  1.13it/s] , L=3.682 V=inf D=0 T/s=9221Train:   0%|          | 27/10000000 [00:23<2467:55:02,  1.13it/s] , L=3.682 V=inf D=0 T/s=9221Train:   0%|          | 27/10000000 [00:24<2467:55:02,  1.13it/s] , L=3.643 V=inf D=0 T/s=9221Train:   0%|          | 28/10000000 [00:24<2467:58:00,  1.13it/s] , L=3.643 V=inf D=0 T/s=9221Train:   0%|          | 28/10000000 [00:25<2467:58:00,  1.13it/s] , L=3.367 V=inf D=0 T/s=9221Train:   0%|          | 29/10000000 [00:25<2468:59:12,  1.13it/s] , L=3.367 V=inf D=0 T/s=9221Train:   0%|          | 29/10000000 [00:26<2468:59:12,  1.13it/s] , L=3.330 V=inf D=0 T/s=9221Train:   0%|          | 30/10000000 [00:26<2468:53:30,  1.13it/s] , L=3.330 V=inf D=0 T/s=9221Train:   0%|          | 30/10000000 [00:27<2468:53:30,  1.13it/s] , L=3.237 V=inf D=0 T/s=9220Train:   0%|          | 31/10000000 [00:27<2469:07:55,  1.12it/s] , L=3.237 V=inf D=0 T/s=9220Train:   0%|          | 31/10000000 [00:28<2469:07:55,  1.12it/s] , L=3.203 V=inf D=0 T/s=9220Train:   0%|          | 32/10000000 [00:28<2469:20:52,  1.12it/s] , L=3.203 V=inf D=0 T/s=9220Train:   0%|          | 32/10000000 [00:29<2469:20:52,  1.12it/s] , L=3.253 V=inf D=0 T/s=9221Train:   0%|          | 33/10000000 [00:29<2467:56:11,  1.13it/s] , L=3.253 V=inf D=0 T/s=9221Train:   0%|          | 33/10000000 [00:30<2467:56:11,  1.13it/s] , L=3.282 V=inf D=0 T/s=9221Train:   0%|          | 34/10000000 [00:30<2468:06:04,  1.13it/s] , L=3.282 V=inf D=0 T/s=9221Train:   0%|          | 34/10000000 [00:31<2468:06:04,  1.13it/s] , L=3.688 V=inf D=0 T/s=9220Train:   0%|          | 35/10000000 [00:31<2470:08:08,  1.12it/s] , L=3.688 V=inf D=0 T/s=9220Train:   0%|          | 35/10000000 [00:31<2470:08:08,  1.12it/s] , L=3.684 V=inf D=0 T/s=9220Train:   0%|          | 36/10000000 [00:31<2468:35:10,  1.13it/s] , L=3.684 V=inf D=0 T/s=9220Train:   0%|          | 36/10000000 [00:32<2468:35:10,  1.13it/s] , L=4.053 V=inf D=0 T/s=9220Train:   0%|          | 37/10000000 [00:32<2468:15:41,  1.13it/s] , L=4.053 V=inf D=0 T/s=9220Train:   0%|          | 37/10000000 [00:33<2468:15:41,  1.13it/s] , L=3.650 V=inf D=0 T/s=9220Train:   0%|          | 38/10000000 [00:33<2468:08:28,  1.13it/s] , L=3.650 V=inf D=0 T/s=9220Train:   0%|          | 38/10000000 [00:34<2468:08:28,  1.13it/s] , L=3.249 V=inf D=0 T/s=9220Train:   0%|          | 39/10000000 [00:34<2468:22:08,  1.13it/s] , L=3.249 V=inf D=0 T/s=9220Train:   0%|          | 39/10000000 [00:35<2468:22:08,  1.13it/s] , L=3.249 V=inf D=0 T/s=9220Train:   0%|          | 40/10000000 [00:35<2468:14:48,  1.13it/s] , L=3.249 V=inf D=0 T/s=9220Train:   0%|          | 40/10000000 [00:36<2468:14:48,  1.13it/s] , L=3.188 V=inf D=0 T/s=9220Train:   0%|          | 41/10000000 [00:36<2468:27:15,  1.13it/s] , L=3.188 V=inf D=0 T/s=9220Train:   0%|          | 41/10000000 [00:37<2468:27:15,  1.13it/s] , L=3.635 V=inf D=0 T/s=9220Train:   0%|          | 42/10000000 [00:37<2468:21:57,  1.13it/s] , L=3.635 V=inf D=0 T/s=9220Train:   0%|          | 42/10000000 [00:38<2468:21:57,  1.13it/s] , L=4.222 V=inf D=0 T/s=9220Train:   0%|          | 43/10000000 [00:38<2469:50:13,  1.12it/s] , L=4.222 V=inf D=0 T/s=9220Train:   0%|          | 43/10000000 [00:39<2469:50:13,  1.12it/s] , L=3.768 V=inf D=0 T/s=9220Train:   0%|          | 44/10000000 [00:39<2468:11:35,  1.13it/s] , L=3.768 V=inf D=0 T/s=9220Train:   0%|          | 44/10000000 [00:39<2468:11:35,  1.13it/s] , L=3.881 V=inf D=0 T/s=9220Train:   0%|          | 45/10000000 [00:39<2467:31:24,  1.13it/s] , L=3.881 V=inf D=0 T/s=9220Train:   0%|          | 45/10000000 [00:40<2467:31:24,  1.13it/s] , L=3.653 V=inf D=0 T/s=9220Train:   0%|          | 46/10000000 [00:40<2466:32:10,  1.13it/s] , L=3.653 V=inf D=0 T/s=9220Train:   0%|          | 46/10000000 [00:41<2466:32:10,  1.13it/s] , L=3.187 V=inf D=0 T/s=9221Train:   0%|          | 47/10000000 [00:41<2465:25:36,  1.13it/s] , L=3.187 V=inf D=0 T/s=9221Train:   0%|          | 47/10000000 [00:42<2465:25:36,  1.13it/s] , L=3.056 V=inf D=0 T/s=9221Train:   0%|          | 48/10000000 [00:42<2465:18:09,  1.13it/s] , L=3.056 V=inf D=0 T/s=9221Train:   0%|          | 48/10000000 [00:43<2465:18:09,  1.13it/s] , L=3.34srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** JOB 2248366 ON c561-006 CANCELLED AT 2025-08-17T07:24:11 ***
+1 V=inf D=0 T/s=9222Train:   0%|          | 49/10000000 [00:43<2461:27:46,  1.13it/s] , L=3.341 V=inf D=0 T/s=9222Train:   0%|          | 49/10000000 [00:44<2461:27:46,  1.13it/s] , L=3.733 V=inf D=0 T/s=9223Train:   0%|          | 50/10000000 [00:44<2460:52:52,  1.13it/s] , L=3.733 V=inf D=0 T/s=9223slurmstepd: error: *** STEP 2248366.0 ON c561-006 CANCELLED AT 2025-08-17T07:24:11 ***

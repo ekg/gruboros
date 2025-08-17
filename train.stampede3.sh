@@ -45,7 +45,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="350m_enwik9_4node_8k"
+NAME="350m_enwik9_4node_1k_4batch"
 
 # Get git commit hash
 GIT_HASH=""
@@ -88,7 +88,7 @@ echo "Output dir: $OUTPUT_DIR"
 echo "Data path: $DATA_PATH"
 
 # --- Launch Training ---
-echo "Starting 350M parameter pure RNN training on 4 H100 nodes with 8k chunk size"
+echo "Starting 350M parameter pure RNN training on 4 H100 nodes with 1k chunk size, 4 batch size"
 
 # Use srun to launch on all allocated resources
 srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
@@ -103,26 +103,27 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --expansion_factor 4.0 \
      --ff_mult 0 \
      --train_steps 10000000 \
-     --save_every 50 \
-     --lr 0.005 \
+     --save_every 500 \
+     --lr 0.001 \
      --sf_beta 0.9 \
      --sf_beta2 0.995 \
      --weight_decay 0.0001 \
-     --grad_accum 1 \
-     --chunk_size 8192 \
+     --batch_size 4 \
+     --grad_accum 16 \
+     --chunk_size 1024 \
      --keep_checkpoints 5 \
      --keep_elite 32 \
      --archive_rate 0.0067 \
      --gossip_merge_method recombination \
      --gossip_recombination_alpha 0.2 \
      --gossip_optimizer_recombination interpolate \
-     --gossip_mixing_rate 0.02 \
+     --gossip_mixing_rate 0.002 \
      --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
      --gossip_p_value_threshold 0.1 \
      --gossip_fitness_window 10000 \
      --validation_sequences 16 \
      --validation_sequence_length 8k \
-     --validation_interval 50 \
+     --validation_interval 500 \
      --filesystem-coordinator \
      --fitness-weighted-checkpointing \
      --elite-checkpoint-multiplier 20.0 \
