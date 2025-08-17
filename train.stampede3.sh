@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH -J gruboros_100m          # Job name
+#SBATCH -J gruboros_350m_4node    # Job name
 #SBATCH -o logs/gruboros_%j.out   # Output file (%j expands to jobID)
 #SBATCH -e logs/gruboros_%j.err   # Error file
 #SBATCH -p h100                   # H100 partition on Stampede3
-#SBATCH -N 2                      # Number of nodes
+#SBATCH -N 4                      # Number of nodes
 #SBATCH --ntasks-per-node=4       # Tasks per node - should match GPU count (dynamically verified below)
 #SBATCH -t 24:00:00              # Time limit (24 hours)
 
@@ -45,7 +45,7 @@ ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAME="350m_enwik9_2node"
+NAME="350m_enwik9_4node_8k"
 
 # Get git commit hash
 GIT_HASH=""
@@ -88,7 +88,7 @@ echo "Output dir: $OUTPUT_DIR"
 echo "Data path: $DATA_PATH"
 
 # --- Launch Training ---
-echo "Starting 350M parameter pure RNN training on 2 H100 nodes"
+echo "Starting 350M parameter pure RNN training on 4 H100 nodes with 8k chunk size"
 
 # Use srun to launch on all allocated resources
 srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
@@ -108,8 +108,8 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --sf_beta 0.9 \
      --sf_beta2 0.995 \
      --weight_decay 0.0001 \
-     --grad_accum 8 \
-     --chunk_size 1024 \
+     --grad_accum 1 \
+     --chunk_size 8192 \
      --keep_checkpoints 5 \
      --keep_elite 32 \
      --archive_rate 0.0067 \
