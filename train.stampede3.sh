@@ -103,8 +103,8 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --expansion_factor 4.0 \
      --ff_mult 0 \
      --train_steps 10000000 \
-     --save_every 500 \
-     --lr 0.001 \
+     --save_every 50 \
+     --lr 0.005 \
      --sf_beta 0.9 \
      --sf_beta2 0.995 \
      --weight_decay 0.0001 \
@@ -116,13 +116,13 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --gossip_merge_method recombination \
      --gossip_recombination_alpha 0.2 \
      --gossip_optimizer_recombination interpolate \
-     --gossip_mixing_rate 0.002 \
+     --gossip_mixing_rate 0.02 \
      --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
      --gossip_p_value_threshold 0.1 \
      --gossip_fitness_window 10000 \
      --validation_sequences 16 \
      --validation_sequence_length 8k \
-     --validation_interval 10000 \
+     --validation_interval 50 \
      --filesystem-coordinator \
      --fitness-weighted-checkpointing \
      --elite-checkpoint-multiplier 20.0 \
