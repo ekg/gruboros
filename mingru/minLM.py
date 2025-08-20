@@ -28,15 +28,37 @@ class CausalDepthWiseConv1d(Module):
     def __init__(self, dim, kernel_size):
         super().__init__()
         self.kernel_size = kernel_size
+        self.dim = dim
         self.net = nn.Sequential(
             nn.Conv1d(dim, dim, kernel_size = kernel_size, groups = dim),
             nn.Conv1d(dim, dim, kernel_size = 1)
         )
-    def forward(self, x):
-        x = x.transpose(1, 2) # b n d -> b d n
-        x = F.pad(x, (self.kernel_size - 1, 0), value = 0.)
+    
+    def forward(self, x, prev_buffer=None):
+        # x shape: [batch, seq_len, dim]
+        batch_size, seq_len, dim = x.shape
+        
+        if prev_buffer is not None:
+            # Concatenate previous buffer with current chunk for continuity
+            # prev_buffer shape: [batch, kernel_size-1, dim]
+            x = torch.cat([prev_buffer, x], dim=1)
+        else:
+            # First chunk or after document boundary - pad with zeros
+            x = F.pad(x, (0, 0, self.kernel_size - 1, 0), value = 0.)
+        
+        # Save last kernel_size-1 tokens for next chunk
+        # This allows the next chunk's convolution to see these tokens
+        next_buffer = x[:, -(self.kernel_size-1):, :].detach() if seq_len >= self.kernel_size else None
+        
+        # Apply convolution
+        x = x.transpose(1, 2)  # b n d -> b d n
         x = self.net(x)
-        return x.transpose(1, 2) # b d n -> b n d
+        x = x.transpose(1, 2)  # b d n -> b n d
+        
+        # Return only the output for the current chunk (remove the prepended buffer)
+        x = x[:, -seq_len:, :]
+        
+        return x, next_buffer
 
 # main class
 
@@ -97,8 +119,18 @@ class minLM(Module):
         x,
         return_loss = False,
         return_prev_hiddens = False,
-        prev_hiddens = None
+        prev_hiddens = None,
+        prev_conv_buffers = None  # New parameter for conv buffers
     ):
+        """
+        Forward pass with support for both RNN hidden states and conv buffers.
+        
+        Conv buffers maintain the last (kernel_size - 1) tokens from the previous chunk,
+        allowing convolutional layers to see across chunk boundaries correctly.
+        This is separate from RNN hidden states which maintain sequential memory.
+        
+        Both are reset at document boundaries to maintain document independence.
+        """
 
         if return_loss:
             x, labels = x[:, :-1], x[:, 1:]
@@ -111,16 +143,21 @@ class minLM(Module):
             x = x[:, -1:]
 
         next_prev_hiddens = []
+        next_conv_buffers = []
         prev_hiddens = iter(default(prev_hiddens, []))
+        prev_conv_buffers = iter(default(prev_conv_buffers, []))
 
         for conv, norm, mingru, ff_norm, ff, dropout in self.layers:
 
             # conv
 
             if exists(conv):
-                # Conv layers process the full chunk with causal padding
-                # They don't interfere with RNN hidden states
-                x = conv(x) + x
+                # Get previous buffer for this layer's conv
+                prev_buffer = next(prev_conv_buffers, None)
+                # Apply conv with buffer for continuity across chunks
+                conv_out, next_buffer = conv(x, prev_buffer)
+                x = conv_out + x
+                next_conv_buffers.append(next_buffer)
 
             # min gru
 
@@ -152,7 +189,8 @@ class minLM(Module):
             if not return_prev_hiddens:
                 return logits
 
-            return logits, next_prev_hiddens
+            # Return both RNN hiddens and conv buffers for inference
+            return logits, (next_prev_hiddens, next_conv_buffers)
 
         loss = F.cross_entropy(
             logits.transpose(1, 2),
@@ -163,7 +201,8 @@ class minLM(Module):
         if not return_prev_hiddens:
             return loss
         
-        return loss, next_prev_hiddens
+        # Return both RNN hiddens and conv buffers for training
+        return loss, (next_prev_hiddens, next_conv_buffers)
         
     def _initialize_weights(self):
         """

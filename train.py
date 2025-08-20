@@ -903,6 +903,7 @@ def main():
     step = resume_step
     data_iterator = iter(train_loader)
     hidden_state = None
+    conv_buffers = None
     optimizer.zero_grad()
     
     # Track accumulated steps and total actual tokens for dynamic optimization
@@ -926,13 +927,23 @@ def main():
         chunk_data, is_doc_end, actual_length = next(data_iterator)
         chunk = chunk_data.to(device, non_blocking=True)  # Already has batch dimension [1, seq_len]
         
-        # Forward pass
-        loss, next_hidden_state = model(
+        # Forward pass with both RNN hidden states and conv buffers
+        result = model(
             chunk,  # Already has correct batch dimension
             return_loss=True,
             return_prev_hiddens=True,
-            prev_hiddens=hidden_state
+            prev_hiddens=hidden_state,
+            prev_conv_buffers=conv_buffers
         )
+        
+        # Unpack the result - could be just loss or loss + (hiddens, buffers)
+        if isinstance(result, tuple) and len(result) == 2:
+            loss, (next_hidden_state, next_conv_buffers) = result
+        else:
+            # Backward compatibility - model without conv buffers
+            loss = result
+            next_hidden_state = None
+            next_conv_buffers = None
         
         # No loss scaling needed - chunk is already the correct size
         
@@ -946,14 +957,17 @@ def main():
         # No artificial division by steps - let each chunk contribute proportionally
         loss.backward()
         
-        # Handle hidden state based on document boundary
+        # Handle hidden state and conv buffers based on document boundary
         if is_doc_end:
-            # Document boundary - reset hidden state for next document
+            # Document boundary - reset both hidden state and conv buffers for next document
             hidden_state = None
+            conv_buffers = None
         else:
-            # Continue with hidden state for next chunk
+            # Continue with hidden state and conv buffers for next chunk
             if next_hidden_state:
                 hidden_state = [h.detach() for h in next_hidden_state]
+            if next_conv_buffers:
+                conv_buffers = [b.detach() if b is not None else None for b in next_conv_buffers]
         
         # Dynamic optimization: optimize at document end OR when hitting upper bound
         should_optimize = is_doc_end or accumulated_steps >= args.grad_accum
