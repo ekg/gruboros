@@ -63,7 +63,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --params $PARAMS \
   --dim 1536 \
   --expansion_factor 4.0 \
-  --ff_mult 0 \
+  --ff_mult 1 \
   --train_steps 10000000 \
   --save_every 500 \
   --lr 0.001 \
@@ -88,6 +88,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \
+  --conv_kernel_size 16 \
   --cuda
 
 echo "Training finished."
