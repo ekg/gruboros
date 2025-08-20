@@ -940,7 +940,7 @@ def main():
             return_prev_hiddens=True,
             prev_hiddens=hidden_state,
             prev_conv_buffers=conv_buffers,
-            actual_length=actual_length if actual_length < args.chunk_size else None
+            actual_length=actual_length if actual_length < int(args.chunk_size) else None
         )
         
         # Unpack the result - could be just loss or loss + (hiddens, buffers)
