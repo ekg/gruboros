@@ -93,7 +93,9 @@ class ValidationTracker:
                             if chunk_data:
                                 # Process partial chunk before boundary
                                 chunk = torch.tensor(chunk_data, dtype=torch.long).unsqueeze(0).to(device)
-                                loss = model(chunk, return_loss=True, prev_hiddens=hidden_state)
+                                result = model(chunk, return_loss=True, prev_hiddens=hidden_state)
+                                # Handle both old and new return formats
+                                loss = result[0] if isinstance(result, tuple) else result
                                 chunk_info = (loss.item(), len(chunk_data))
                                 sequence_chunks.append(chunk_info)
                                 current_doc_chunks.append(chunk_info)
@@ -115,9 +117,21 @@ class ValidationTracker:
                     # Process full or final chunk
                     if chunk_data:
                         chunk = torch.tensor(chunk_data, dtype=torch.long).unsqueeze(0).to(device)
-                        loss, next_hidden = model(chunk, return_loss=True, 
-                                                prev_hiddens=hidden_state, 
-                                                return_prev_hiddens=True)
+                        result = model(chunk, return_loss=True, 
+                                     prev_hiddens=hidden_state, 
+                                     return_prev_hiddens=True)
+                        
+                        # Handle both old format (loss, hiddens) and new format (loss, (hiddens, buffers))
+                        if isinstance(result, tuple) and len(result) == 2:
+                            loss, next_hidden = result
+                            # Check if next_hidden is the new format (hiddens, buffers)
+                            if isinstance(next_hidden, tuple) and len(next_hidden) == 2:
+                                rnn_hiddens, conv_buffers = next_hidden
+                                next_hidden = rnn_hiddens  # Use only RNN hiddens for validation
+                        else:
+                            loss = result
+                            next_hidden = None
+                            
                         chunk_info = (loss.item(), len(chunk_data))
                         sequence_chunks.append(chunk_info)
                         current_doc_chunks.append(chunk_info)
