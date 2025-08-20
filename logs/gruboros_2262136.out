@@ -1,0 +1,75 @@
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for Lmod's output
+Shell debugging restarted
+
+Pinned packages:
+  - python 3.11.*
+
+
+Transaction
+
+  Prefix: /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+
+  All requested packages already installed
+
+
+Transaction starting
+
+Transaction finished
+
+To activate this environment, use:
+
+    micromamba activate gruboros
+
+Or to execute a single command in this environment, use:
+
+    micromamba run -n gruboros mycommand
+
+Using 4 GPUs per node (Stampede3 H100 configuration)
+Job ID: 2262136
+Node list: c562-[009-010],c563-[001-002]
+Master addr: 129.114.122.188
+Output dir: /scratch/09647/erikgarrison/models/gruboros/20250820_044549_350m_enwik9_4node_1k_45405fb
+Data path: /scratch/09647/erikgarrison/train/enwik9
+Starting 350M parameter pure RNN training on 4 H100 nodes with 1k chunk size
+Task starting: RANK=3 LOCAL_RANK=3 on c562-009.stampede3.tacc.utexas.edu
+Task starting: RANK=0 LOCAL_RANK=0 on c562-009.stampede3.tacc.utexas.edu
+Task starting: RANK=1 LOCAL_RANK=1 on c562-009.stampede3.tacc.utexas.edu
+Task starting: RANK=2 LOCAL_RANK=2 on c562-009.stampede3.tacc.utexas.edu
+Task starting: RANK=9 LOCAL_RANK=1 on c563-001.stampede3.tacc.utexas.edu
+Task starting: RANK=7 LOCAL_RANK=3 on c562-010.stampede3.tacc.utexas.edu
+Task starting: RANK=12 LOCAL_RANK=0 on c563-002.stampede3.tacc.utexas.edu
+Task starting: RANK=11 LOCAL_RANK=3 on c563-001.stampede3.tacc.utexas.edu
+Task starting: RANK=10 LOCAL_RANK=2 on c563-001.stampede3.tacc.utexas.edu
+Task starting: RANK=8 LOCAL_RANK=0 on c563-001.stampede3.tacc.utexas.edu
+Task starting: RANK=6 LOCAL_RANK=2 on c562-010.stampede3.tacc.utexas.edu
+Task starting: RANK=4 LOCAL_RANK=0 on c562-010.stampede3.tacc.utexas.edu
+Task starting: RANK=5 LOCAL_RANK=1 on c562-010.stampede3.tacc.utexas.edu
+Task starting: RANK=13 LOCAL_RANK=1 on c563-002.stampede3.tacc.utexas.edu
+Task starting: RANK=15 LOCAL_RANK=3 on c563-002.stampede3.tacc.utexas.edu
+Task starting: RANK=14 LOCAL_RANK=2 on c563-002.stampede3.tacc.utexas.edu
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'conv_kernel_size': 16, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 8 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2262136
+
+Filesystem-Augmented Gossip protocol initialized and running.
+

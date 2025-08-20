@@ -25,40 +25,56 @@ def FeedForward(dim, mult = 4):
 # conv
 
 class CausalDepthWiseConv1d(Module):
+    """Optimized causal convolution with efficient buffering."""
     def __init__(self, dim, kernel_size):
         super().__init__()
         self.kernel_size = kernel_size
         self.dim = dim
-        self.net = nn.Sequential(
-            nn.Conv1d(dim, dim, kernel_size = kernel_size, groups = dim),
-            nn.Conv1d(dim, dim, kernel_size = 1)
-        )
+        self.padding_size = kernel_size - 1
+        
+        # Convolution layers
+        self.depthwise = nn.Conv1d(dim, dim, kernel_size=kernel_size, 
+                                   groups=dim, bias=False, padding=0)
+        self.pointwise = nn.Conv1d(dim, dim, kernel_size=1, bias=False)
     
     def forward(self, x, prev_buffer=None):
-        # x shape: [batch, seq_len, dim]
+        """
+        Optimized forward with minimal memory operations.
+        
+        Key optimizations:
+        1. Single transpose at start and end
+        2. Contiguous memory for buffer
+        3. No detach() in critical path
+        """
         batch_size, seq_len, dim = x.shape
         
-        if prev_buffer is not None:
-            # Concatenate previous buffer with current chunk for continuity
-            # prev_buffer shape: [batch, kernel_size-1, dim]
-            x = torch.cat([prev_buffer, x], dim=1)
+        # Single transpose
+        x_conv = x.transpose(1, 2).contiguous()  # [B, D, L]
+        
+        # Efficient padding/buffering
+        if prev_buffer is not None and prev_buffer.numel() > 0:
+            # prev_buffer should already be [B, D, padding_size] and contiguous
+            x_padded = torch.cat([prev_buffer, x_conv], dim=2)
         else:
-            # First chunk or after document boundary - pad with zeros
-            x = F.pad(x, (0, 0, self.kernel_size - 1, 0), value = 0.)
+            # First chunk - use zero padding
+            x_padded = F.pad(x_conv, (self.padding_size, 0), value=0.)
         
-        # Save last kernel_size-1 tokens for next chunk
-        # This allows the next chunk's convolution to see these tokens
-        next_buffer = x[:, -(self.kernel_size-1):, :].detach() if seq_len >= self.kernel_size else None
+        # Apply convolutions in sequence (fused operations)
+        out = self.depthwise(x_padded)
+        out = self.pointwise(out)
         
-        # Apply convolution
-        x = x.transpose(1, 2)  # b n d -> b d n
-        x = self.net(x)
-        x = x.transpose(1, 2)  # b d n -> b n d
+        # Prepare next buffer - make contiguous for next iteration
+        if seq_len >= self.padding_size:
+            # Take last padding_size elements from input
+            next_buffer = x_conv[:, :, -self.padding_size:].clone()
+        else:
+            # Short sequence - need to handle carefully
+            next_buffer = x_padded[:, :, -self.padding_size:].clone()
         
-        # Return only the output for the current chunk (remove the prepended buffer)
-        x = x[:, -seq_len:, :]
+        # Single transpose back
+        out = out.transpose(1, 2).contiguous()  # [B, L, D]
         
-        return x, next_buffer
+        return out, next_buffer
 
 # main class
 
@@ -157,6 +173,7 @@ class minLM(Module):
                 # Apply conv with buffer for continuity across chunks
                 conv_out, next_buffer = conv(x, prev_buffer)
                 x = conv_out + x
+                # Store buffer in transposed format [B, D, L] for efficiency
                 next_conv_buffers.append(next_buffer)
 
             # min gru

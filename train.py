@@ -967,7 +967,8 @@ def main():
             if next_hidden_state:
                 hidden_state = [h.detach() for h in next_hidden_state]
             if next_conv_buffers:
-                conv_buffers = [b.detach() if b is not None else None for b in next_conv_buffers]
+                # Conv buffers are already cloned in the conv forward pass, no need to detach
+                conv_buffers = next_conv_buffers
         
         # Dynamic optimization: optimize at document end OR when hitting upper bound
         should_optimize = is_doc_end or accumulated_steps >= args.grad_accum
