@@ -102,6 +102,7 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --dim 1024 \
      --expansion_factor 4.0 \
      --ff_mult 0 \
+     --conv_kernel_size 16 \
      --train_steps 10000000 \
      --save_every 500 \
      --lr 0.001 \
