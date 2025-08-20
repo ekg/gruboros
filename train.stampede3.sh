@@ -121,9 +121,9 @@ srun --ntasks=$((SLURM_NNODES * GPUS_PER_NODE)) \
      --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
      --gossip_p_value_threshold 0.1 \
      --gossip_fitness_window 10000 \
-     --validation_sequences 16 \
-     --validation_sequence_length 8k \
-     --validation_interval 500 \
+     --validation_sequences 1 \
+     --validation_sequence_length 128k \
+     --validation_interval 1000000 \
      --filesystem-coordinator \
      --fitness-weighted-checkpointing \
      --elite-checkpoint-multiplier 20.0 \

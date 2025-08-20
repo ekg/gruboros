@@ -53,3 +53,23 @@ Task starting: RANK=11 LOCAL_RANK=3 on c563-001.stampede3.tacc.utexas.edu
 Task starting: RANK=15 LOCAL_RANK=3 on c563-002.stampede3.tacc.utexas.edu
 Task starting: RANK=12 LOCAL_RANK=0 on c563-002.stampede3.tacc.utexas.edu
 Task starting: RANK=13 LOCAL_RANK=1 on c563-002.stampede3.tacc.utexas.edu
+
+Re-seeded Python's random module per-rank to ensure stochastic mixing.
+
+Rank 0: Barrier timeout, continuing anyway...
+Model size: 365.4M parameters
+Configuration: {'num_tokens': 256, 'dim': 1024, 'depth': 29, 'ff_mult': 0.0, 'expansion': 4.0, 'conv_kernel_size': 16, 'dropout': 0.0}
+
+--- Document Streaming Training ---
+Document delimiter: 0x1e (each GPU reads different documents)
+Chunk size: 1024 tokens
+Dynamic optimization: at document boundaries OR every 8 chunks (whichever comes first)
+Hidden state: resets at document boundaries for proper context
+Per-GPU token tracking: each GPU processes different portions of the dataset
+-------------------------------------
+
+Rank 0: DocumentStreamDataset initialized at position 0
+Gossip temporary directory set to: /tmp/gossip_2262225
+
+Filesystem-Augmented Gossip protocol initialized and running.
+
