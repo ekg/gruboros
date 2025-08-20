@@ -756,6 +756,10 @@ def main():
 
 
     model = get_model(model_config).to(device)
+    
+    # Check if model has conv layers enabled (which don't support hidden state caching)
+    has_conv = model_config.get('conv_kernel_size') is not None
+    
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     if resuming and checkpoint:
@@ -902,7 +906,7 @@ def main():
     )
     step = resume_step
     data_iterator = iter(train_loader)
-    hidden_state = None
+    hidden_state = None  # Only used for non-conv models
     optimizer.zero_grad()
     
     # Track accumulated steps and total actual tokens for dynamic optimization
@@ -926,13 +930,23 @@ def main():
         chunk_data, is_doc_end, actual_length = next(data_iterator)
         chunk = chunk_data.to(device, non_blocking=True)  # Already has batch dimension [1, seq_len]
         
-        # Forward pass
-        loss, next_hidden_state = model(
-            chunk,  # Already has correct batch dimension
-            return_loss=True,
-            return_prev_hiddens=True,
-            prev_hiddens=hidden_state
-        )
+        # Forward pass - handle conv vs non-conv models differently
+        if has_conv:
+            # Conv models don't support hidden state caching
+            loss = model(
+                chunk,  # Already has correct batch dimension
+                return_loss=True,
+                return_prev_hiddens=False
+            )
+            next_hidden_state = None
+        else:
+            # Non-conv models can use hidden state caching
+            loss, next_hidden_state = model(
+                chunk,  # Already has correct batch dimension
+                return_loss=True,
+                return_prev_hiddens=True,
+                prev_hiddens=hidden_state
+            )
         
         # No loss scaling needed - chunk is already the correct size
         
@@ -946,14 +960,15 @@ def main():
         # No artificial division by steps - let each chunk contribute proportionally
         loss.backward()
         
-        # Handle hidden state based on document boundary
-        if is_doc_end:
-            # Document boundary - reset hidden state for next document
-            hidden_state = None
-        else:
-            # Continue with hidden state for next chunk
-            if next_hidden_state:
-                hidden_state = [h.detach() for h in next_hidden_state]
+        # Handle hidden state based on document boundary (only for non-conv models)
+        if not has_conv:
+            if is_doc_end:
+                # Document boundary - reset hidden state for next document
+                hidden_state = None
+            else:
+                # Continue with hidden state for next chunk
+                if next_hidden_state:
+                    hidden_state = [h.detach() for h in next_hidden_state]
         
         # Dynamic optimization: optimize at document end OR when hitting upper bound
         should_optimize = is_doc_end or accumulated_steps >= args.grad_accum
