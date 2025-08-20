@@ -64,12 +64,13 @@ class CausalDepthWiseConv1d(Module):
         out = self.pointwise(out)
         
         # Prepare next buffer - make contiguous for next iteration
+        # We need to detach to avoid backward graph issues, but keep it contiguous
         if seq_len >= self.padding_size:
             # Take last padding_size elements from input
-            next_buffer = x_conv[:, :, -self.padding_size:].clone()
+            next_buffer = x_conv[:, :, -self.padding_size:].detach().contiguous()
         else:
             # Short sequence - need to handle carefully
-            next_buffer = x_padded[:, :, -self.padding_size:].clone()
+            next_buffer = x_padded[:, :, -self.padding_size:].detach().contiguous()
         
         # Single transpose back
         out = out.transpose(1, 2).contiguous()  # [B, L, D]
