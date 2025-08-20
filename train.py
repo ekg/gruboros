@@ -569,6 +569,7 @@ def get_args():
     parser.add_argument('--depth', type=int, default=None, help='number of layers (overrides params calculation)')
     parser.add_argument('--expansion_factor', type=float, default=1.5, help='state expansion factor for MinGRU inner dimension')
     parser.add_argument('--ff_mult', type=float, default=4.0, help='feedforward multiplier for MinGRU (ffn_dim = dim * ff_mult)')
+    parser.add_argument('--conv_kernel_size', type=int, default=None, help='convolutional kernel size for preprocessing (None=disabled, typical: 4, 8, 16)')
     parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
     parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
@@ -697,6 +698,20 @@ def main():
             if global_rank == 0: print(f"Loading checkpoint from {path}")
             checkpoint = torch.load(path, map_location='cpu')
             model_config, resume_step = checkpoint.get('model_config'), checkpoint.get('step', 0)
+            
+            # Backwards compatibility for old checkpoints
+            if model_config is not None:
+                if 'enable_conv' in model_config:
+                    # Old style - convert to new
+                    if model_config.pop('enable_conv'):
+                        # Old conv was enabled with default kernel size 3
+                        if 'conv_kernel_size' not in model_config:
+                            model_config['conv_kernel_size'] = 3
+                    else:
+                        model_config['conv_kernel_size'] = None
+                elif 'conv_kernel_size' not in model_config:
+                    # Very old checkpoint without any conv config
+                    model_config['conv_kernel_size'] = None
 
     if model_config is None:
         params_value = parse_size_with_suffix(args.params)
@@ -721,7 +736,7 @@ def main():
             depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult)
             dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult)
             
-        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "enable_conv": False, "dropout": 0.0}
+        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "conv_kernel_size": args.conv_kernel_size, "dropout": 0.0}
 
     if global_rank == 0:
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")

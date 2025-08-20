@@ -49,12 +49,21 @@ class minLM(Module):
         depth,
         ff_mult = 4,
         expansion = 1.5,
-        conv_kernel_size = 3,
+        conv_kernel_size = None,  # None = no conv, or specify size (4, 8, 16, etc.)
         use_lstm = None,  # Kept for backward compatibility but ignored
-        enable_conv = False,
+        enable_conv = None,  # Deprecated - for backwards compatibility only
         dropout = 0.
     ):
         super().__init__()
+        
+        # Handle backwards compatibility
+        if enable_conv is not None:
+            # Old style parameter - convert to new style
+            if enable_conv:
+                conv_kernel_size = conv_kernel_size if conv_kernel_size != 3 else 3
+            else:
+                conv_kernel_size = None
+        
         self.token_emb = nn.Embedding(num_tokens, dim)
 
         self.layers = ModuleList([])
@@ -63,7 +72,7 @@ class minLM(Module):
 
         for _ in range(depth):
             self.layers.append(ModuleList([
-                CausalDepthWiseConv1d(dim, conv_kernel_size) if enable_conv else None,
+                CausalDepthWiseConv1d(dim, conv_kernel_size) if conv_kernel_size else None,
                 RMSNorm(dim),
                 min_rnn_klass(dim, expansion_factor = expansion),
                 RMSNorm(dim) if ff_mult > 0 else None,
@@ -74,7 +83,7 @@ class minLM(Module):
         self.norm = RMSNorm(dim)
         self.to_logits = nn.Linear(dim, num_tokens, bias = False)
 
-        self.can_cache = not enable_conv
+        self.can_cache = (conv_kernel_size is None)
         
         # Store dimensions for initialization
         self.dim = dim
