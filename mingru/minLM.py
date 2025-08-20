@@ -162,6 +162,11 @@ class minLM(Module):
 
         next_prev_hiddens = []
         next_conv_buffers = []
+        
+        # Handle tuple format from previous generation step
+        if isinstance(prev_hiddens, tuple) and len(prev_hiddens) == 2:
+            prev_hiddens, prev_conv_buffers = prev_hiddens
+        
         prev_hiddens = iter(default(prev_hiddens, []))
         prev_conv_buffers = iter(default(prev_conv_buffers, []))
 
