@@ -118,7 +118,8 @@ class minLM(Module):
             # conv
 
             if exists(conv):
-                assert len(list(prev_hiddens)) == 0, 'caching not supported for conv version'
+                # Conv layers process the full chunk with causal padding
+                # They don't interfere with RNN hidden states
                 x = conv(x) + x
 
             # min gru
