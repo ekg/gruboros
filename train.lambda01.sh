@@ -39,19 +39,19 @@ mkdir -p "${GOSSIP_TEMP_DIR}"
 echo "Using local temporary directory: $GOSSIP_TEMP_DIR"
 
 # --- Distributed Settings for Launcher & Script ---
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7
 export OMP_NUM_THREADS=4
-export RANKS_PER_NODE=8
+export RANKS_PER_NODE=6
 export MASTER_ADDR=127.0.0.1
 export MASTER_PORT=29500
 export TORCH_DISTRIBUTED_TIMEOUT=3600s
 # Use GLOO for peer discovery.
 export TORCH_DISTRIBUTED_BACKEND="gloo"
 echo "Using GLOO backend for initial process group."
-NUM_GPUS=8
+NUM_GPUS=6
 
 # --- Launch Training ---
-echo "Starting 1B parameter pure RNN run with document-aware validation."
+echo "Starting 1B parameter pure RNN run with document-aware validation on 6 GPUs (ranks 2-7)."
 
 # Training configuration with exposed parameters for easy tweaking
 deepspeed --num_gpus=$NUM_GPUS \
