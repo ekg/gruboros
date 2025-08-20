@@ -137,7 +137,8 @@ class minLM(Module):
         return_loss = False,
         return_prev_hiddens = False,
         prev_hiddens = None,
-        prev_conv_buffers = None  # New parameter for conv buffers
+        prev_conv_buffers = None,  # New parameter for conv buffers
+        actual_length = None  # For masking padded chunks at doc boundaries
     ):
         """
         Forward pass with support for both RNN hidden states and conv buffers.
@@ -210,10 +211,19 @@ class minLM(Module):
             # Return both RNN hiddens and conv buffers for inference
             return logits, (next_prev_hiddens, next_conv_buffers)
 
-        loss = F.cross_entropy(
-            logits.transpose(1, 2),
-            labels
-        )
+        # Handle masking for padded sequences at document boundaries
+        if actual_length is not None and actual_length < x.shape[1]:
+            # Only compute loss on valid (non-padded) tokens
+            # actual_length-1 because we predict next token
+            loss = F.cross_entropy(
+                logits[:, :actual_length-1].transpose(1, 2),
+                labels[:, :actual_length-1]
+            )
+        else:
+            loss = F.cross_entropy(
+                logits.transpose(1, 2),
+                labels
+            )
 
         # Modified return logic for TBPTT
         if not return_prev_hiddens:

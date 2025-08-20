@@ -1,0 +1,321 @@
++ module load gcc/13.2.0
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
+
+Lmod is automatically replacing "intel/24.0" with "gcc/13.2.0".
+
+
+Due to MODULEPATH changes, the following have been reloaded:
+  1) impi/21.11
+
++ unset __lmod_sh_dbg
++ return 0
++ module load cuda/12.8
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
++ unset __lmod_sh_dbg
++ return 0
++ module load python/3.9.18
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
++ unset __lmod_sh_dbg
++ return 0
++ module list
++ '[' -z '' ']'
++ case "$-" in
++ __lmod_sh_dbg=x
++ '[' -n x ']'
++ set +x
+
+Currently Loaded Modules:
+  1) autotools/1.4   3) xalt/3.1.1   5) gcc/13.2.0   7) cuda/12.8     (g)
+  2) cmake/3.31.5    4) TACC         6) impi/21.11   8) python/3.9.18
+
+  Where:
+   g:  built for GPU
+
+ 
+
++ unset __lmod_sh_dbg
++ return 0
+++ micromamba shell hook --shell bash
++ eval '
+# Copyright (C) 2012 Anaconda, Inc
+# SPDX-License-Identifier: BSD-3-Clause
+
+__mamba_exe() (
+    "/home1/09647/erikgarrison/bin/micromamba" "${@}"
+)
+
+__mamba_hashr() {
+    if [ -n "${ZSH_VERSION:+x}" ]; then
+        \rehash
+    elif [ -n "${POSH_VERSION:+x}" ]; then
+        :  # pass
+    else
+        \hash -r
+    fi
+}
+
+__mamba_xctivate() {
+    \local ask_conda
+    ask_conda="$(PS1="${PS1:-}" __mamba_exe shell "${@}" --shell bash)" || \return
+    \eval "${ask_conda}"
+    __mamba_hashr
+}
+
+micromamba() {
+    \local cmd="${1-__missing__}"
+    case "${cmd}" in
+        activate|reactivate|deactivate)
+            __mamba_xctivate "${@}"
+            ;;
+        install|update|upgrade|remove|uninstall)
+            __mamba_exe "${@}" || \return
+            __mamba_xctivate reactivate
+            ;;
+        self-update)
+            __mamba_exe "${@}" || \return
+
+            # remove leftover backup file on Windows
+            if [ -f "/home1/09647/erikgarrison/bin/micromamba.bkup" ]; then
+                rm -f "/home1/09647/erikgarrison/bin/micromamba.bkup"
+            fi
+            ;;
+        *)
+            __mamba_exe "${@}"
+            ;;
+    esac
+}
+
+if [ -z "${CONDA_SHLVL+x}" ]; then
+    \export CONDA_SHLVL=0
+    # In dev-mode MAMBA_EXE is python.exe and on Windows
+    # it is in a different relative location to condabin.
+    if [ -n "${_CE_CONDA+x}" ] && [ -n "${WINDIR+x}" ]; then
+        PATH="${MAMBA_ROOT_PREFIX}/condabin:${PATH}"
+    else
+        PATH="${MAMBA_ROOT_PREFIX}/condabin:${PATH}"
+    fi
+    \export PATH
+
+    # We'\''re not allowing PS1 to be unbound. It must at least be set.
+    # However, we'\''re not exporting it, which can cause problems when starting a second shell
+    # via a first shell (i.e. starting zsh from bash).
+    if [ -z "${PS1+x}" ]; then
+        PS1=
+    fi
+fi
+
+if [ -n "${ZSH_VERSION:+x}" ]; then
+  if ! command -v compinit > /dev/null; then
+    autoload -U +X compinit && if [[ "${ZSH_DISABLE_COMPFIX-}" = true ]]; then
+      compinit -u
+    else
+      compinit
+    fi
+  fi
+  autoload -U +X bashcompinit && bashcompinit
+
+  _umamba_zsh_completions()
+  {
+    COMPREPLY=($(__mamba_exe completer "${(@s: :)${(@s: :)COMP_LINE}:1}"))
+  }
+
+  complete -o default -F _umamba_zsh_completions micromamba
+fi
+if [ -n "${BASH_VERSION:+x}" ]; then
+  _umamba_bash_completions()
+  {
+    COMPREPLY=($(__mamba_exe completer "${COMP_WORDS[@]:1}"))
+  }
+  complete -o default -F _umamba_bash_completions micromamba
+fi'
+++ '[' -z x ']'
+++ '[' -n '' ']'
+++ '[' -n x ']'
+++ complete -o default -F _umamba_bash_completions micromamba
++ micromamba activate gruboros
++ local cmd=activate
++ case "${cmd}" in
++ __mamba_xctivate activate gruboros
++ local ask_conda
+++ PS1=
+++ __mamba_exe shell activate gruboros --shell bash
+++ /home1/09647/erikgarrison/bin/micromamba shell activate gruboros --shell bash
++ ask_conda='PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_PREFIX='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_DEFAULT_ENV='\''gruboros'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
++ eval 'PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_PREFIX='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_DEFAULT_ENV='\''gruboros'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
+++ PS1='(gruboros) '
+++ export PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ export CONDA_PREFIX=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+++ CONDA_PREFIX=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
+++ export CONDA_SHLVL=1
+++ CONDA_SHLVL=1
+++ export CONDA_DEFAULT_ENV=gruboros
+++ CONDA_DEFAULT_ENV=gruboros
+++ export 'CONDA_PROMPT_MODIFIER=(gruboros) '
+++ CONDA_PROMPT_MODIFIER='(gruboros) '
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh
++++ export CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ export MKL_INTERFACE_LAYER=LP64,GNU
++++ MKL_INTERFACE_LAYER=LP64,GNU
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh
++++ test -n ''
++++ xml_catalog_files_libxml2=
++++ XML_CATALOG_FILES=
++++ conda_catalog_files=
++++ ifs_libxml2=' 	
+'
++++ IFS=' '
++++ rem=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ for pre in ${rem}
++++ test '' = /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ conda_catalog_files=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ rem=
++++ IFS=' 	
+'
++++ conda_catalog_files='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ export 'XML_CATALOG_FILES=file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ XML_CATALOG_FILES='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ unset conda_catalog_files ifs_libxml2 rem
++ __mamba_hashr
++ '[' -n '' ']'
++ '[' -n '' ']'
++ hash -r
++ micromamba install -y scipy -c conda-forge
++ local cmd=install
++ case "${cmd}" in
++ __mamba_exe install -y scipy -c conda-forge
++ /home1/09647/erikgarrison/bin/micromamba install -y scipy -c conda-forge
++ __mamba_xctivate reactivate
++ local ask_conda
+++ PS1='(gruboros) '
+++ __mamba_exe shell reactivate --shell bash
+++ /home1/09647/erikgarrison/bin/micromamba shell reactivate --shell bash
++ ask_conda='. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libxml2_deactivate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libblas_mkl_deactivate.sh"
+PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
++ eval '. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libxml2_deactivate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libblas_mkl_deactivate.sh"
+PS1='\''(gruboros) '\''
+export PATH='\''/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin'\''
+export CONDA_SHLVL='\''1'\''
+export CONDA_PROMPT_MODIFIER='\''(gruboros) '\''
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh"
+. "/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh"'
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libxml2_deactivate.sh
++++ test -n ''
++++ unset XML_CATALOG_FILES
++++ unset xml_catalog_files_libxml2
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/deactivate.d/libblas_mkl_deactivate.sh
++++ '[' '' = '' ']'
++++ unset MKL_INTERFACE_LAYER
++++ unset CONDA_MKL_INTERFACE_LAYER_BACKUP
+++ PS1='(gruboros) '
+++ export PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ PATH=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/bin:/opt/apps/xalt/xalt/bin:/scratch/projects/compilers/intel24.0/oneapi/intelpython/python3.9/bin:/home1/apps/nvidia/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/bin:/home1/apps/nvidia/Linux_x86_64/25.3/cuda/12.8/bin:/opt/intel/oneapi/mpi/2021.11/opt/mpi/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/libfabric/bin:/opt/intel/oneapi/mpi/2021.11/bin:/opt/apps/gcc/13.2.0/bin:/home1/09647/erikgarrison/bin:/home1/09647/erikgarrison/.nvm/versions/node/v22.17.1/bin:/work2/09647/erikgarrison/stampede3/micromamba/condabin:/home1/09647/erikgarrison/.cargo/bin:/home1/apps/cmake/3.31.5/bin:/opt/apps/autotools/1.4/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:.:/home1/09647/erikgarrison/.fzf/bin
+++ export CONDA_SHLVL=1
+++ CONDA_SHLVL=1
+++ export 'CONDA_PROMPT_MODIFIER=(gruboros) '
+++ CONDA_PROMPT_MODIFIER='(gruboros) '
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libblas_mkl_activate.sh
++++ export CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ CONDA_MKL_INTERFACE_LAYER_BACKUP=
++++ export MKL_INTERFACE_LAYER=LP64,GNU
++++ MKL_INTERFACE_LAYER=LP64,GNU
+++ . /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/conda/activate.d/libxml2_activate.sh
++++ test -n ''
++++ xml_catalog_files_libxml2=
++++ XML_CATALOG_FILES=
++++ conda_catalog_files=
++++ ifs_libxml2=' 	
+'
++++ IFS=' '
++++ rem=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ for pre in ${rem}
++++ test '' = /work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ conda_catalog_files=/work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros
++++ rem=
++++ IFS=' 	
+'
++++ conda_catalog_files='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ export 'XML_CATALOG_FILES=file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ XML_CATALOG_FILES='file:///work2/09647/erikgarrison/stampede3/micromamba/envs/gruboros/etc/xml/catalog file:///etc/xml/catalog'
++++ unset conda_catalog_files ifs_libxml2 rem
++ __mamba_hashr
++ '[' -n '' ']'
++ '[' -n '' ']'
++ hash -r
+++ hostname -i
++ export MASTER_ADDR=129.114.122.179
++ MASTER_ADDR=129.114.122.179
++ export MASTER_PORT=29500
++ MASTER_PORT=29500
++ GPUS_PER_NODE=4
++ echo 'Using 4 GPUs per node (Stampede3 H100 configuration)'
++ export WORLD_SIZE=16
++ WORLD_SIZE=16
++ export RANKS_PER_NODE=4
++ RANKS_PER_NODE=4
++ export TORCH_DISTRIBUTED_TIMEOUT=7200s
++ TORCH_DISTRIBUTED_TIMEOUT=7200s
++ export OMP_NUM_THREADS=8
++ OMP_NUM_THREADS=8
++ export NCCL_DEBUG=INFO
++ NCCL_DEBUG=INFO
++ ulimit -n 65536
+++ date +%Y%m%d_%H%M%S
++ TIMESTAMP=20250820_053716
++ NAME=350m_enwik9_4node_1k
++ GIT_HASH=
++ git rev-parse --is-inside-work-tree
+++ git rev-parse --short=7 HEAD
++ GIT_HASH=e882be6
++ '[' -n e882be6 ']'
++ OUTPUT_DIR=/scratch/09647/erikgarrison/models/gruboros/20250820_053716_350m_enwik9_4node_1k_e882be6
++ DATA_PATH=/scratch/09647/erikgarrison/train/enwik9
++ '[' '!' -f /scratch/09647/erikgarrison/train/enwik9 ']'
++ mkdir -p /scratch/09647/erikgarrison/models/gruboros/20250820_053716_350m_enwik9_4node_1k_e882be6/gossip /scratch/09647/erikgarrison/models/gruboros/20250820_053716_350m_enwik9_4node_1k_e882be6/metrics /scratch/09647/erikgarrison/models/gruboros/20250820_053716_350m_enwik9_4node_1k_e882be6/logs
++ mkdir -p logs
++ GOSSIP_TEMP_DIR=/tmp/gossip_2262207
++ mkdir -p /tmp/gossip_2262207
++ echo 'Job ID: 2262207'
++ echo 'Node list: c561-010,c562-[001-003]'
++ echo 'Master addr: 129.114.122.179'
++ echo 'Output dir: /scratch/09647/erikgarrison/models/gruboros/20250820_053716_350m_enwik9_4node_1k_e882be6'
++ echo 'Data path: /scratch/09647/erikgarrison/train/enwik9'
++ echo 'Starting 350M parameter pure RNN training on 4 H100 nodes with 1k chunk size'
++ srun --ntasks=16 --ntasks-per-node=4 --cpus-per-task=24 --distribution=block:block ./run_training_task.sh --data /scratch/09647/erikgarrison/train/enwik9 --output /scratch/09647/erikgarrison/models/gruboros/20250820_053716_350m_enwik9_4node_1k_e882be6 --params 350m --dim 1024 --expansion_factor 4.0 --ff_mult 0 --train_steps 10000000 --save_every 500 --lr 0.001 --sf_beta 0.9 --sf_beta2 0.995 --weight_decay 0.0001 --grad_accum 8 --chunk_size 1024 --keep_checkpoints 5 --keep_elite 32 --archive_rate 0.0067 --gossip_merge_method recombination --gossip_recombination_alpha 0.2 --gossip_optimizer_recombination interpolate --gossip_mixing_rate 0.002 --gossip_temp_dir /tmp/gossip_2262207 --gossip_p_value_threshold 0.1 --gossip_fitness_window 10000 --validation_sequences 16 --validation_sequence_length 8k --validation_interval 500 --filesystem-coordinator --fitness-weighted-checkpointing --elite-checkpoint-multiplier 20.0 --cuda
+Train:   0%|          | 0/10000000 [00:00<?, ?it/s] Train:   0%|          | 0/10000000 [00:00<?, ?it/s] , L=5.552 V=inf D=0 T/s=3347Train:   0%|          | 1/10000000 [00:00<840:20:21,  3.31it/s] , L=5.552 V=inf D=0 T/s=3347Train:   0%|          | 1/10000000 [00:00<840:20:21,  3.31it/s] , L=5.556 V=inf D=0 T/s=5507Train:   0%|          | 2/10000000 [00:00<840:20:21,  3.31it/s] , L=5.555 V=inf D=0 T/s=6672Train:   0%|          | 3/10000000 [00:00<376:45:46,  7.37it/s] , L=5.555 V=inf D=0 T/s=6672Train:   0%|          | 3/10000000 [00:00<376:45:46,  7.37it/s] , L=5.555 V=inf D=0 T/s=7461Train:   0%|          | 4/10000000 [00:00<376:45:46,  7.37it/s] , L=5.547 V=inf D=0 T/s=8031Train:   0%|          | 5/10000000 [00:00<309:32:41,  8.97it/s] , L=5.547 V=inf D=0 T/s=8031Train:   0%|          | 5/10000000 [00:00<309:32:41,  8.97it/s] , L=5.549 V=inf D=0 T/s=8461Train:   0%|          | 6/10000000 [00:00<309:32:41,  8.97it/s] , L=5.547 V=inf D=0 T/s=8798Train:   0%|          | 7/10000000 [00:00<282:41:20,  9.83it/s] , L=5.547 V=inf D=0 T/s=8798Train:   0%|          | 7/10000000 [00:00<282:41:20,  9.83it/s] , L=5.548 V=inf D=0 T/s=8507Train:   0%|          | 8/10000000 [00:01<282:41:20,  9.83it/s] , L=5.511 V=inf D=0 T/s=8959Train:   0%|          | 9/10000000 [00:01<288:08:51,  9.64it/s] , L=5.511 V=inf D=0 T/s=8959Train:   0%|          | 9/10000000 [00:01<288:08:51,  9.64it/s] , L=5.508 V=inf D=0 T/s=9155Train:   0%|          | 10/10000000 [00:01<288:08:51,  9.64it/s] , L=5.511 V=inf D=0 T/s=9326Train:   0%|          | 11/10000000 [00:01<274:19:15, 10.13it/s] , L=5.511 V=inf D=0 T/s=9326Train:   0%|          | 11/10000000 [00:01<274:19:15, 10.13it/s] , L=5.515 V=inf D=0 T/s=9476Train:   0%|          | 12/10000000 [00:01<274:19:15, 10.13it/s] , L=5.499 V=inf D=0 T/s=9606Train:   0%|          | 13/10000000 [00:01<265:19:17, 10.47it/s] , L=5.499 V=inf D=0 T/s=9606Train:   0%|          | 13/10000000 [00:01<265:19:17, 10.47it/s] , L=5.505 V=inf D=0 T/s=9720Train:   0%|          | 14/10000000 [00:01<265:19:17, 10.47it/s] , L=5.502 V=inf D=0 T/s=9822Train:   0%|          | 15/10000000 [00:01<259:30:26, 10.70it/s] , L=5.502 V=inf D=0 T/s=9822Train:   0%|          | 15/10000000 [00:01<259:30:26, 10.70it/s] , L=5.510 V=inf D=0 T/s=9884Train:   0%|          | 16/10000000 [00:01<259:30:26, 10.70it/s] , L=4.484 V=inf D=0 T/s=9898Train:   0%|          | 17/10000000 [00:01<263:00:55, 10.56it/s] , L=4.484 V=inf D=0 T/s=9898Train:   0%|          | 17/10000000 [00:01<263:00:55, 10.56it/s] , L=4.431 V=inf D=0 T/s=9973Train:   0%|          | 18/10000000 [00:01<263:00:55, 10.56it/s] , L=4.472 V=inf D=0 T/s=10043Train:   0%|          | 19/10000000 [00:01<258:19:02, 10.75it/s] , L=4.472 V=inf D=0 T/s=10043Train:   0%|          | 19/10000000 [00:02<258:19:02, 10.75it/s] , L=4.443 V=inf D=0 T/s=10106Train:   0%|          | 20/10000000 [00:02<258:19:02, 10.75it/s] , L=4.426 V=inf D=0 T/s=10165Train:   0%|          | 21/10000000 [00:02<254:59:43, 10.89it/s] , L=4.426 V=inf D=0 T/s=10165Train:   0%|          | 21/10000000 [00:02<254:59:43, 10.89it/s] , L=4.406 V=inf D=0 T/s=10219Train:   0%|          | 22/10000000 [00:02<254:59:43, 10.89it/s] , L=4.446 V=inf D=0 T/s=10269Train:   0%|          | 23/10000000 [00:02<252:42:01, 10.99it/s] , L=4.446 V=inf D=0 T/s=10269Train:   0%|          | 23/10000000 [00:02<252:42:01, 10.99it/s] , L=4.502 V=inf D=0 T/s=10295Train:   0%|          | 24/10000000 [00:02<252:42:01, 10.99it/s] , L=3.908 V=inf D=0 T/s=10287Train:   0%|          | 25/10000000 [00:02<258:09:25, 10.76it/s] , L=3.908 V=inf D=0 T/s=10287Train:   0%|          | 25/10000000 [00:02<258:09:25, 10.76it/s] , L=3.834 V=inf D=0 T/s=10327Train:   0%|          | 26/10000000 [00:02<258:09:25, 10.76it/s] , L=3.802 V=inf D=0 T/s=10367Train:   0%|          | 27/10000000 [00:02<255:02:50, 10.89it/s] , L=3.802 V=inf D=0 T/s=10367Train:   0%|          | 27/10000000 [00:02<255:02:50, 10.89it/s] , L=3.768 V=inf D=0 T/s=10402Train:   0%|          | 28/10000000 [00:02<255:02:50, 10.89it/s] , L=3.866 V=inf D=0 T/s=10437Train:   0%|          | 29/10000000 [00:02<252:51:27, 10.99it/s] , L=3.866 V=inf D=0 T/s=10437Train:   0%|          | 29/10000000 [00:02<252:51:27, 10.99it/s] , L=3.818 V=inf D=0 T/s=10468Train:   0%|          | 30/10000000 [00:03<252:51:27, 10.99it/s] , L=3.834 V=inf D=0 T/s=10498Train:   0%|          | 31/10000000 [00:03<251:20:50, 11.05it/s] , L=3.834 V=inf D=0 T/s=10498Train:   0%|          | 31/10000000 [00:03<251:20:50, 11.05it/s] , L=3.801 V=inf D=0 T/s=10512Train:   0%|          | 32/10000000 [00:03<251:20:50, 11.05it/s] , L=3.433 V=inf D=0 T/s=10499Train:   0%|          | 33/10000000 [00:03<257:04:03, 10.81it/s] , L=3.433 V=inf D=0 T/s=10499Train:   0%|          | 33/10000000 [00:03<257:04:03, 10.81it/s] , L=3.562 V=inf D=0 T/s=10525Train:   0%|          | 34/10000000 [00:03<257:04:03, 10.81it/s] , L=3.446 V=inf D=0 T/s=10550Train:   0%|          | 35/10000000 [00:03<254:23:21, 10.92it/s] , L=3.446 V=inf D=0 T/s=10550Train:   0%|          | 35/10000000 [00:03<254:23:21, 10.92it/s] , L=3.445 V=inf D=0 T/s=10574Train:   0%|          | 36/10000000 [00:03<254:23:21, 10.92it/s] , L=3.551 V=inf D=0 T/s=10597Train:   0%|          | 37/10000000 [00:03<252:18:40, 11.01it/s] , L=3.551 V=inf D=0 T/s=10597Train:   0%|          | 37/10000000 [00:03<252:18:40, 11.01it/s] , L=3.587 V=inf D=0 T/s=10619Train:   0%|          | 38/10000000 [00:03<252:18:40, 11.01it/s] , L=3.853 V=inf D=0 T/s=10639Train:   0%|          | 39/10000000 [00:03<250:54:30, 11.07it/s] , L=3.853 V=inf D=0 T/s=10639Train:   0%|          | 39/10000000 [00:03<250:54:30, 11.07it/s] , L=3.436 V=inf D=0 T/s=10647Train:   0%|          | 40/10000000 [00:03<250:54:30, 11.07it/s] , L=3.391 V=inf D=0 T/s=10633Train:   0%|          | 41/10000000 [00:03<256:51:48, 10.81it/s] , L=3.391 V=inf D=0 T/s=10633Train:   0%|          | 41/10000000 [00:04<256:51:48, 10.81it/s] , L=3.342 V=inf D=0 T/s=10651Train:   0%|          | 42/10000000 [00:04<256:51:48, 10.81it/s] , L=3.419 V=inf D=0 T/s=10669Train:   0%|          | 43/10000000 [00:04<254:06:51, 10.93it/s] , L=3.419 V=inf D=0 T/s=10669Train:   0%|          | 43/10000000 [00:04<254:06:51, 10.93it/s] , L=3.467 V=inf D=0 T/s=10686Train:   0%|          | 44/10000000 [00:04<254:06:51, 10.93it/s] , L=3.362 V=inf D=0 T/s=10702Train:   0%|          | 45/10000000 [00:04<252:21:26, 11.01it/s] , L=3.362 V=inf D=0 T/s=10702Train:   0%|          | 45/10000000 [00:04<252:21:26, 11.01it/s] , L=3.371 V=inf D=0 T/s=10719Train:   0%|          | 46/10000000 [00:04<252:21:26, 11.01it/s] , L=3.297 V=inf D=0 T/s=10733Train:   0%|          | 47/10000000 [00:04<250:59:11, 11.07it/s] , L=3.297 V=inf D=0 T/s=10733Train:   0%|          | 47/10000000 [00:04<250:59:11, 11.07it/s] , L=3.324 V=inf D=0 T/s=10735Train:   0%|          | 48/10000000 [00:04<250:59:11, 11.07it/s] , L=3.587 V=inf D=0 T/s=10722Train:   0%|          | 49/10000000 [00:04<257:09:32, 10.80it/s] , L=3.587 V=inf D=0 T/s=10722Train:   0%|          | 49/10000000 [00:04<257:09:32, 10.80it/s] , L=3.455 V=inf D=0 T/s=10737Train:   0%|          | 50/10000000 [00:04<257:09:32, 10.80it/s] , L=3.390 V=inf D=0 T/s=10752Train:   0%|          | 51/10000000 [00:04<254:02:50, 10.93it/s] , L=3.390 V=inf D=0 T/s=10752Train:   0%|          | 51/10000000 [00:04<254:02:50, 10.93it/s] , L=3.351 V=inf D=0 T/s=10766Train:   0%|          | 52/10000000 [00:05<254:02:50, 10.93it/s] , L=3.493 V=inf D=0 T/s=10779Train:   0%|          | 53/10000000 [00:05<251:56:12, 11.03it/s] , L=3.493 V=inf D=0 T/s=10779Train:   0%|          | 53/10000000 [00:05<251:56:12, 11.03it/s] , L=3.573 V=inf D=0 T/s=10791Train:   0%|          | 54/10000000 [00:05<251:56:12, 11.03it/s] , L=3.342 V=inf D=0 T/s=10803Train:   0%|          | 55/10000000 [00:05<250:42:39, 11.08it/s] , L=3.342 V=inf D=0 T/s=10803Train:   0%|          | 55/10000000 [00:05<250:42:39, 11.08it/s] , L=3.566 V=inf D=0 T/s=10804Train:   0%|          | 56/10000000 [00:05<250:42:39, 11.08it/s] , L=3.305 V=inf D=0 T/s=10790Train:   0%|          | 57/10000000 [00:05<257:04:31, 10.81it/s] , L=3.305 V=inf D=0 T/s=10790Train:   0%|          | 57/10000000 [00:05<257:04:31, 10.81it/s] , L=3.414 V=inf D=0 T/s=10800Train:   0%|          | 58/10000000 [00:05<257:04:31, 10.81it/s] , L=4.031 V=inf D=0 T/s=10811Train:   0%|          | 59/10000000 [00:05<254:32:48, 10.91it/s] , L=4.031 V=inf D=0 T/s=10811Train:   0%|          | 59/10000000 [00:05<254:32:48, 10.91it/s] , L=4.023 V=inf D=0 T/s=10821Train:   0%|          | 60/10000000 [00:05<254:32:48, 10.91it/s] , L=3.703 V=inf D=0 T/s=10831Train:   0%|          | 61/10000000 [00:05<252:42:17, 10.99it/s] , L=3.703 V=inf D=0 T/s=10831Train:   0%|          | 61/10000000 [00:05<252:42:17, 10.99it/s] , L=4.051 V=inf D=0 T/s=10837Train:   0%|          | 62/10000000 [00:05<252:42:17, 10.99it/s] , L=4.736 V=inf D=0 T/s=10849Train:   0%|          | 63/10000000 [00:05<251:29:34, 11.05it/s] , L=4.736 V=inf D=0 T/s=10849Train:   0%|          | 63/10000000 [00:06<251:29:34, 11.05it/s] , L=4.135 V=inf D=0 T/s=10851Train:   0%|          | 64/10000000 [00:06<251:29:34, 11.05it/s] , L=4.050 V=inf D=0 T/s=10838Train:   0%|          | 65/10000000 [00:06<257:22:40, 10.79it/s] , L=4.050 V=inf D=0 T/s=10838Train:   0%|          | 65/10000000 [00:06<257:22:40, 10.79it/s] , L=4.043 V=inf D=0 T/s=10846Train:   0%|          | 66/10000000 [00:06<257:22:40, 10.79it/s] , L=4.150 V=inf D=0 T/s=10854Train:   0%|          | 67/10000000 [00:06<254:50:38, 10.90it/s] , L=4.150 V=inf D=0 T/s=10854Train:   0%|          | 67/10000000 [00:06<254:50:38, 10.90it/s] , L=3.590 V=inf D=0 T/s=10863Train:   0%|          | 68/10000000 [00:06<254:50:38, 10.90it/s] , L=3.205 V=inf D=0 T/s=10871Train:   0%|          | 69/10000000 [00:06<252:55:53, 10.98it/s] , L=3.205 V=inf D=0 T/s=10871Train:   0%|          | 69/10000000 [00:06<252:55:53, 10.98it/s] , L=3.207 V=inf D=0 T/s=10878Train:   0%|          | 70/10000000 [00:06<252:55:53, 10.98it/s] , L=3.481 V=inf D=0 T/s=10885Train:   0%|          | 71/10000000 [00:06<251:59:03, 11.02it/s] , L=3.481 V=inf D=0 T/s=10885Train:   0%|          | 71/10000000 [00:06<251:59:03, 11.02it/s] , L=3.357 V=inf D=0 T/s=10887Train:   0%|          | 72/10000000 [00:06<251:59:03, 11.02it/s] , L=3.350 V=inf D=0 T/s=10875Train:   0%|          | 73/10000000 [00:06<257:23:29, 10.79it/s] , L=3.350 V=inf D=0 T/s=10875Train:   0%|          | 73/10000000 [00:06<257:23:29, 10.79it/s] , L=3.123 V=inf D=0 T/s=10882Train:   0%|          | 74/10000000 [00:07<257:23:28, 10.79it/s] , L=3.135 V=inf D=0 T/s=10889Train:   0%|          | 75/10000000 [00:07<254:47:30, 10.90it/s] , L=3.135 V=inf D=0 T/s=10889Train:   0%|          | 75/10000000 [00:07<254:47:30, 10.90it/s] , L=3.177 V=inf D=0 T/s=10896Train:   0%|          | 76/10000000 [00:07<254:47:30, 10.90it/s] , L=3.208 V=inf D=0 T/s=10903Train:   0%|          | 77/10000000 [00:07<252:49:25, 10.99it/s] , L=3.208 V=inf D=0 T/s=10903Train:   0%|          | 77/10000000 [00:07<252:49:25, 10.99it/s] , L=3.226 V=inf D=0 T/s=10910Train:   0%|          | 78/10000000 [00:07<252:49:25, 10.99it/s] , L=3.167 V=inf D=0 T/s=10915Train:   0%|          | 79/10000000 [00:07<251:57:50, 11.02it/s] , L=3.167 V=inf D=0 T/s=10915Train:   0%|          | 79/10000000 [00:07<251:57:50, 11.02it/s] , L=3.174 V=inf D=0 T/s=10916Train:   0%|          | 80/10000000 [00:07<251:57:50, 11.02it/s] , L=3.163 V=inf D=0 T/s=10905Train:   0%|          | 81/10000000 [00:07<257:20:06, 10.79it/s] , L=3.163 V=inf D=0 T/s=10905Train:   0%|          | 81/10000000 [00:07<257:20:06, 10.79it/s] , L=3.143 V=inf D=0 T/s=10911Train:   0%|          | 82/10000000 [00:07<257:20:06, 10.79it/s] , L=3.144 V=inf D=0 T/s=10917Train:   0%|          | 83/10000000 [00:07<254:49:14, 10.90it/s] , L=3.144 V=inf D=0 T/s=10917Train:   0%|          | 83/10000000 [00:07<254:49:14, 10.90it/s] , L=3.108 V=inf D=0 T/s=10923Train:   0%|          | 84/10000000 [00:07<254:49:14, 10.90it/s] , L=3.155 V=inf D=0 T/s=10929Train:   0%|          | 85/10000000 [00:07<252:53:04, 10.98it/s] , L=3.155 V=inf D=0 T/s=10929Train:   0%|          | 85/10000000 [00:08<252:53:04, 10.98it/s] , L=3.082 V=inf D=0 T/s=10935Train:   0%|          | 86/10000000 [00:08<252:53:04, 10.98it/s] , L=3.373 V=inf D=0 T/s=10941Train:   0%|          | 87/10000000 [00:08<251:29:47, 11.04it/s] , L=3.373 V=inf D=0 T/s=10941Train:   0%|          | 87/10000000 [00:08<251:29:47, 11.04it/s] , L=3.198 V=inf D=0 T/s=10941Train:   0%|          | 88/10000000 [00:08<251:29:47, 11.04it/s] , L=3.296 V=inf D=0 T/s=10929Train:   0%|          | 89/10000000 [00:08<257:54:13, 10.77it/s] , L=3.296 V=inf D=0 T/s=10929Train:   0%|          | 89/10000000 [00:08<257:54:13, 10.77it/s] , L=3.265 V=inf D=0 T/s=10935Train:   0%|          | 90/10000000 [00:08<257:54:13, 10.77it/s] , L=3.341 V=inf D=0 T/s=10940Train:   0%|          | 91/10000000 [00:08<254:43:48, 10.90it/s] , L=3.341 V=inf D=0 T/s=10940Train:   0%|          | 91/10000000 [00:08<254:43:48, 10.90it/s] , L=3.247 V=inf D=0 T/s=10946Train:   0%|          | 92/10000000 [00:08<254:43:48, 10.90it/s] , L=3.160 V=inf D=0 T/s=10951Train:   0%|          | 93/10000000 [00:08<252:48:10, 10.99it/s] , L=3.160 V=inf D=0 T/s=10951Train:   0%|          | 93/10000000 [00:08<252:48:10, 10.99it/s] , L=3.148 V=inf D=0 T/s=10956Train:   0%|          | 94/10000000 [00:08<252:48:10, 10.99it/s] , L=3.247 V=inf D=0 T/s=10961Train:   0%|          | 95/10000000 [00:08<251:26:49, 11.05it/s] , L=3.247 V=inf D=0 T/s=10961Train:   0%|          | 95/10000000 [00:08<251:26:49, 11.05it/s] , L=3.177 V=inf D=0 T/s=10958Train:   0%|          | 96/10000000 [00:09<251:26:49, 11.05it/s] , L=3.099 V=inf D=0 T/s=10951Train:   0%|          | 97/10000000 [00:09<257:29:26, 10.79it/s] , L=3.099 V=inf D=0 T/s=10951Train:   0%|          | 97/10000000 [00:09<257:29:26, 10.79it/s] , L=3.205 V=inf D=0 T/s=10955Train:   0%|          | 98/10000000 [00:09<257:29:26, 10.79it/s] , L=3.253 V=inf D=0 T/s=10960Train:   0%|          | 99/10000000 [00:09<254:49:03, 10.90it/s] , L=3.253 V=inf D=0 T/s=10960Train:   0%|          | 99/10000000 [00:09<254:49:03, 10.90it/s] , L=3.145 V=inf D=0 T/s=10964Train:   0%|          | 100/10000000 [00:09<254:49:03, 10.90it/s] , L=3.299 V=inf D=0 T/s=10969Train:   0%|          | 101/10000000 [00:09<253:04:25, 10.98it/s] , L=3.299 V=inf D=0 T/s=10969Train:   0%|          | 101/10000000 [00:09<253:04:25, 10.98it/s] , L=3.081 V=inf D=0 T/s=10974Train:   0%|          | 102/10000000 [00:09<253:04:25, 10.98it/s] , L=3.314 V=inf D=0 T/s=10977Train:   0%|          | 103/10000000 [00:09<252:01:24, 11.02it/s] , L=3.314 V=inf D=0 T/s=10977Train:   0%|          | 103/10000000 [00:09<252:01:24, 11.02it/s] , L=3.244 V=inf D=0 T/s=10977Train:   0%|          | 104/10000000 [00:09<252:01:24, 11.02it/s] , L=3.182 V=inf D=0 T/s=10968Train:   0%|          | 105/10000000 [00:09<257:30:13, 10.79it/s] , L=3.182 V=inf D=0 T/s=10968Train:   0%|          | 105/10000000 [00:09<257:30:13, 10.79it/s] , L=3.302 V=inf D=0 T/s=10971Train:   0%|          | 106/10000000 [00:09<257:30:12, 10.79it/s] , L=3.781 V=inf D=0 T/s=10976Train:   0%|          | 107/10000000 [00:09<255:03:15, 10.89it/s] , L=3.781 V=inf D=0 T/s=10976Train:   0%|          | 107/10000000 [00:10<255:03:15, 10.89it/s] , L=3.910 V=inf D=0 T/s=10981Train:   0%|          | 108/10000000 [00:10<255:03:15, 10.89it/s] , L=3.881 V=inf D=0 T/s=10985Train:   0%|          | 109/10000000 [00:10<252:51:47, 10.99it/s] , L=3.881 V=inf D=0 T/s=10985Train:   0%|          | 109/10000000 [00:10<252:51:47, 10.99it/s] , L=4.103 V=inf D=0 T/s=10989Train:   0%|          | 110/10000000 [00:10<252:51:47, 10.99it/s] , L=3.964 V=inf D=0 T/s=10993Train:   0%|          | 111/10000000 [00:10<251:27:14, 11.05it/s] , L=3.964 V=inf D=0 T/s=10993Train:   0%|          | 111/10000000 [00:10<251:27:14, 11.05it/s] , L=3.880 V=inf D=0 T/s=10992Train:   0%|          | 112/10000000 [00:10<251:27:13, 11.05it/s] , L=3.555 V=inf D=0 T/s=10983Train:   0%|          | 113/10000000 [00:10<257:35:55, 10.78it/s] , L=3.555 V=inf D=0 T/s=10983Train:   0%|          | 113/10000000 [00:10<257:35:55, 10.78it/s] , L=3.484 V=inf D=0 T/s=10987Train:   0%|          | 114/10000000 [00:10<257:35:55, 10.78it/s] , L=3.579 V=inf D=0 T/s=10989Train:   0%|          | 115/10000000 [00:10<255:35:32, 10.87it/s] , L=3.579 V=inf D=0 T/s=10989Train:   0%|          | 115/10000000 [00:10<255:35:32, 10.87it/s] , L=4.612 V=inf D=0 T/s=10995Train:   0%|          | 116/10000000 [00:10<255:35:32, 10.87it/s] , L=3.998 V=inf D=0 T/s=10998Train:   0%|          | 117/10000000 [00:10<252:46:34, 10.99it/s] , L=3.998 V=inf D=0 T/s=10998Train:   0%|          | 117/10000000 [00:10<252:46:34, 10.99it/s] , L=4.005 V=inf D=0 T/s=11002Train:   0%|          | 118/10000000 [00:11<252:46:34, 10.99it/s] , L=3.985 V=inf D=0 T/s=11005Train:   0%|          | 119/10000000 [00:11<251:30:34, 11.04it/s] , L=3.985 V=inf D=0 T/s=11005Train:   0%|          | 119/10000000 [00:11<251:30:34, 11.04it/s] , L=3.448 V=inf D=0 T/s=11005Train:   0%|          | 120/10000000 [00:11<251:30:34, 11.04it/s] , L=3.236 V=inf D=0 T/s=10996Train:   0%|          | 121/10000000 [00:11<257:28:36, 10.79it/s] , L=3.236 V=inf D=0 T/s=10996Train:   0%|          | 121/10000000 [00:11<257:28:36, 10.79it/s] , L=3.239 V=inf D=0 T/s=11000Train:   0%|          | 122/10000000 [00:11<257:28:36, 10.79it/s] , L=3.269 V=inf D=0 T/s=11003Train:   0%|          | 123/10000000 [00:11<254:54:29, 10.90it/s] , L=3.269 V=inf D=0 T/s=11003Train:   0%|          | 123/10000000 [00:11<254:54:29, 10.90it/s] , L=3.225 V=inf D=0 T/s=11007Train:   0%|          | 124/10000000 [00:11<254:54:29, 10.90it/s] , L=3.372 V=inf D=0 T/s=11010Train:   0%|          | 125/10000000 [00:11<253:07:19, 10.97it/s] , L=3.372 V=inf D=0 T/s=11010Train:   0%|          | 125/10000000 [00:15<253:07:19, 10.97it/s] , L=3.306 V=inf D=0 T/s=8502 Train:   0%|          | 126/10000000 [00:21<253:07:19, 10.97it/s] , L=3.366 V=inf D=0 T/s=6003Train:   0%|          | 127/10000000 [00:21<4360:15:27,  1.57s/it] , L=3.366 V=inf D=0 T/s=6003Train:   0%|          | 127/10000000 [00:28<4360:15:27,  1.57s/it] , L=4.504 V=inf D=0 T/s=4597Train:   0%|          | 128/10000000 [00:28<6946:58:25,  2.50s/it] , L=4.504 V=inf D=0 T/s=4597Train:   0%|          | 128/10000000 [00:35<6946:58:25,  2.50s/it] , L=3.866 V=inf D=0 T/s=3760Train:   0%|          | 129/10000000 [00:35<9249:39:09,  3.33s/it] , L=3.866 V=inf D=0 T/s=3760Train:   0%|          | 129/10000000 [00:41<9249:39:09,  3.33s/it] , L=4.069 V=inf D=0 T/s=3193Train:   0%|          | 130/10000000 [00:41<11256:59:45,  4.05s/it] , L=4.069 V=inf D=0 T/s=3193Train:   0%|          | 130/10000000 [00:48<11256:59:45,  4.05s/it] , L=3.394 V=inf D=0 T/s=2789Train:   0%|          | 131/10000000 [00:48<12831:53:58,  4.62s/it] , L=3.394 V=inf D=0 T/s=2789Train:   0%|          | 131/10000000 [00:54<12831:53:58,  4.62s/it] , L=3.248 V=inf D=0 T/s=2463Train:   0%|          | 132/10000000 [00:54<14383:56:11,  5.18s/it] , L=3.248 V=inf D=0 T/s=2463Train:   0%|          | 132/10000000 [01:01<14383:56:11,  5.18s/it] , L=3.596 V=inf D=0 T/s=2217Train:   0%|          | 133/10000000 [01:01<15397:00:47,  5.54s/it] , L=3.596 V=inf D=0 T/s=2217Train:   0%|          | 133/10000000 [01:07<15397:00:47,  5.54s/it] , L=3.581 V=inf D=0 T/s=2020Train:   0%|          | 134/10000000 [01:07<16130:55:03,  5.81s/it] , L=3.581 V=inf D=0 T/s=2020Train:   0%|          | 134/10000000 [01:14<16130:55:03,  5.81s/it] , L=3.387 V=inf D=0 T/s=1857Train:   0%|          | 135/10000000 [01:14<16702:26:56,  6.01s/it] , L=3.387 V=inf D=0 T/s=1857Train:   0%|          | 135/10000000 [01:21<16702:26:56,  6.01s/it] , L=3.487 V=inf D=0 T/s=1713Train:   0%|          | 136/10000000 [01:21<17377:16:20,  6.26s/it] , L=3.487 V=inf D=0 T/s=1713Train:   0%|          | 136/10000000 [01:27<17377:16:20,  6.26s/it] , L=3.471 V=inf D=0 T/s=1598Train:   0%|          | 137/10000000 [01:27<17562:44:31,  6.32s/it] , L=3.471 V=inf D=0 T/s=1598Train:   0%|          | 137/10000000 [01:34<17562:44:31,  6.32s/it] , L=3.517 V=inf D=0 T/s=1498Train:   0%|          | 138/10000000 [01:34<17740:58:13,  6.39s/it] , L=3.517 V=inf D=0 T/s=1498Train:   0%|          | 138/10000000 [01:41<17740:58:13,  6.39s/it] , L=3.875 V=inf D=0 T/s=1409Train:   0%|          | 139/10000000 [01:41<17996:59:09,  6.48s/it] , L=3.875 V=inf D=0 T/s=1409Train:   0%|          | 139/10000000 [01:47<17996:59:09,  6.48s/it] , L=4.332 V=inf D=0 T/s=1334Train:   0%|          | 140/10000000 [01:47<17946:56:08,  6.46s/it] , L=4.332 V=inf D=0 T/s=1334Train:   0%|          | 140/10000000 [01:53<17946:56:08,  6.46s/it] , L=3.789 V=inf D=0 T/s=1267Train:   0%|          | 141/10000000 [01:53<17954:27:54,  6.46s/it] , L=3.789 V=inf D=0 T/s=1267Train:   0%|          | 141/10000000 [02:00<17954:27:54,  6.46s/it] , L=3.767 V=inf D=0 T/s=1207Train:   0%|          | 142/10000000 [02:00<18060:47:37,  6.50s/it] , L=3.767 V=inf D=0 T/s=1207Train:   0%|          | 142/10000000 [02:07<18060:47:37,  6.50s/it] , L=3.776 V=inf D=0 T/s=1152Train:   0%|          | 143/10000000 [02:07<18167:48:10,  6.54s/it] , L=3.776 V=inf D=0 T/s=1152Train:   0%|          | 143/10000000 [02:13<18167:48:10,  6.54s/it] , L=3.679 V=inf D=0 T/s=1100Train:   0%|          | 144/10000000 [02:13<18429:23:11,  6.63s/it] , L=3.679 V=inf D=0 T/s=1100Train:   0%|          | 144/10000000 [02:20<18429:23:11,  6.63s/it] , L=3.664 V=inf D=0 T/s=1057Train:   0%|          | 145/10000000 [02:20<18318:47:56,  6.59s/it] , L=3.664 V=inf D=0 T/s=1057Train:   0%|          | 145/10000000 [02:26<18318:47:56,  6.59s/it] , L=3.695 V=inf D=0 T/s=1018Train:   0%|          | 146/10000000 [02:26<18152:33:00,  6.54s/it] , L=3.695 V=inf D=0 T/s=1018Train:   0%|          | 146/10000000 [02:33<18152:33:00,  6.54s/it] , L=3.634 V=inf D=0 T/s=981 Train:   0%|          | 147/10000000 [02:33<18125:43:54,  6.53s/it] , L=3.634 V=inf D=0 T/s=981Train:   0%|          | 147/10000000 [02:40<18125:43:54,  6.53s/it] , L=3.619 V=inf D=0 T/s=947Train:   0%|          | 148/10000000 [02:40<18238:09:15,  6.57s/it] , L=3.619 V=inf D=0 T/s=947Train:   0%|          | 148/10000000 [02:46<18238:09:15,  6.57s/it] , L=3.611 V=inf D=0 T/s=915Train:   0%|          | 149/10000000 [02:46<18335:19:42,  6.60s/it] , L=3.611 V=inf D=0 T/s=915Train:   0%|          | 149/10000000 [02:48<18335:19:42,  6.60s/it] , L=3.624 V=inf D=0 T/s=911Train:   0%|          | 150/10000000 [02:48<14346:16:45,  5.16s/it] , L=3.624 V=inf D=0 T/s=911Train:   0%|          | 150/10000000 [02:48<14346:16:45,  5.16s/it] , L=3.648 V=inf D=0 T/s=916Train:   0%|          | 151/10000000 [02:48<10186:57:12,  3.67s/it] , L=3.648 V=inf D=0 T/s=916Train:   0%|          | 151/10000000 [02:48<10186:57:12,  3.67s/it] , L=3.578 V=inf D=0 T/s=922Train:   0%|          | 152/10000000 [02:48<7240:50:54,  2.61s/it] , L=3.578 V=inf D=0 T/s=922 Train:   0%|          | 152/10000000 [02:49<7240:50:54,  2.61s/it] , L=3.515 V=inf D=0 T/s=927Train:   0%|          | 153/10000000 [02:49<5216:04:40,  1.88s/it] , L=3.515 V=inf D=0 T/s=927Train:   0%|          | 153/10000000 [02:49<5216:04:40,  1.88s/it] , L=3.519 V=inf D=0 T/s=932Train:   0%|          | 154/10000000 [02:49<3752:46:27,  1.35s/it] , L=3.519 V=inf D=0 T/s=932Train:   0%|          | 154/10000000 [02:51<3752:46:27,  1.35s/it] , L=3.490 V=inf D=0 T/s=926Train:   0%|          | 155/10000000 [02:51<4538:56:51,  1.63s/it] , L=3.490 V=inf D=0 T/s=926Train:   0%|          | 155/10000000 [02:58<4538:56:51,  1.63s/it] , L=3.515 V=inf D=0 T/s=897Train:   0%|          | 156/10000000 [02:58<8643:55:29,  3.11s/it] , L=3.515 V=inf D=0 T/s=897Train:   0%|          | 156/10000000 [03:04<8643:55:29,  3.11s/it] , L=3.469 V=inf D=0 T/s=871Train:   0%|          | 157/10000000 [03:04<11540:42:36,  4.15s/it] , L=3.469 V=inf D=0 T/s=871Train:   0%|          | 157/10000000 [03:11<11540:42:36,  4.15s/it] , L=3.458 V=inf D=0 T/s=846Train:   0%|          | 158/10000000 [03:11<13576:09:32,  4.89s/it] , L=3.458 V=inf D=0 T/s=846Train:   0%|          | 158/10000000 [03:17<13576:09:32,  4.89s/it] , L=3.528 V=inf D=0 T/s=824Train:   0%|          | 159/10000000 [03:17<14912:05:32,  5.37s/it] , L=3.528 V=inf D=0 T/s=824Train:   0%|          | 159/10000000 [03:24<14912:05:32,  5.37s/it] , L=3.503 V=inf D=0 T/s=801Train:   0%|          | 160/10000000 [03:24<16216:21:42,  5.84s/it] , L=3.503 V=inf D=0 T/s=801Train:   0%|          | 160/10000000 [03:31<16216:21:42,  5.84s/it] , L=3.703 V=inf D=0 T/s=781Train:   0%|          | 161/10000000 [03:31<16831:39:26,  6.06s/it] , L=3.703 V=inf D=0 T/s=781Train:   0%|          | 161/10000000 [03:37<16831:39:26,  6.06s/it] , L=3.809 V=inf D=0 T/s=761Train:   0%|          | 162/10000000 [03:37<17330:02:46,  6.24s/it] , L=3.809 V=inf D=0 T/s=761Train:   0%|          | 162/10000000 [03:44<17330:02:46,  6.24s/it] , L=3.482 V=inf D=0 T/s=743Train:   0%|          | 163/10000000 [03:44<17666:33:24,  6.36s/it] , L=3.482 V=inf D=0 T/s=743Train:   0%|          | 163/10000000 [03:51<17666:33:24,  6.36s/it] , L=3.933 V=inf D=0 T/s=727Train:   0%|          | 164/10000000 [03:51<17885:20:47,  6.44s/it] , L=3.933 V=inf D=0 T/s=727Train:   0%|          | 164/10000000 [03:57<17885:20:47,  6.44s/it] , L=3.887 V=inf D=0 T/s=711Train:   0%|          | 165/10000000 [03:57<17893:21:31,  6.44s/it] , L=3.887 V=inf D=0 T/s=711Train:   0%|          | 165/10000000 [04:04<17893:21:31,  6.44s/it] , L=3.893 V=inf D=0 T/s=696Train:   0%|          | 166/10000000 [04:04<18017:22:29,  6.49s/it] , L=3.893 V=inf D=0 T/s=696Train:   0%|          | 166/10000000 [04:10<18017:22:29,  6.49s/it] , L=3.802 V=inf D=0 T/s=682Train:   0%|          | 167/10000000 [04:10<18164:57:42,  6.54s/it] , L=3.802 V=inf D=0 T/s=682Train:   0%|          | 167/10000000 [04:17<18164:57:42,  6.54s/it] , L=3.759 V=inf D=0 T/s=668Train:   0%|          | 168/10000000 [04:17<18450:37:29,  6.64s/it] , L=3.759 V=inf D=0 T/s=668Train:   0%|          | 168/10000000 [04:24<18450:37:29,  6.64s/it] , L=3.633 V=inf D=0 T/s=654Train:   0%|          | 169/10000000 [04:24<18505:42:02,  6.66s/it] , L=3.633 V=inf D=0 T/s=654Train:   0%|          | 169/10000000 [04:31<18505:42:02,  6.66s/it] , L=3.779 V=inf D=0 T/s=642Train:   0%|          | 170/10000000 [04:31<18523:49:39,  6.67s/it] , L=3.779 V=inf D=0 T/s=642Train:   0%|          | 170/10000000 [04:37<18523:49:39,  6.67s/it] , L=3.718 V=inf D=0 T/s=631Train:   0%|          | 171/10000000 [04:37<18412:31:23,  6.63srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** JOB 2262207 ON c561-010 CANCELLED AT 2025-08-20T05:49:22 ***
+s/it] , L=3.718 V=inf D=0 T/s=631Train:   0%|          | 171/10000000 [04:44<18412:31:23,  6.63s/it] , L=4.090 V=inf D=0 T/s=620Train:   0%|          | 172/10000000 [04:44<18450:44:15,  6.64s/it] , L=4.090 V=inf D=0 T/s=620Train:   0%|          | 172/10000000 [04:50<18450:44:15,  6.64s/it] , L=3.408 V=inf D=0 T/s=609Train:   0%|          | 173/10000000 [04:50<18446:25:50,  6.64s/it] , L=3.408 V=inf D=0 T/s=609Train:   0%|          | 173/10000000 [04:57<18446:25:50,  6.64s/it] , L=3.379 V=inf D=0 T/s=599Train:   0%|          | 174/10000000 [04:57<18377:20:41,  6.62s/it] , L=3.379 V=inf D=0 T/s=599slurmstepd: error: *** STEP 2262207.0 ON c561-010 CANCELLED AT 2025-08-20T05:49:22 ***

@@ -484,6 +484,9 @@ class DocumentStreamDataset(Dataset):
     def get_next_chunk(self):
         """
         Returns: (chunk_tensor, is_final_chunk_in_doc, actual_chunk_length)
+        
+        IMPORTANT: Always returns fixed-size tensors for CUDA graph compatibility.
+        Partial chunks are padded with zeros, and actual_length indicates valid data.
         """
         while len(self.byte_buffer) < self.chunk_size:
             # Check if we need to wrap
@@ -501,10 +504,12 @@ class DocumentStreamDataset(Dataset):
                 self.documents_processed += 1
                 
                 if len(self.byte_buffer) > 0:
-                    # We have a partial chunk to return - NO PADDING!
+                    # Partial chunk at document boundary - PAD to maintain fixed size
                     actual_length = len(self.byte_buffer)
                     
-                    chunk = torch.tensor(self.byte_buffer, dtype=torch.long)
+                    # Create full-sized chunk with padding
+                    chunk = torch.zeros(self.chunk_size, dtype=torch.long)
+                    chunk[:actual_length] = torch.tensor(self.byte_buffer, dtype=torch.long)
                     self.byte_buffer = []
                     
                     return chunk, True, actual_length
@@ -928,12 +933,14 @@ def main():
         chunk = chunk_data.to(device, non_blocking=True)  # Already has batch dimension [1, seq_len]
         
         # Forward pass with both RNN hidden states and conv buffers
+        # Pass actual_length for proper masking if chunk is padded
         result = model(
             chunk,  # Already has correct batch dimension
             return_loss=True,
             return_prev_hiddens=True,
             prev_hiddens=hidden_state,
-            prev_conv_buffers=conv_buffers
+            prev_conv_buffers=conv_buffers,
+            actual_length=actual_length if actual_length < args.chunk_size else None
         )
         
         # Unpack the result - could be just loss or loss + (hiddens, buffers)
