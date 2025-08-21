@@ -25,8 +25,8 @@ def FeedForward(dim, mult = 4):
 # conv
 
 class CausalConv1d(Module):
-    """Clean causal convolution following PyTorch defaults as in the paper"""
-    def __init__(self, dim, kernel_size=16):
+    """Causal convolution with learnable scaling factor (ReZero/LayerScale style)"""
+    def __init__(self, dim, kernel_size=4):
         super().__init__()
         self.dim = dim
         self.kernel_size = kernel_size
@@ -35,6 +35,9 @@ class CausalConv1d(Module):
         self.conv = nn.Conv1d(dim, dim, kernel_size=kernel_size, 
                              bias=False, padding=0)
         # PyTorch will initialize this automatically
+        
+        # Learnable scaling parameter, initialized small for gradual learning
+        self.scale = nn.Parameter(torch.tensor(0.01))
     
     def forward(self, x, prev_buffer=None):
         batch_size, seq_len, dim = x.shape
@@ -52,7 +55,9 @@ class CausalConv1d(Module):
         else:
             next_buffer = x_padded[:, :, -self.padding_size:].detach().contiguous()
         
-        return out.transpose(1, 2).contiguous(), next_buffer
+        # Apply learnable scaling before returning
+        out = out.transpose(1, 2).contiguous()
+        return out * self.scale, next_buffer
 
 # main class
 
