@@ -296,5 +296,12 @@ class minLM(Module):
             if conv is not None:
                 # Depthwise: uniform averaging to start (moving average)
                 nn.init.constant_(conv.depthwise.weight, 1.0 / conv.kernel_size)
-                # Pointwise: zero for identity
-                nn.init.zeros_(conv.pointwise.weight)
+                
+                # Pointwise: Initialize as identity-like mapping with gradient flow
+                # CRITICAL: Never use zeros - blocks gradients!
+                with torch.no_grad():
+                    # Start with small random values for gradient flow
+                    nn.init.normal_(conv.pointwise.weight, mean=0.0, std=0.01)
+                    # Add identity-like structure (Conv1d weight: [out_channels, in_channels, 1])
+                    eye = torch.eye(conv.dim).unsqueeze(-1) * 0.1
+                    conv.pointwise.weight.add_(eye)
