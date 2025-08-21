@@ -24,56 +24,59 @@ def FeedForward(dim, mult = 4):
 
 # conv
 
-class CausalDepthWiseConv1d(Module):
-    """Optimized causal convolution with efficient buffering."""
-    def __init__(self, dim, kernel_size):
+class CausalConv1d(Module):
+    """
+    Standard causal convolution for temporal feature extraction.
+    Allows full cross-channel interaction within kernel window.
+    """
+    def __init__(self, dim, kernel_size=16):
         super().__init__()
-        self.kernel_size = kernel_size
         self.dim = dim
+        self.kernel_size = kernel_size
         self.padding_size = kernel_size - 1
         
-        # Convolution layers
-        self.depthwise = nn.Conv1d(dim, dim, kernel_size=kernel_size, 
-                                   groups=dim, bias=False, padding=0)
-        self.pointwise = nn.Conv1d(dim, dim, kernel_size=1, bias=False)
+        # Single standard convolution - all channels interact
+        # No groups parameter means full channel interaction
+        self.conv = nn.Conv1d(dim, dim, kernel_size=kernel_size, 
+                             bias=False, padding=0)
     
     def forward(self, x, prev_buffer=None):
         """
-        Optimized forward with minimal memory operations.
+        Forward pass with causal convolution and buffer management.
         
-        Key optimizations:
-        1. Single transpose at start and end
-        2. Contiguous memory for buffer
-        3. No detach() in critical path
+        Args:
+            x: Input tensor [batch, seq_len, dim]
+            prev_buffer: Buffer from previous chunk [batch, dim, padding_size] or None
+        
+        Returns:
+            output: Convolved output [batch, seq_len, dim]
+            next_buffer: Buffer for next chunk [batch, dim, padding_size]
         """
         batch_size, seq_len, dim = x.shape
         
-        # Single transpose
-        x_conv = x.transpose(1, 2).contiguous()  # [B, D, L]
+        # Transpose for conv1d: [batch, seq_len, dim] -> [batch, dim, seq_len]
+        x_conv = x.transpose(1, 2).contiguous()
         
-        # Efficient padding/buffering
+        # Apply causal padding using buffer or zeros
         if prev_buffer is not None and prev_buffer.numel() > 0:
-            # prev_buffer should already be [B, D, padding_size] and contiguous
+            # Concatenate buffer (past context) with current input
             x_padded = torch.cat([prev_buffer, x_conv], dim=2)
         else:
-            # First chunk - use zero padding
+            # First chunk or after reset - pad with zeros
             x_padded = F.pad(x_conv, (self.padding_size, 0), value=0.)
         
-        # Apply convolutions in sequence (fused operations)
-        out = self.depthwise(x_padded)
-        out = self.pointwise(out)
+        # Apply single convolution with full channel interaction
+        out = self.conv(x_padded)  # [batch, dim, seq_len]
         
-        # Prepare next buffer - make contiguous for next iteration
-        # We need to detach to avoid backward graph issues, but keep it contiguous
+        # Extract buffer for next chunk (last padding_size timesteps)
         if seq_len >= self.padding_size:
-            # Take last padding_size elements from input
             next_buffer = x_conv[:, :, -self.padding_size:].detach().contiguous()
         else:
-            # Short sequence - need to handle carefully
+            # Handle short sequences by taking from padded input
             next_buffer = x_padded[:, :, -self.padding_size:].detach().contiguous()
         
-        # Single transpose back
-        out = out.transpose(1, 2).contiguous()  # [B, L, D]
+        # Transpose back: [batch, dim, seq_len] -> [batch, seq_len, dim]
+        out = out.transpose(1, 2).contiguous()
         
         return out, next_buffer
 
@@ -111,7 +114,7 @@ class minLM(Module):
 
         for _ in range(depth):
             self.layers.append(ModuleList([
-                CausalDepthWiseConv1d(dim, conv_kernel_size) if conv_kernel_size else None,
+                CausalConv1d(dim, conv_kernel_size) if conv_kernel_size else None,
                 RMSNorm(dim),
                 min_rnn_klass(dim, expansion_factor = expansion),
                 RMSNorm(dim) if ff_mult > 0 else None,
@@ -291,17 +294,13 @@ class minLM(Module):
                     if ff[2].bias is not None:
                         nn.init.constant_(ff[2].bias, 0.)
             
-            # Initialize conv layers to start as identity-like transforms
-            conv = layer[0]  # CausalDepthWiseConv1d if it exists
+            # Initialize conv layers
+            conv = layer[0]  # CausalConv1d if it exists
             if conv is not None:
-                # Depthwise: uniform averaging to start (moving average)
-                nn.init.constant_(conv.depthwise.weight, 1.0 / conv.kernel_size)
-                
-                # Pointwise: Initialize as scaled identity matrix
-                # CRITICAL: Never use zeros - blocks gradients!
-                with torch.no_grad():
-                    # Shape is [dim, dim, 1] for Conv1d with kernel_size=1
-                    # Create pure identity matrix for clean channel preservation
-                    eye = torch.eye(conv.dim, dtype=conv.pointwise.weight.dtype, 
-                                   device=conv.pointwise.weight.device)
-                    conv.pointwise.weight.data = eye.unsqueeze(-1) * 0.1
+                # Standard convolution initialization
+                # Fan-in considers all input connections: kernel_size * input_channels
+                fan_in = conv.kernel_size * conv.dim
+                std = (2.0 / fan_in) ** 0.5  # He initialization
+                nn.init.normal_(conv.conv.weight, mean=0.0, std=std)
+                # Scale down for residual connection stability
+                conv.conv.weight.data *= 0.1
