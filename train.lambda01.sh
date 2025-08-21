@@ -88,7 +88,7 @@ deepspeed --num_gpus=$NUM_GPUS \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \
-  --conv_kernel_size 16 \
+  --conv_kernel_size 4 \
   --cuda
 
 echo "Training finished."
