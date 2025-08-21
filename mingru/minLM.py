@@ -287,3 +287,11 @@ class minLM(Module):
                     nn.init.constant_(ff[2].weight, 0.)
                     if ff[2].bias is not None:
                         nn.init.constant_(ff[2].bias, 0.)
+            
+            # Initialize conv layers to start as identity-like transforms
+            conv = layer[0]  # CausalDepthWiseConv1d if it exists
+            if conv is not None:
+                # Depthwise: uniform averaging to start (moving average)
+                nn.init.constant_(conv.depthwise.weight, 1.0 / conv.kernel_size)
+                # Pointwise: zero for identity
+                nn.init.zeros_(conv.pointwise.weight)
