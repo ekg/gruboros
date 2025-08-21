@@ -303,11 +303,11 @@ class minLM(Module):
             # Initialize conv block (two-stage like minGRU/FF)
             conv_block = layer[0]  # CausalConv1d if it exists
             if conv_block is not None:
-                # Stage 1: Conv gets normal initialization for gradient flow  
+                # Stage 1: Conv gets SCALED initialization
                 nn.init.kaiming_normal_(conv_block.conv.weight, mode='fan_in', nonlinearity='linear')
-                # No scaling needed - projection layer controls initial magnitude
+                conv_block.conv.weight.data *= 0.1  # Scale down conv outputs
                 
-                # Stage 2: Projection gets small initialization for near-identity + gradient flow
-                # Cannot use exact zero (blocks gradients), but can start very small
-                nn.init.normal_(conv_block.proj.weight, mean=0.0, std=0.001)
-                # Initial behavior: output ≈ input + very_small ≈ input (near identity)
+                # Stage 2: Projection gets SMALL random initialization  
+                # Small enough to be near identity, but non-zero for gradient flow
+                nn.init.normal_(conv_block.proj.weight, mean=0.0, std=0.01)
+                # This makes initial behavior: output ≈ small, so x + small ≈ x (near identity)
