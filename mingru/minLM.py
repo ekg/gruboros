@@ -245,8 +245,11 @@ class minLM(Module):
         # Calculate base standard deviation based on model dimension
         std = 0.02 / math.sqrt(self.dim)
         
-        # Initialize embedding with smaller std
-        nn.init.normal_(self.token_emb.weight, mean=0.0, std=std)
+        # Orthogonal initialization for embeddings - maximal separation between tokens
+        nn.init.orthogonal_(self.token_emb.weight)
+        # Scale down for gradient stability
+        with torch.no_grad():
+            self.token_emb.weight.mul_(0.1)
         
         # Initialize output projection carefully
         nn.init.normal_(self.to_logits.weight, mean=0.0, std=std)
