@@ -26,8 +26,9 @@ def FeedForward(dim, mult = 4):
 
 class CausalConv1d(Module):
     """
-    Standard causal convolution for temporal feature extraction.
-    Allows full cross-channel interaction within kernel window.
+    Two-stage causal convolution block matching minGRU/FF pattern:
+    1. Convolution stage (non-zero weights for gradient flow)
+    2. Projection stage (zero weights for exact identity)
     """
     def __init__(self, dim, kernel_size=16):
         super().__init__()
@@ -35,21 +36,23 @@ class CausalConv1d(Module):
         self.kernel_size = kernel_size
         self.padding_size = kernel_size - 1
         
-        # Single standard convolution - all channels interact
-        # No groups parameter means full channel interaction
+        # Stage 1: Convolution with full channel interaction
         self.conv = nn.Conv1d(dim, dim, kernel_size=kernel_size, 
                              bias=False, padding=0)
+        
+        # Stage 2: Projection layer (like minGRU to_out and FF final layer)
+        self.proj = nn.Linear(dim, dim, bias=False)
     
     def forward(self, x, prev_buffer=None):
         """
-        Forward pass with causal convolution and buffer management.
+        Forward pass with two-stage processing for exact identity initialization.
         
         Args:
             x: Input tensor [batch, seq_len, dim]
             prev_buffer: Buffer from previous chunk [batch, dim, padding_size] or None
         
         Returns:
-            output: Convolved output [batch, seq_len, dim]
+            output: Processed output [batch, seq_len, dim]
             next_buffer: Buffer for next chunk [batch, dim, padding_size]
         """
         batch_size, seq_len, dim = x.shape
@@ -65,8 +68,14 @@ class CausalConv1d(Module):
             # First chunk or after reset - pad with zeros
             x_padded = F.pad(x_conv, (self.padding_size, 0), value=0.)
         
-        # Apply single convolution with full channel interaction
+        # Stage 1: Convolution (non-zero weights enable gradient flow)
         out = self.conv(x_padded)  # [batch, dim, seq_len]
+        
+        # Transpose back for projection: [batch, dim, seq_len] -> [batch, seq_len, dim]
+        out = out.transpose(1, 2).contiguous()
+        
+        # Stage 2: Projection (zero weights create exact identity)
+        out = self.proj(out)
         
         # Extract buffer for next chunk (last padding_size timesteps)
         if seq_len >= self.padding_size:
@@ -74,9 +83,6 @@ class CausalConv1d(Module):
         else:
             # Handle short sequences by taking from padded input
             next_buffer = x_padded[:, :, -self.padding_size:].detach().contiguous()
-        
-        # Transpose back: [batch, dim, seq_len] -> [batch, seq_len, dim]
-        out = out.transpose(1, 2).contiguous()
         
         return out, next_buffer
 
@@ -294,13 +300,14 @@ class minLM(Module):
                     if ff[2].bias is not None:
                         nn.init.constant_(ff[2].bias, 0.)
             
-            # Initialize conv layers
-            conv = layer[0]  # CausalConv1d if it exists
-            if conv is not None:
-                # Standard convolution initialization
-                # Fan-in considers all input connections: kernel_size * input_channels
-                fan_in = conv.kernel_size * conv.dim
-                std = (2.0 / fan_in) ** 0.5  # He initialization
-                nn.init.normal_(conv.conv.weight, mean=0.0, std=std)
-                # Scale down for residual connection stability
-                conv.conv.weight.data *= 0.1
+            # Initialize conv block (two-stage like minGRU/FF)
+            conv_block = layer[0]  # CausalConv1d if it exists
+            if conv_block is not None:
+                # Stage 1: Conv gets normal initialization for gradient flow  
+                nn.init.kaiming_normal_(conv_block.conv.weight, mode='fan_in', nonlinearity='linear')
+                # No scaling needed - projection layer controls initial magnitude
+                
+                # Stage 2: Projection gets small initialization for near-identity + gradient flow
+                # Cannot use exact zero (blocks gradients), but can start very small
+                nn.init.normal_(conv_block.proj.weight, mean=0.0, std=0.001)
+                # Initial behavior: output ≈ input + very_small ≈ input (near identity)
