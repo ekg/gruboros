@@ -537,13 +537,39 @@ class DocumentStreamDataset(Dataset):
 class DocumentStreamWrapper(IterableDataset):
     """
     Wrapper to make DocumentStreamDataset work with PyTorch DataLoader
+    --- MODIFIED FOR BATCHING ---
     """
-    def __init__(self, filepath, chunk_size, seed=42, global_rank=0):
-        self.stream_dataset = DocumentStreamDataset(filepath, chunk_size, seed, global_rank)
+    def __init__(self, filepath, chunk_size, batch_size, seed=42, global_rank=0):
+        self.filepath = filepath
+        self.chunk_size = chunk_size
+        self.batch_size = batch_size
+        
+        # Each GPU manages its own set of parallel streams, each with a unique seed
+        self.streams = [
+            DocumentStreamDataset(
+                filepath, 
+                chunk_size, 
+                seed + (global_rank * batch_size) + i,
+                global_rank
+            ) for i in range(self.batch_size)
+        ]
         
     def __iter__(self):
-        while True:  # Infinite iterator
-            yield self.stream_dataset.get_next_chunk()
+        while True:
+            batch_chunks, batch_is_doc_end, batch_actual_len = [], [], []
+            
+            for stream in self.streams:
+                chunk, is_end, length = stream.get_next_chunk()
+                batch_chunks.append(chunk)
+                batch_is_doc_end.append(is_end)
+                batch_actual_len.append(length)
+
+            # Stack individual tensors into a single batch tensor
+            yield (
+                torch.stack(batch_chunks), 
+                torch.tensor(batch_is_doc_end, dtype=torch.bool), 
+                torch.tensor(batch_actual_len, dtype=torch.long)
+            )
 
 def get_model(model_config):
     return minLM(**model_config)
@@ -763,6 +789,8 @@ def main():
 
 
     model = get_model(model_config).to(device)
+    # Compile the model for better performance
+    model = torch.compile(model)
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     # Initialize GradScaler for mixed precision training
@@ -777,22 +805,20 @@ def main():
     
     if args.schedulefree: optimizer.train()
 
-    # Document streaming enforces batch_size=1
-    if batch_size != 1:
-        raise ValueError(f"Document streaming requires batch_size=1, got {batch_size}")
-
+    # Create batched document streaming dataset
     train_dataset = DocumentStreamWrapper(
         args.data, 
         chunk_size=chunk_size,
+        batch_size=batch_size,
         seed=SEED,
         global_rank=global_rank
     )
 
-    # Simplified DataLoader for streaming
+    # DataLoader for batched streaming
     train_loader = DataLoader(
         train_dataset,
-        batch_size=1,  # Must be 1
-        num_workers=0,  # Keep it simple for streaming
+        batch_size=None,  # Set to None as the wrapper handles batching
+        num_workers=0,
         pin_memory=True
     )
 
@@ -915,13 +941,13 @@ def main():
     )
     step = resume_step
     data_iterator = iter(train_loader)
-    hidden_state = None
-    conv_buffers = None
+    # Hidden states are now lists that will contain batched tensors
+    hidden_state = []
+    conv_buffers = []
     optimizer.zero_grad()
     
-    # Track accumulated steps and total actual tokens for dynamic optimization
+    # Track accumulated steps for gradient accumulation
     accumulated_steps = 0
-    total_actual_tokens = 0
 
     while step < train_steps:
         # Check for and apply any pending model updates
@@ -936,20 +962,20 @@ def main():
             accumulated_steps = 0  # Reset accumulation counter
             total_actual_tokens = 0  # Reset token counter
 
-        # Get next chunk with document boundary info
-        chunk_data, is_doc_end, actual_length = next(data_iterator)
-        chunk = chunk_data.to(device, non_blocking=True)  # Already has batch dimension [1, seq_len]
+        # Get a full batch of data
+        chunk_data, is_doc_end, actual_lengths = next(data_iterator)
+        chunk = chunk_data.to(device, non_blocking=True) # [B, SeqLen]
+        is_doc_end = is_doc_end.to(device, non_blocking=True) # [B]
         
         # Forward pass with both RNN hidden states and conv buffers
-        # Pass actual_length for proper masking if chunk is padded
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
             result = model(
-                chunk,  # Already has correct batch dimension
+                chunk,
                 return_loss=True,
                 return_prev_hiddens=True,
                 prev_hiddens=hidden_state,
                 prev_conv_buffers=conv_buffers,
-                actual_length=actual_length if actual_length < int(args.chunk_size) else None
+                actual_length=actual_lengths # Pass tensor of lengths
             )
         
         # Unpack the result - could be just loss or loss + (hiddens, buffers)
@@ -961,36 +987,33 @@ def main():
             next_hidden_state = None
             next_conv_buffers = None
         
-        # No loss scaling needed - chunk is already the correct size
-        
+        # Scale loss for gradient accumulation
+        scaled_loss = loss / args.grad_accum
         chunk_loss = loss.detach().item()
         
         # Track accumulation progress
         accumulated_steps += 1
-        total_actual_tokens += actual_length
         
-        # Use the loss as-is (already scaled by actual_length if partial)
-        # No artificial division by steps - let each chunk contribute proportionally
         if scaler is not None:
-            scaler.scale(loss).backward()
+            scaler.scale(scaled_loss).backward()
         else:
-            loss.backward()
+            scaled_loss.backward()
         
-        # Handle hidden state and conv buffers based on document boundary
-        if is_doc_end:
-            # Document boundary - reset both hidden state and conv buffers for next document
-            hidden_state = None
-            conv_buffers = None
+        # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET ---
+        # Create a broadcastable mask: [B] -> [B, 1, 1] for RNN states
+        reset_mask = is_doc_end.view(-1, 1, 1)
+        # Create a mask for conv buffers: [B] -> [B, 1, 1, 1]
+        conv_reset_mask = is_doc_end.view(-1, 1, 1, 1)
+
+        # Apply the mask to zero-out states for batch items that hit a document end.
+        hidden_state = [h.detach() * (~reset_mask) for h in next_hidden_state]
+        if next_conv_buffers and next_conv_buffers[0] is not None:
+            conv_buffers = [b.detach() * (~conv_reset_mask) for b in next_conv_buffers]
         else:
-            # Continue with hidden state and conv buffers for next chunk
-            if next_hidden_state:
-                hidden_state = [h.detach() for h in next_hidden_state]
-            if next_conv_buffers:
-                # Conv buffers are already detached in the conv forward pass
-                conv_buffers = next_conv_buffers
+            conv_buffers = [] # Ensure it's an empty list if no conv
         
-        # Dynamic optimization: optimize at document end OR when hitting upper bound
-        should_optimize = is_doc_end or accumulated_steps >= args.grad_accum
+        # Use a fixed, synchronous optimization schedule
+        should_optimize = accumulated_steps >= args.grad_accum
         
         if should_optimize:
             if scaler is not None:
@@ -999,8 +1022,7 @@ def main():
             else:
                 optimizer.step()
             optimizer.zero_grad()
-            accumulated_steps = 0  # Reset step counter
-            total_actual_tokens = 0  # Reset token counter
+            accumulated_steps = 0
             
             evolutionary_node.update_fitness(chunk_loss, step)
             evolutionary_node.check_for_updates()
@@ -1012,7 +1034,8 @@ def main():
         
         # Get status and log with document stats
         status = evolutionary_node.get_status()
-        doc_stats = train_dataset.stream_dataset.get_stats()
+        # NOTE: doc_stats are now complex; we get stats from the first stream as a proxy.
+        doc_stats = train_dataset.streams[0].get_stats()
         log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize)
         
         if global_rank == 0:

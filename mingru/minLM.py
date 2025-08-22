@@ -2,7 +2,7 @@ import torch
 import math
 from torch import nn
 import torch.nn.functional as F
-from torch.nn import Module, ModuleList, RMSNorm
+from torch.nn import Module, ModuleList
 
 from mingru.minGRU import minGRU
 
@@ -13,6 +13,18 @@ def default(v, d):
     return v if exists(v) else d
 
 # classes
+
+class RMSNorm(Module):
+    """BFloat16-aware RMS normalization that avoids upcasting"""
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = dim ** 0.5
+        self.gamma = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        # Normalize in float32 for numerical stability, but immediately cast back
+        normed = F.normalize(x, dim=-1, eps=1e-5)
+        return normed * self.scale * self.gamma
 
 def FeedForward(dim, mult = 4):
     dim_inner = int(dim * mult)
@@ -198,19 +210,21 @@ class minLM(Module):
             # Return both RNN hiddens and conv buffers for inference
             return logits, (next_prev_hiddens, next_conv_buffers)
 
-        # Handle masking for padded sequences at document boundaries
-        if actual_length is not None and actual_length < x.shape[1]:
-            # Only compute loss on valid (non-padded) tokens
-            # actual_length-1 because we predict next token
-            loss = F.cross_entropy(
-                logits[:, :actual_length-1].transpose(1, 2),
-                labels[:, :actual_length-1]
-            )
-        else:
-            loss = F.cross_entropy(
-                logits.transpose(1, 2),
-                labels
-            )
+        # Handle masking for batched padded sequences
+        labels_masked = labels.clone()
+        if actual_length is not None and torch.is_tensor(actual_length):
+            # actual_length is now a tensor of shape [B]
+            for i in range(labels_masked.size(0)): # Iterate over batch dimension
+                # The length is of the original chunk, labels are one shorter
+                valid_len = actual_length[i] - 1
+                if valid_len < labels_masked.size(1):
+                    labels_masked[i, valid_len:] = -100
+
+        loss = F.cross_entropy(
+            logits.transpose(1, 2),
+            labels_masked,
+            ignore_index=-100
+        )
 
         # Modified return logic for TBPTT
         if not return_prev_hiddens:

@@ -93,9 +93,27 @@ class ValidationTracker:
                             if chunk_data:
                                 # Process partial chunk before boundary
                                 chunk = torch.tensor(chunk_data, dtype=torch.long).unsqueeze(0).to(device)
-                                result = model(chunk, return_loss=True, prev_hiddens=hidden_state)
+                                # Pad chunk to full size
+                                actual_length = len(chunk_data)
+                                if actual_length < self.chunk_size:
+                                    padded_chunk = torch.zeros(1, self.chunk_size, dtype=torch.long, device=device)
+                                    padded_chunk[0, :actual_length] = chunk[0]
+                                    chunk = padded_chunk
+                                
+                                result = model(
+                                    chunk, 
+                                    return_loss=True, 
+                                    return_prev_hiddens=True,
+                                    prev_hiddens=hidden_state if hidden_state else [],
+                                    prev_conv_buffers=[],
+                                    actual_length=torch.tensor([actual_length], dtype=torch.long)
+                                )
                                 # Handle both old and new return formats
-                                loss = result[0] if isinstance(result, tuple) else result
+                                if isinstance(result, tuple) and len(result) == 2:
+                                    loss, (next_hidden_state, _) = result
+                                else:
+                                    loss = result[0] if isinstance(result, tuple) else result
+                                    next_hidden_state = None
                                 chunk_info = (loss.item(), len(chunk_data))
                                 sequence_chunks.append(chunk_info)
                                 current_doc_chunks.append(chunk_info)
@@ -117,9 +135,21 @@ class ValidationTracker:
                     # Process full or final chunk
                     if chunk_data:
                         chunk = torch.tensor(chunk_data, dtype=torch.long).unsqueeze(0).to(device)
-                        result = model(chunk, return_loss=True, 
-                                     prev_hiddens=hidden_state, 
-                                     return_prev_hiddens=True)
+                        # Pad chunk to full size if needed
+                        actual_length = len(chunk_data)
+                        if actual_length < self.chunk_size:
+                            padded_chunk = torch.zeros(1, self.chunk_size, dtype=torch.long, device=device)
+                            padded_chunk[0, :actual_length] = chunk[0]
+                            chunk = padded_chunk
+                        
+                        result = model(
+                            chunk, 
+                            return_loss=True, 
+                            return_prev_hiddens=True,
+                            prev_hiddens=hidden_state if hidden_state else [],
+                            prev_conv_buffers=[],
+                            actual_length=torch.tensor([actual_length], dtype=torch.long) if actual_length < self.chunk_size else None
+                        )
                         
                         # Handle both old format (loss, hiddens) and new format (loss, (hiddens, buffers))
                         if isinstance(result, tuple) and len(result) == 2:

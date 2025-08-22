@@ -887,7 +887,7 @@ class EvolutionaryTrainingNode:
                 'validation_fitness': self.get_current_fitness(),
                 'ema_loss': self.get_current_fitness(),  # Keep for compatibility
                 'model_state_dict': {
-                    name: param.detach().cpu() 
+                    name: param.detach().cpu().to(torch.bfloat16) 
                     for name, param in self.model.named_parameters()
                 }
             }
