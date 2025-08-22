@@ -54,7 +54,7 @@ NUM_GPUS=6
 echo "Starting 1B parameter pure RNN run with document-aware validation on 6 GPUs (ranks 2-7)."
 
 # Training configuration with exposed parameters for easy tweaking
-deepspeed --num_gpus=$NUM_GPUS \
+torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
   train.py \
