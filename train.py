@@ -903,8 +903,8 @@ def main():
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         
-        # Use per-GPU bytes processed from dataset
-        total_tokens_processed = doc_stats['bytes_processed']
+        # Use per-GPU bytes processed from dataset, multiplied by batch size
+        total_tokens_processed = doc_stats['bytes_processed'] * batch_size
         tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
         current_lr = optimizer.param_groups[0]['lr']
         
@@ -1040,7 +1040,7 @@ def main():
         
         if global_rank == 0:
             elapsed = time.time() - start_time
-            tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
+            tokens_per_sec = (doc_stats['bytes_processed'] * batch_size) / elapsed if elapsed > 0 else 0
             pbar_str = f"L={chunk_loss:.3f} V={status['fitness']:.3f} D={doc_stats['documents_processed']} T/s={tokens_per_sec:.0f}"
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"
