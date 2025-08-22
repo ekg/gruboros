@@ -576,6 +576,7 @@ def get_args():
     parser.add_argument('--ff_mult', type=float, default=4.0, help='feedforward multiplier for MinGRU (ffn_dim = dim * ff_mult)')
     parser.add_argument('--conv_kernel_size', type=int, default=None, help='convolutional kernel size for preprocessing (None=disabled, typical: 4, 8, 16)')
     parser.add_argument('--dropout', type=float, default=0.0, help='dropout rate for training (0.0=disabled)')
+    parser.add_argument('--bf16', action='store_true', help='use bfloat16 mixed precision training')
     parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
     parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
@@ -764,9 +765,14 @@ def main():
     model = get_model(model_config).to(device)
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
+    # Initialize GradScaler for mixed precision training
+    scaler = torch.cuda.amp.GradScaler() if args.bf16 else None
+    
     if resuming and checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if scaler is not None and 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict'] is not None:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
         if global_rank == 0: print(f"Resumed model and optimizer from step {resume_step}")
     
     if args.schedulefree: optimizer.train()
@@ -829,6 +835,7 @@ def main():
                 checkpoint_data = {
                     'step': step, 'model_state_dict': model.state_dict(), 
                     'optimizer_state_dict': optimizer.state_dict(),
+                    'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
                     'validation_fitness': current_validation_fitness, 'model_config': model_config
                 }
                 return save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_validation_fitness)
@@ -935,14 +942,15 @@ def main():
         
         # Forward pass with both RNN hidden states and conv buffers
         # Pass actual_length for proper masking if chunk is padded
-        result = model(
-            chunk,  # Already has correct batch dimension
-            return_loss=True,
-            return_prev_hiddens=True,
-            prev_hiddens=hidden_state,
-            prev_conv_buffers=conv_buffers,
-            actual_length=actual_length if actual_length < int(args.chunk_size) else None
-        )
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+            result = model(
+                chunk,  # Already has correct batch dimension
+                return_loss=True,
+                return_prev_hiddens=True,
+                prev_hiddens=hidden_state,
+                prev_conv_buffers=conv_buffers,
+                actual_length=actual_length if actual_length < int(args.chunk_size) else None
+            )
         
         # Unpack the result - could be just loss or loss + (hiddens, buffers)
         if isinstance(result, tuple) and len(result) == 2:
@@ -963,7 +971,10 @@ def main():
         
         # Use the loss as-is (already scaled by actual_length if partial)
         # No artificial division by steps - let each chunk contribute proportionally
-        loss.backward()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         
         # Handle hidden state and conv buffers based on document boundary
         if is_doc_end:
@@ -982,7 +993,11 @@ def main():
         should_optimize = is_doc_end or accumulated_steps >= args.grad_accum
         
         if should_optimize:
-            optimizer.step()
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             optimizer.zero_grad()
             accumulated_steps = 0  # Reset step counter
             total_actual_tokens = 0  # Reset token counter
