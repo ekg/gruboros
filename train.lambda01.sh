@@ -67,7 +67,6 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --train_steps 10000000 \
   --save_every 500 \
   --lr 0.001 \
-  --dropout 0.1 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
@@ -89,7 +88,6 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \
-  --bf16 \
   --cuda
 
 echo "Training finished."
