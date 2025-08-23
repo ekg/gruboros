@@ -48,8 +48,8 @@ class ValidationTracker:
         _, document_losses = self._evaluate_sequences(model, seed, return_document_losses=True)
         return np.array(document_losses)
     
-    def _evaluate_sequences(self, model: torch.nn.Module, seed: int, return_document_losses: bool = False) -> Tuple:
-        """Core validation logic that mimics training exactly
+    def _evaluate_sequences(self, model: torch.nn.Module, seed: int, batch_size: int = 16, return_document_losses: bool = False) -> Tuple:
+        """Batched validation that matches training batch size for torch.compile compatibility
         
         Returns:
             - sequence_losses: array of per-sequence average losses (for fitness)
@@ -58,146 +58,149 @@ class ValidationTracker:
         model.eval()
         device = next(model.parameters()).device
         rng = np.random.RandomState(seed)
-        sequence_losses = []
-        all_document_losses = []  # For t-test comparisons
+        
+        all_sequence_losses = []
+        all_document_losses = []
+        
+        # Process sequences in batches
+        num_batches = (self.num_sequences + batch_size - 1) // batch_size
         
         with torch.no_grad():
-            for seq_idx in range(self.num_sequences):
-                # Start at random position
-                position = rng.randint(0, max(1, self.file_size - self.sequence_length))
+            for batch_idx in range(num_batches):
+                batch_start = batch_idx * batch_size
+                batch_end = min(batch_start + batch_size, self.num_sequences)
+                actual_batch_size = batch_end - batch_start
                 
-                # Scan to next document boundary
-                while position < self.file_size and self.mmap[position] != 0x1e:
-                    position += 1
-                position = (position + 1) % self.file_size  # Skip delimiter
+                # Initialize batch of sequences at random positions
+                positions = [rng.randint(0, max(1, self.file_size - self.sequence_length)) 
+                            for _ in range(actual_batch_size)]
                 
-                # Process one sequence
-                hidden_state = None
-                sequence_chunks = []  # All chunks in this sequence
-                current_doc_chunks = []  # Chunks for current document
-                bytes_processed = 0
+                # Scan each to next document boundary
+                for i in range(actual_batch_size):
+                    while positions[i] < self.file_size and self.mmap[positions[i]] != 0x1e:
+                        positions[i] += 1
+                    positions[i] = (positions[i] + 1) % self.file_size
                 
-                while bytes_processed < self.sequence_length:
-                    # Collect chunk respecting document boundaries
-                    chunk_data = []
+                # Pad to full batch_size if needed (for torch.compile compatibility)
+                if actual_batch_size < batch_size:
+                    positions.extend([positions[-1]] * (batch_size - actual_batch_size))
+                
+                # Process batch
+                hidden_states = None  # Will be list of [batch_size, ...] tensors
+                conv_buffers = None
+                bytes_processed = [0] * batch_size
+                doc_losses_per_seq = [[] for _ in range(actual_batch_size)]
+                current_doc_chunks = [[] for _ in range(actual_batch_size)]
+                
+                while any(b < self.sequence_length for b in bytes_processed[:actual_batch_size]):
+                    # Collect chunks for entire batch
+                    batch_chunks = []
+                    actual_lengths = []
+                    is_doc_end = []
                     
-                    while len(chunk_data) < self.chunk_size and bytes_processed < self.sequence_length:
-                        if position >= self.file_size:
-                            position = 0
-                        
-                        byte_val = int(self.mmap[position])
-                        position += 1
-                        bytes_processed += 1
-                        
-                        if byte_val == 0x1e:  # Document boundary
-                            if chunk_data:
-                                # Process partial chunk before boundary
-                                chunk = torch.tensor(chunk_data, dtype=torch.long).unsqueeze(0).to(device)
-                                # Pad chunk to full size
-                                actual_length = len(chunk_data)
-                                if actual_length < self.chunk_size:
-                                    padded_chunk = torch.zeros(1, self.chunk_size, dtype=torch.long, device=device)
-                                    padded_chunk[0, :actual_length] = chunk[0]
-                                    chunk = padded_chunk
-                                
-                                result = model(
-                                    chunk, 
-                                    return_loss=True, 
-                                    return_prev_hiddens=True,
-                                    prev_hiddens=hidden_state if hidden_state else [],
-                                    prev_conv_buffers=[],
-                                    actual_length=torch.tensor([actual_length], dtype=torch.long)
-                                )
-                                # Handle both old and new return formats
-                                if isinstance(result, tuple) and len(result) == 2:
-                                    loss, (next_hidden_state, _) = result
-                                else:
-                                    loss = result[0] if isinstance(result, tuple) else result
-                                    next_hidden_state = None
-                                chunk_info = (loss.item(), len(chunk_data))
-                                sequence_chunks.append(chunk_info)
-                                current_doc_chunks.append(chunk_info)
-                                
-                                # Compute document loss and save it
-                                if current_doc_chunks:
-                                    doc_loss = sum(l * t for l, t in current_doc_chunks) / sum(t for _, t in current_doc_chunks)
-                                    all_document_losses.append(doc_loss)
-                                
-                                # Reset for new document - explicitly delete to free memory
-                                if hidden_state is not None:
-                                    del hidden_state
-                                hidden_state = None
-                                current_doc_chunks = []
-                                chunk_data = []
+                    for seq_idx in range(batch_size):
+                        if seq_idx >= actual_batch_size or bytes_processed[seq_idx] >= self.sequence_length:
+                            # Padding sequence or completed sequence
+                            batch_chunks.append(torch.zeros(self.chunk_size, dtype=torch.long))
+                            actual_lengths.append(self.chunk_size)
+                            is_doc_end.append(False)
                         else:
-                            chunk_data.append(byte_val)
-                    
-                    # Process full or final chunk
-                    if chunk_data:
-                        chunk = torch.tensor(chunk_data, dtype=torch.long).unsqueeze(0).to(device)
-                        # Pad chunk to full size if needed
-                        actual_length = len(chunk_data)
-                        if actual_length < self.chunk_size:
-                            padded_chunk = torch.zeros(1, self.chunk_size, dtype=torch.long, device=device)
-                            padded_chunk[0, :actual_length] = chunk[0]
-                            chunk = padded_chunk
-                        
-                        result = model(
-                            chunk, 
-                            return_loss=True, 
-                            return_prev_hiddens=True,
-                            prev_hiddens=hidden_state if hidden_state else [],
-                            prev_conv_buffers=[],
-                            actual_length=torch.tensor([actual_length], dtype=torch.long) if actual_length < self.chunk_size else None
-                        )
-                        
-                        # Handle both old format (loss, hiddens) and new format (loss, (hiddens, buffers))
-                        if isinstance(result, tuple) and len(result) == 2:
-                            loss, next_hidden = result
-                            # Check if next_hidden is the new format (hiddens, buffers)
-                            if isinstance(next_hidden, tuple) and len(next_hidden) == 2:
-                                rnn_hiddens, conv_buffers = next_hidden
-                                next_hidden = rnn_hiddens  # Use only RNN hiddens for validation
-                        else:
-                            loss = result
-                            next_hidden = None
+                            # Collect chunk for this sequence
+                            chunk_data = []
+                            doc_ended = False
                             
-                        chunk_info = (loss.item(), len(chunk_data))
-                        sequence_chunks.append(chunk_info)
-                        current_doc_chunks.append(chunk_info)
-                        
-                        # FIX: Detach hidden states to break the computation graph
-                        if next_hidden is not None:
-                            hidden_state = [h.detach() for h in next_hidden]
-                        else:
-                            hidden_state = None
+                            while len(chunk_data) < self.chunk_size and bytes_processed[seq_idx] < self.sequence_length:
+                                if positions[seq_idx] >= self.file_size:
+                                    positions[seq_idx] = 0
+                                
+                                byte_val = int(self.mmap[positions[seq_idx]])
+                                positions[seq_idx] += 1
+                                bytes_processed[seq_idx] += 1
+                                
+                                if byte_val == 0x1e:  # Document boundary
+                                    doc_ended = True
+                                    if current_doc_chunks[seq_idx]:
+                                        # Calculate document loss
+                                        doc_loss = sum(l * t for l, t in current_doc_chunks[seq_idx]) / \
+                                                  sum(t for _, t in current_doc_chunks[seq_idx])
+                                        doc_losses_per_seq[seq_idx].append(doc_loss)
+                                        current_doc_chunks[seq_idx] = []
+                                    break
+                                else:
+                                    chunk_data.append(byte_val)
+                            
+                            # Pad chunk to full size
+                            actual_len = len(chunk_data)
+                            if actual_len < self.chunk_size:
+                                chunk_data.extend([0] * (self.chunk_size - actual_len))
+                            
+                            batch_chunks.append(torch.tensor(chunk_data, dtype=torch.long))
+                            actual_lengths.append(actual_len)
+                            is_doc_end.append(doc_ended)
+                    
+                    # Stack into batch tensors
+                    chunks_tensor = torch.stack(batch_chunks).to(device)  # [batch_size, chunk_size]
+                    lengths_tensor = torch.tensor(actual_lengths, dtype=torch.long, device=device)
+                    doc_end_mask = torch.tensor(is_doc_end, dtype=torch.bool, device=device)
+                    
+                    # Forward pass with batched data
+                    result = model(
+                        chunks_tensor,
+                        return_loss=True,
+                        return_prev_hiddens=True,
+                        prev_hiddens=hidden_states,
+                        prev_conv_buffers=conv_buffers,
+                        actual_length=lengths_tensor
+                    )
+                    
+                    # Unpack result
+                    if isinstance(result, tuple) and len(result) == 2:
+                        loss, (next_hidden_states, next_conv_buffers) = result
+                    else:
+                        loss = result
+                        next_hidden_states = None
+                        next_conv_buffers = None
+                    
+                    # Record losses for actual sequences
+                    loss_val = loss.item()
+                    for seq_idx in range(actual_batch_size):
+                        if bytes_processed[seq_idx] <= self.sequence_length and actual_lengths[seq_idx] > 0:
+                            current_doc_chunks[seq_idx].append((loss_val, actual_lengths[seq_idx]))
+                    
+                    # Handle hidden state resets based on document boundaries
+                    if next_hidden_states:
+                        reset_mask = doc_end_mask.view(-1, 1, 1)
+                        hidden_states = [h.detach() * (~reset_mask) for h in next_hidden_states]
+                    
+                    if next_conv_buffers:
+                        conv_reset_mask = doc_end_mask.view(-1, 1, 1, 1)
+                        conv_buffers = [b.detach() * (~conv_reset_mask) for b in next_conv_buffers]
                 
-                # Don't forget the last document if it didn't end with delimiter
-                if current_doc_chunks:
-                    doc_loss = sum(l * t for l, t in current_doc_chunks) / sum(t for _, t in current_doc_chunks)
-                    all_document_losses.append(doc_loss)
+                # Finalize any incomplete documents
+                for seq_idx in range(actual_batch_size):
+                    if current_doc_chunks[seq_idx]:
+                        doc_loss = sum(l * t for l, t in current_doc_chunks[seq_idx]) / \
+                                  sum(t for _, t in current_doc_chunks[seq_idx])
+                        doc_losses_per_seq[seq_idx].append(doc_loss)
                 
-                # Compute weighted average loss for this sequence
-                if sequence_chunks:
-                    total_loss = sum(loss * tokens for loss, tokens in sequence_chunks)
-                    total_tokens = sum(tokens for _, tokens in sequence_chunks)
-                    sequence_losses.append(total_loss / total_tokens)
+                # Calculate sequence-level losses for this batch
+                batch_sequence_losses = []
+                for seq_idx in range(actual_batch_size):
+                    if doc_losses_per_seq[seq_idx]:
+                        batch_sequence_losses.append(np.mean(doc_losses_per_seq[seq_idx]))
                 
-                # Clean up hidden state after sequence
-                if hidden_state is not None:
-                    # Extra safety: ensure complete cleanup
-                    if isinstance(hidden_state, list):
-                        for h in hidden_state:
-                            del h
-                    del hidden_state
-                    hidden_state = None
+                all_sequence_losses.extend(batch_sequence_losses)
+                
+                # Collect all document losses
+                for seq_losses in doc_losses_per_seq:
+                    all_document_losses.extend(seq_losses)
         
         model.train()
         
         if return_document_losses:
-            return np.array(sequence_losses), all_document_losses
+            return np.array(all_sequence_losses), all_document_losses
         else:
-            return np.array(sequence_losses), None
+            return np.array(all_sequence_losses), None
     
     def get_fitness(self) -> float:
         """Return current validation loss (most recent)"""
