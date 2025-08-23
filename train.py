@@ -1,5 +1,6 @@
 import os, random, numpy as np
 import torch, torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, IterableDataset
 import time
@@ -903,8 +904,8 @@ def main():
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         
-        # Use per-GPU bytes processed from dataset, multiplied by batch size
-        total_tokens_processed = doc_stats['bytes_processed'] * batch_size
+        # Use per-GPU bytes processed from dataset (already summed across all streams)
+        total_tokens_processed = doc_stats['bytes_processed']
         tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
         current_lr = optimizer.param_groups[0]['lr']
         
@@ -974,18 +975,50 @@ def main():
                 return_loss=True,
                 return_prev_hiddens=True,
                 prev_hiddens=hidden_state,
-                prev_conv_buffers=conv_buffers,
-                actual_length=actual_lengths # Pass tensor of lengths
+                prev_conv_buffers=conv_buffers
             )
         
         # Unpack the result - could be just loss or loss + (hiddens, buffers)
         if isinstance(result, tuple) and len(result) == 2:
-            loss, (next_hidden_state, next_conv_buffers) = result
+            raw_loss, (next_hidden_state, next_conv_buffers) = result
         else:
             # Backward compatibility - model without conv buffers
-            loss = result
+            raw_loss = result
             next_hidden_state = None
             next_conv_buffers = None
+        
+        # Apply vectorized masking for padded sequences
+        # Need to get logits and labels for proper masking
+        labels = chunk[:, 1:].contiguous()  # [B, SeqLen-1]
+        
+        # Create vectorized mask for actual lengths
+        seq_len = labels.size(1)
+        batch_size_tensor = labels.size(0)
+        device = labels.device
+        
+        # Check if we need masking (any sequence shorter than chunk_size)
+        needs_masking = (actual_lengths < chunk_size).any()
+        
+        if needs_masking:
+            # Vectorized masking: create range tensor and compare with lengths
+            arange = torch.arange(seq_len, device=device)[None, :]  # [1, SeqLen-1]
+            valid_mask = arange < (actual_lengths - 1)[:, None]  # [B, SeqLen-1]
+            
+            # Apply mask by setting invalid positions to -100
+            labels_masked = labels.clone()
+            labels_masked[~valid_mask] = -100
+            
+            # Recompute loss with proper masking - need to get logits from model
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                logits = model(chunk, return_loss=False)
+                loss = F.cross_entropy(
+                    logits[:, :-1].transpose(1, 2), 
+                    labels_masked, 
+                    ignore_index=-100
+                )
+        else:
+            # No masking needed
+            loss = raw_loss
         
         # Scale loss for gradient accumulation
         scaled_loss = loss / args.grad_accum
@@ -1034,13 +1067,19 @@ def main():
         
         # Get status and log with document stats
         status = evolutionary_node.get_status()
-        # NOTE: doc_stats are now complex; we get stats from the first stream as a proxy.
-        doc_stats = train_dataset.streams[0].get_stats()
+        # Aggregate stats across all streams for accurate reporting
+        all_stats = [stream.get_stats() for stream in train_dataset.streams]
+        doc_stats = {
+            'documents_processed': sum(s['documents_processed'] for s in all_stats),
+            'bytes_processed': sum(s['bytes_processed'] for s in all_stats),
+            'file_wraps': sum(s['file_wraps'] for s in all_stats),
+            'current_position': 0  # Not meaningful with multiple streams
+        }
         log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize)
         
         if global_rank == 0:
             elapsed = time.time() - start_time
-            tokens_per_sec = (doc_stats['bytes_processed'] * batch_size) / elapsed if elapsed > 0 else 0
+            tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
             pbar_str = f"L={chunk_loss:.3f} V={status['fitness']:.3f} D={doc_stats['documents_processed']} T/s={tokens_per_sec:.0f}"
             if 'skipped_due_to_lock' in status:
                 pbar_str += f" skipped={status['skipped_due_to_lock']}"

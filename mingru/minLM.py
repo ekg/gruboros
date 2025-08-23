@@ -210,21 +210,8 @@ class minLM(Module):
             # Return both RNN hiddens and conv buffers for inference
             return logits, (next_prev_hiddens, next_conv_buffers)
 
-        # Handle masking for batched padded sequences
-        labels_masked = labels.clone()
-        if actual_length is not None and torch.is_tensor(actual_length):
-            # actual_length is now a tensor of shape [B]
-            for i in range(labels_masked.size(0)): # Iterate over batch dimension
-                # The length is of the original chunk, labels are one shorter
-                valid_len = actual_length[i] - 1
-                if valid_len < labels_masked.size(1):
-                    labels_masked[i, valid_len:] = -100
-
-        loss = F.cross_entropy(
-            logits.transpose(1, 2),
-            labels_masked,
-            ignore_index=-100
-        )
+        # Compute standard cross-entropy loss
+        loss = F.cross_entropy(logits.transpose(1, 2), labels)
 
         # Modified return logic for TBPTT
         if not return_prev_hiddens:
