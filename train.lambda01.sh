@@ -91,7 +91,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \
   --cuda \
-  --bf16
+  --bf16 \
+  --compile
 
 echo "Training finished."
 
