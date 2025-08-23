@@ -210,8 +210,21 @@ class minLM(Module):
             # Return both RNN hiddens and conv buffers for inference
             return logits, (next_prev_hiddens, next_conv_buffers)
 
-        # Compute standard cross-entropy loss
-        loss = F.cross_entropy(logits.transpose(1, 2), labels)
+        # Vectorized loss masking for batched padded sequences
+        labels_masked = labels.clone()
+        if actual_length is not None and torch.is_tensor(actual_length):
+            seq_len = labels.size(1)
+            # Create arange on the SAME device as labels to prevent device mismatch
+            arange = torch.arange(seq_len, device=labels.device)[None, :]
+            # Create a boolean mask for tokens to be ignored
+            mask = arange >= (actual_length - 1)[:, None]
+            labels_masked[mask] = -100
+        
+        loss = F.cross_entropy(
+            logits.transpose(1, 2),
+            labels_masked,
+            ignore_index=-100
+        )
 
         # Modified return logic for TBPTT
         if not return_prev_hiddens:

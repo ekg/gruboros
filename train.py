@@ -967,6 +967,8 @@ def main():
         chunk_data, is_doc_end, actual_lengths = next(data_iterator)
         chunk = chunk_data.to(device, non_blocking=True) # [B, SeqLen]
         is_doc_end = is_doc_end.to(device, non_blocking=True) # [B]
+        # Move actual_lengths to GPU to prevent device mismatch
+        actual_lengths = actual_lengths.to(device, non_blocking=True)
         
         # Forward pass with both RNN hidden states and conv buffers
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
@@ -975,50 +977,18 @@ def main():
                 return_loss=True,
                 return_prev_hiddens=True,
                 prev_hiddens=hidden_state,
-                prev_conv_buffers=conv_buffers
+                prev_conv_buffers=conv_buffers,
+                actual_length=actual_lengths
             )
         
         # Unpack the result - could be just loss or loss + (hiddens, buffers)
         if isinstance(result, tuple) and len(result) == 2:
-            raw_loss, (next_hidden_state, next_conv_buffers) = result
+            loss, (next_hidden_state, next_conv_buffers) = result
         else:
             # Backward compatibility - model without conv buffers
-            raw_loss = result
+            loss = result
             next_hidden_state = None
             next_conv_buffers = None
-        
-        # Apply vectorized masking for padded sequences
-        # Need to get logits and labels for proper masking
-        labels = chunk[:, 1:].contiguous()  # [B, SeqLen-1]
-        
-        # Create vectorized mask for actual lengths
-        seq_len = labels.size(1)
-        batch_size_tensor = labels.size(0)
-        device = labels.device
-        
-        # Check if we need masking (any sequence shorter than chunk_size)
-        needs_masking = (actual_lengths < chunk_size).any()
-        
-        if needs_masking:
-            # Vectorized masking: create range tensor and compare with lengths
-            arange = torch.arange(seq_len, device=device)[None, :]  # [1, SeqLen-1]
-            valid_mask = arange < (actual_lengths - 1)[:, None]  # [B, SeqLen-1]
-            
-            # Apply mask by setting invalid positions to -100
-            labels_masked = labels.clone()
-            labels_masked[~valid_mask] = -100
-            
-            # Recompute loss with proper masking - need to get logits from model
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
-                logits = model(chunk, return_loss=False)
-                loss = F.cross_entropy(
-                    logits[:, :-1].transpose(1, 2), 
-                    labels_masked, 
-                    ignore_index=-100
-                )
-        else:
-            # No masking needed
-            loss = raw_loss
         
         # Scale loss for gradient accumulation
         scaled_loss = loss / args.grad_accum
