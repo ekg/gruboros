@@ -71,9 +71,9 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --grad_clip 0.0 \
-  --grad_accum 32 \
-  --chunk_size 256 \
-  --batch_size 16 \
+  --grad_accum 16 \
+  --chunk_size 512 \
+  --batch_size 4 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \

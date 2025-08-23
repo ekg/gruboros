@@ -604,6 +604,7 @@ def get_args():
     parser.add_argument('--conv_kernel_size', type=int, default=None, help='convolutional kernel size for preprocessing (None=disabled, typical: 4, 8, 16)')
     parser.add_argument('--dropout', type=float, default=0.0, help='dropout rate for training (0.0=disabled)')
     parser.add_argument('--bf16', action='store_true', help='use bfloat16 mixed precision training')
+    parser.add_argument('--compile', action='store_true', help='use torch.compile for model optimization')
     parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
     parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
@@ -792,11 +793,12 @@ def main():
 
     model = get_model(model_config).to(device)
     # Compile the model for better performance
-    model = torch.compile(model)
+    if args.compile:
+        model = torch.compile(model)
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     # Initialize GradScaler for mixed precision training
-    scaler = torch.cuda.amp.GradScaler() if args.bf16 else None
+    scaler = torch.amp.GradScaler('cuda') if args.bf16 else None
     
     if resuming and checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
