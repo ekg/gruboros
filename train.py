@@ -793,7 +793,6 @@ def main():
     model = get_model(model_config).to(device)
     # Try inductor with specific tuning
     model = torch.compile(model, 
-                          mode="reduce-overhead",
                           backend="inductor",
                           options={"triton.cudagraphs": True})
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
