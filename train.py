@@ -794,10 +794,7 @@ def main():
     model = get_model(model_config).to(device)
     # Compile the model for better performance
     if args.compile:
-        # Enable cudagraphs for better performance with small kernels
-        import torch._inductor.config as inductor_config
-        inductor_config.triton.cudagraphs = True
-        model = torch.compile(model, mode="reduce-overhead")
+        model = torch.compile(model)
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     # Initialize GradScaler for mixed precision training
