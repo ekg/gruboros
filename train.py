@@ -608,6 +608,7 @@ def get_args():
     parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
+    parser.add_argument('--grad_clip', type=float, default=1.0, help='Gradient clipping threshold (L2 norm). Set to 0.0 to disable.')
     parser.add_argument('--grad_accum', type=int, default=1, help='gradient accumulation steps')
     parser.add_argument('--keep_checkpoints', type=int, default=3, help='number of recent checkpoints to keep')
     parser.add_argument('--keep_elite', type=int, default=10, help='number of elite models to preserve')
@@ -1019,11 +1020,22 @@ def main():
         should_optimize = accumulated_steps >= args.grad_accum
         
         if should_optimize:
+            # Conditionally perform gradient clipping if args.grad_clip is set > 0
+            if args.grad_clip > 0.0:
+                # 1. Unscale gradients before clipping, as required by GradScaler
+                if scaler is not None:
+                    scaler.unscale_(optimizer)
+                
+                # 2. Clip the gradients using the value from the command line
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+
+            # 3. The optimizer step proceeds as usual, operating on the (now clipped) gradients
             if scaler is not None:
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 optimizer.step()
+            
             optimizer.zero_grad()
             accumulated_steps = 0
             
