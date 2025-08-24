@@ -15,8 +15,8 @@ class ValidationTracker:
         self.chunk_size = chunk_size
         self.batch_size = batch_size
         self.validation_interval = validation_interval
-        # Fixed validation length - process for ~8k tokens per sequence  
-        self.sequence_length = 8192
+        # Validation sequences are chunk_size long, same as training
+        self.sequence_length = chunk_size
         
         self.mmap = np.memmap(data_path, dtype=np.uint8, mode='r')
         self.file_size = len(self.mmap)
