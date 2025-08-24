@@ -635,6 +635,8 @@ def get_args():
                         help='P-value threshold for statistical significance in fitness comparison (default: 0.01).')
     parser.add_argument('--validation_interval', type=int, default=10000,
                         help='Steps between validation runs (default: 10000)')
+    parser.add_argument('--validation_batches', type=int, default=8,
+                        help='Number of batches to run for validation (default: 8)')
     
     # --- NEW: Filesystem-Augmented Evolution ---
     parser.add_argument('--filesystem-coordinator', action='store_true',
@@ -884,7 +886,8 @@ def main():
         chunk_size=chunk_size,
         batch_size=batch_size,
         p_value_threshold=args.gossip_p_value_threshold,
-        validation_interval=args.validation_interval
+        validation_interval=args.validation_interval,
+        validation_batches=args.validation_batches
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0:

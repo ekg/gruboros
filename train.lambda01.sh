@@ -85,6 +85,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_window 10000 \
   --validation_interval 10000 \
+  --validation_batches 8 \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \

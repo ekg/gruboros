@@ -112,7 +112,8 @@ class EvolutionaryTrainingNode:
                  chunk_size: int = None,
                  batch_size: int = None,
                  p_value_threshold: float = 0.01,
-                 validation_interval: int = 10000):
+                 validation_interval: int = 10000,
+                 validation_batches: int = 8):
         
         self.node_id = node_id
         self.model = model
@@ -149,6 +150,7 @@ class EvolutionaryTrainingNode:
             chunk_size=chunk_size,
             batch_size=batch_size,
             validation_interval=validation_interval,
+            validation_batches=validation_batches,
             window_size=10
         )
         self.validation_lock = threading.Lock()
@@ -215,7 +217,7 @@ class EvolutionaryTrainingNode:
                 "VALIDATION_UPDATE",
                 step=step,
                 fitness=fitness,
-                message=f"Validated on 1 batch of {self.validation_tracker.batch_size} sequences"
+                message=f"Validated on {self.validation_tracker.validation_batches} batches of {self.validation_tracker.batch_size} sequences each"
             )
         
         # Notify gossip thread about step

@@ -10,11 +10,13 @@ class ValidationTracker:
     
     def __init__(self, data_path: str, chunk_size: int, batch_size: int,
                  validation_interval: int = 10000,
+                 validation_batches: int = 8,
                  window_size: int = 10):
         self.data_path = data_path
         self.chunk_size = chunk_size
         self.batch_size = batch_size
         self.validation_interval = validation_interval
+        self.validation_batches = validation_batches
         # Validation sequences are chunk_size long, same as training
         self.sequence_length = chunk_size
         
@@ -61,8 +63,8 @@ class ValidationTracker:
         all_sequence_losses = []
         all_document_losses = []
         
-        # Process just one batch for validation
-        num_batches = 1
+        # Process multiple batches for more stable validation
+        num_batches = self.validation_batches
         
         with torch.no_grad():
             for batch_idx in range(num_batches):
