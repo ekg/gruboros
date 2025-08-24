@@ -100,7 +100,7 @@ class ValidationTracker:
                         if seq_idx >= actual_batch_size or bytes_processed[seq_idx] >= self.sequence_length:
                             # Padding sequence or completed sequence
                             batch_chunks.append(torch.zeros(self.chunk_size, dtype=torch.long))
-                            actual_lengths.append(self.chunk_size)
+                            actual_lengths.append(0)  # No actual data in padding
                             is_doc_end.append(False)
                         else:
                             # Collect chunk for this sequence
