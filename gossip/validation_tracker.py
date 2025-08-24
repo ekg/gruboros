@@ -8,16 +8,15 @@ import time
 class ValidationTracker:
     """Tracks model fitness using training-like validation"""
     
-    def __init__(self, data_path: str, chunk_size: int, 
+    def __init__(self, data_path: str, chunk_size: int, batch_size: int,
                  validation_interval: int = 10000,
-                 num_sequences: int = 32,
-                 sequence_length: int = 8192,
                  window_size: int = 10):
         self.data_path = data_path
         self.chunk_size = chunk_size
+        self.batch_size = batch_size
         self.validation_interval = validation_interval
-        self.num_sequences = num_sequences
-        self.sequence_length = sequence_length
+        # Fixed validation length - process for ~8k tokens per sequence  
+        self.sequence_length = 8192
         
         self.mmap = np.memmap(data_path, dtype=np.uint8, mode='r')
         self.file_size = len(self.mmap)
@@ -48,7 +47,7 @@ class ValidationTracker:
         _, document_losses = self._evaluate_sequences(model, seed, return_document_losses=True)
         return np.array(document_losses)
     
-    def _evaluate_sequences(self, model: torch.nn.Module, seed: int, batch_size: int = 16, return_document_losses: bool = False) -> Tuple:
+    def _evaluate_sequences(self, model: torch.nn.Module, seed: int, return_document_losses: bool = False) -> Tuple:
         """Batched validation that matches training batch size for torch.compile compatibility
         
         Returns:
@@ -62,14 +61,13 @@ class ValidationTracker:
         all_sequence_losses = []
         all_document_losses = []
         
-        # Process sequences in batches
-        num_batches = (self.num_sequences + batch_size - 1) // batch_size
+        # Process just one batch for validation
+        num_batches = 1
         
         with torch.no_grad():
             for batch_idx in range(num_batches):
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, self.num_sequences)
-                actual_batch_size = batch_end - batch_start
+                # Always process exactly batch_size sequences
+                actual_batch_size = self.batch_size
                 
                 # Initialize batch of sequences at random positions
                 positions = [rng.randint(0, max(1, self.file_size - self.sequence_length)) 
@@ -81,14 +79,12 @@ class ValidationTracker:
                         positions[i] += 1
                     positions[i] = (positions[i] + 1) % self.file_size
                 
-                # Pad to full batch_size if needed (for torch.compile compatibility)
-                if actual_batch_size < batch_size:
-                    positions.extend([positions[-1]] * (batch_size - actual_batch_size))
+                # No padding needed - we always process exactly batch_size sequences
                 
                 # Process batch
                 hidden_states = None  # Will be list of [batch_size, ...] tensors
                 conv_buffers = None
-                bytes_processed = [0] * batch_size
+                bytes_processed = [0] * self.batch_size
                 doc_losses_per_seq = [[] for _ in range(actual_batch_size)]
                 current_doc_chunks = [[] for _ in range(actual_batch_size)]
                 
@@ -98,7 +94,7 @@ class ValidationTracker:
                     actual_lengths = []
                     is_doc_end = []
                     
-                    for seq_idx in range(batch_size):
+                    for seq_idx in range(self.batch_size):
                         if seq_idx >= actual_batch_size or bytes_processed[seq_idx] >= self.sequence_length:
                             # Padding sequence or completed sequence
                             batch_chunks.append(torch.zeros(self.chunk_size, dtype=torch.long))
