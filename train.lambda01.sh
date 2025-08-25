@@ -91,6 +91,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --elite-checkpoint-multiplier 20.0 \
   --cuda \
   --bf16 \
+  --compile \
   --use_nau \
   --use_barriers \
   --barrier_min -8 \
