@@ -31,6 +31,14 @@ class NAU_GRU(nn.Module):
         # Flags as tensors for compile compatibility
         self.register_buffer('use_nau_tensor', torch.tensor(float(use_nau)))
         self.register_buffer('use_barriers_tensor', torch.tensor(float(use_barriers)))
+        
+        # Initialize weights
+        nn.init.xavier_uniform_(self.to_hidden_and_gate.weight)
+        nn.init.xavier_uniform_(self.to_out.weight)
+        nn.init.xavier_uniform_(self.W_add)
+        nn.init.xavier_uniform_(self.W_mul)
+        nn.init.xavier_uniform_(self.gate_mix.weight)
+        nn.init.zeros_(self.gate_mix.bias)
     
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         batch_size, seq_len, _ = x.shape
