@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 
 class NeuralArithmeticGate(nn.Module):
@@ -134,7 +134,7 @@ class NAU_GRU(nn.Module):
         
     def forward(self, x: torch.Tensor, 
                 prev_hidden: Optional[torch.Tensor] = None,
-                return_prev_hiddens: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+                return_next_prev_hidden: bool = False):
         """Main forward pass"""
         if self.training and self.use_nau:
             # Use sequential for NAU during training
@@ -144,10 +144,17 @@ class NAU_GRU(nn.Module):
                 prev_log_hidden = None
             out, log_hidden = self.forward_sequential(x, prev_log_hidden)
             # Convert back to normal space for compatibility
-            return out, torch.exp(log_hidden)
+            next_hidden = torch.exp(log_hidden)
+            
+            if not return_next_prev_hidden:
+                return out
+            return out, next_hidden
         else:
             # Use scan for inference (currently falls back to sequential)
-            return self.forward_scan(x, prev_hidden)
+            out, next_hidden = self.forward_scan(x, prev_hidden)
+            if not return_next_prev_hidden:
+                return out
+            return out, next_hidden
     
     @staticmethod
     def log_g(x: torch.Tensor) -> torch.Tensor:
