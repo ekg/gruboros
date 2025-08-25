@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
 from mingru.minGRU import minGRU
+from mingru.nau_gru import NAU_GRU
 
 def exists(v):
     return v is not None
@@ -85,7 +86,11 @@ class minLM(Module):
         conv_kernel_size = None,  # None = no conv, or specify size (4, 8, 16, etc.)
         use_lstm = None,  # Kept for backward compatibility but ignored
         enable_conv = None,  # Deprecated - for backwards compatibility only
-        dropout = 0.
+        dropout = 0.,
+        use_nau = False,  # Enable Neural Arithmetic Units
+        use_barriers = True,  # Enable log-barrier dynamics
+        barrier_min = -10,  # Minimum log value before barrier
+        barrier_max = 10  # Maximum log value before barrier
     ):
         super().__init__()
         
@@ -101,13 +106,25 @@ class minLM(Module):
 
         self.layers = ModuleList([])
 
-        min_rnn_klass = minGRU
+        # Choose RNN class based on use_nau
+        if use_nau:
+            min_rnn_klass = NAU_GRU
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_nau': use_nau,
+                'use_barriers': use_barriers,
+                'barrier_min': barrier_min,
+                'barrier_max': barrier_max
+            }
+        else:
+            min_rnn_klass = minGRU
+            rnn_kwargs = {'expansion_factor': expansion}
 
         for _ in range(depth):
             self.layers.append(ModuleList([
                 CausalConv1d(dim, conv_kernel_size) if conv_kernel_size else None,
                 RMSNorm(dim),
-                min_rnn_klass(dim, expansion_factor = expansion),
+                min_rnn_klass(dim, **rnn_kwargs),
                 RMSNorm(dim) if ff_mult > 0 else None,
                 FeedForward(dim, mult = ff_mult) if ff_mult > 0 else None,
                 nn.Dropout(dropout) if dropout > 0. else None
