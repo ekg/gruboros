@@ -1051,7 +1051,22 @@ def main():
             
             evolutionary_node.update_fitness(chunk_loss, step)
             evolutionary_node.check_for_updates()
+            
+            # Get mix counts before requesting
+            status_before = evolutionary_node.get_status()
+            mixes_before = status_before.get('mixes_won', 0) + status_before.get('mixes_lost', 0)
+            
             evolutionary_node.request_mix()
+            
+            # Check if a mix occurred by comparing counts
+            status_after = evolutionary_node.get_status()
+            mixes_after = status_after.get('mixes_won', 0) + status_after.get('mixes_lost', 0)
+            
+            # CRITICAL: Reinitialize hidden states if model weights changed
+            if mixes_after > mixes_before:
+                hidden_state = []
+                conv_buffers = []
+            
             current_validation_fitness = evolutionary_node.get_current_fitness()
         else:
             evolutionary_node.update_fitness(chunk_loss, step)
