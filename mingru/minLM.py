@@ -133,14 +133,9 @@ class minLM(Module):
 
         # Choose RNN class based on use_nau
         if use_nau:
-            # Prefer Triton implementation for better performance
-            if TRITON_AVAILABLE:
-                # Use barrier dynamics version - the original concept
-                min_rnn_klass = NAU_GRU_Triton_Barriers
-                print(f"Using Triton-accelerated NAU-GRU with log-barrier dynamics for depth={depth} model")
-            else:
-                min_rnn_klass = NAU_GRU
-                print(f"Using JIT-compiled NAU-GRU for depth={depth} model")
+            min_rnn_klass = NAU_GRU
+            # NAU_GRU is already the Triton version from the import above
+            print(f"Using NAU-GRU (Triton kernel) for depth={depth} model")
             
             rnn_kwargs = {
                 'expansion_factor': expansion,
