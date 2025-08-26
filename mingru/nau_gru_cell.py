@@ -9,18 +9,22 @@ from typing import Tuple
 @jit.script
 def gru_cell(h: Tensor, h_t: Tensor, g_t: Tensor) -> Tensor:
     """JIT-compiled GRU cell operation"""
-    # Activation
+    # Activation with numerical stability
     h_new = torch.where(
         h_t >= 0,
         (F.relu(h_t) + 0.5).log(),
         -F.softplus(-h_t)
     )
     
-    # Gate mixing
+    # Gate mixing in log space for stability
     g_sigmoid = torch.sigmoid(g_t)
     h_log = torch.log(torch.abs(h) + 1e-8)
-    h_log = (1 - g_sigmoid) * h_log + g_sigmoid * h_new
-    return torch.exp(h_log)
+    h_log_new = (1 - g_sigmoid) * h_log + g_sigmoid * h_new
+    
+    # Clamp to prevent numerical issues
+    h_log_new = torch.clamp(h_log_new, min=-20.0, max=20.0)
+    
+    return torch.exp(h_log_new)
 
 
 class NAU_GRU(nn.Module):

@@ -82,12 +82,9 @@ class NAU_GRU(nn.Module):
         nn.init.xavier_uniform_(self.to_out.weight)
     
     def forward_sequential(self, x: torch.Tensor, 
-                         prev_log_hidden: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sequential forward for training with NAU"""
+                         prev_log_hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sequential forward - compile-friendly with no conditionals"""
         batch_size, seq_len, _ = x.shape
-        
-        if prev_log_hidden is None:
-            prev_log_hidden = torch.zeros(batch_size, self.dim_inner, device=x.device)
         
         outputs = []
         log_hidden = prev_log_hidden
@@ -96,14 +93,18 @@ class NAU_GRU(nn.Module):
             x_t = x[:, t]
             hidden_t, gate_t = self.to_hidden_and_gate(x_t).chunk(2, dim=-1)
             
-            if self.use_nau:
-                # NAU path: learns arithmetic operations
-                h_normal = torch.exp(log_hidden)
-                nau_update = self.nau(hidden_t, h_normal)
-                log_new = torch.log(nau_update.abs() + 1e-8)
-            else:
-                # Standard minGRU path
-                log_new = self.log_g(hidden_t)
+            # Always compute both paths, select with multiplication
+            # Standard path
+            log_standard = self.log_g(hidden_t)
+            
+            # NAU path
+            h_normal = torch.exp(log_hidden)
+            nau_update = self.nau(hidden_t, h_normal)
+            log_nau = torch.log(nau_update.abs() + 1e-8)
+            
+            # Use multiplication to select path (compile-friendly)
+            use_nau_float = float(self.use_nau)
+            log_new = (1.0 - use_nau_float) * log_standard + use_nau_float * log_nau
             
             # Mixing gate
             gate_sigmoid = torch.sigmoid(gate_t)
@@ -111,9 +112,10 @@ class NAU_GRU(nn.Module):
             # Update in log space
             log_hidden = (1 - gate_sigmoid) * log_hidden + gate_sigmoid * log_new
             
-            # Apply barriers to prevent explosion/collapse
-            if self.use_barriers:
-                log_hidden = self.barrier(log_hidden)
+            # Apply barriers with multiplication gating
+            use_barriers_float = float(self.use_barriers)
+            log_hidden_barriered = self.barrier(log_hidden)
+            log_hidden = (1.0 - use_barriers_float) * log_hidden + use_barriers_float * log_hidden_barriered
             
             # Output projection
             out = self.to_out(torch.exp(log_hidden))
@@ -135,26 +137,18 @@ class NAU_GRU(nn.Module):
     def forward(self, x: torch.Tensor, 
                 prev_hidden: Optional[torch.Tensor] = None,
                 return_next_prev_hidden: bool = False):
-        """Main forward pass"""
-        if self.training and self.use_nau:
-            # Use sequential for NAU during training
-            if prev_hidden is not None:
-                prev_log_hidden = torch.log(prev_hidden.abs() + 1e-8)
-            else:
-                prev_log_hidden = None
-            out, log_hidden = self.forward_sequential(x, prev_log_hidden)
-            # Convert back to normal space for compatibility
-            next_hidden = torch.exp(log_hidden)
-            
-            if not return_next_prev_hidden:
-                return out
-            return out, next_hidden
+        """Main forward pass - compile-friendly version"""
+        # Always use sequential for now (compile-friendly)
+        if prev_hidden is not None:
+            prev_log_hidden = torch.log(prev_hidden.abs() + 1e-8)
         else:
-            # Use scan for inference (currently falls back to sequential)
-            out, next_hidden = self.forward_scan(x, prev_hidden)
-            if not return_next_prev_hidden:
-                return out
-            return out, next_hidden
+            prev_log_hidden = torch.zeros(x.shape[0], self.dim_inner, device=x.device)
+            
+        out, log_hidden = self.forward_sequential(x, prev_log_hidden)
+        next_hidden = torch.exp(log_hidden)
+        
+        # Compile-friendly return handling
+        return (out, next_hidden) if return_next_prev_hidden else (out,)
     
     @staticmethod
     def log_g(x: torch.Tensor) -> torch.Tensor:

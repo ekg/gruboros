@@ -5,7 +5,32 @@ import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
 from mingru.minGRU import minGRU
-from mingru.nau_gru_cell import NAU_GRU
+
+# Try importing NAU implementations in order of preference
+try:
+    from mingru.nau_gru_triton_clean import NAU_GRU
+    print("Using NAU_GRU clean Triton implementation")
+except ImportError as e:
+    print(f"Failed to import triton_clean: {e}")
+    try:
+        from mingru.nau_gru_cell import NAU_GRU
+        print("Using NAU_GRU JIT implementation")
+    except ImportError as e2:
+        print(f"Failed to import nau_gru_cell: {e2}")
+        NAU_GRU = None
+        print("No NAU_GRU implementation available")
+
+# Try importing other Triton versions for testing
+try:
+    from mingru.nau_gru_triton import NAU_GRU_Triton
+    from mingru.nau_gru_triton_stable import NAU_GRU_Triton_Stable
+    from mingru.nau_gru_triton_minimal import NAU_GRU_Triton_Minimal
+    from mingru.nau_gru_triton_autograd import NAU_GRU_Triton_Autograd
+    from mingru.nau_gru_log_space import NAU_GRU_LogSpace
+    from mingru.nau_gru_triton_barriers import NAU_GRU_Triton_Barriers
+    TRITON_AVAILABLE = True
+except ImportError:
+    TRITON_AVAILABLE = False
 
 def exists(v):
     return v is not None
@@ -108,7 +133,15 @@ class minLM(Module):
 
         # Choose RNN class based on use_nau
         if use_nau:
-            min_rnn_klass = NAU_GRU
+            # Prefer Triton implementation for better performance
+            if TRITON_AVAILABLE:
+                # Use barrier dynamics version - the original concept
+                min_rnn_klass = NAU_GRU_Triton_Barriers
+                print(f"Using Triton-accelerated NAU-GRU with log-barrier dynamics for depth={depth} model")
+            else:
+                min_rnn_klass = NAU_GRU
+                print(f"Using JIT-compiled NAU-GRU for depth={depth} model")
+            
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'use_nau': use_nau,

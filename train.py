@@ -1014,10 +1014,10 @@ def main():
             scaled_loss.backward()
         
         # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET ---
-        # Create a broadcastable mask: [B] -> [B, 1, 1] for RNN states
-        reset_mask = is_doc_end.view(-1, 1, 1)
-        # Create a mask for conv buffers: [B] -> [B, 1, 1, 1]
-        conv_reset_mask = is_doc_end.view(-1, 1, 1, 1)
+        # Create a broadcastable mask: [B] -> [B, 1] for RNN states (2D tensors)
+        reset_mask = is_doc_end.view(-1, 1)
+        # Create a mask for conv buffers: [B] -> [B, 1, 1]
+        conv_reset_mask = is_doc_end.view(-1, 1, 1)
 
         # Apply the mask to zero-out states for batch items that hit a document end.
         hidden_state = [h.detach() * (~reset_mask) for h in next_hidden_state]
