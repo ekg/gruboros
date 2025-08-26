@@ -76,12 +76,13 @@ class NAU_GRU(torch.nn.Module):
         self.barrier_min = barrier_min
         self.barrier_max = barrier_max
     
-    def forward(self, x, prev_hidden=None, doc_boundaries=None):
+    def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         B, T, C = x.shape
         
-        # Linear transformations
-        h = torch.einsum('btc,cd->btd', x, self.W_h)
-        g = torch.einsum('btc,cd->btd', x, self.W_g)
+        # Combined projection for efficiency (like JIT version)
+        # Use self.W_h and self.W_g to create hidden and gate values
+        h = torch.matmul(x, self.W_h)
+        g = torch.matmul(x, self.W_g)
         
         # Initialize hidden state
         if prev_hidden is None:
@@ -114,7 +115,9 @@ class NAU_GRU(torch.nn.Module):
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
-        # Extract final hidden state
-        final_hidden = output[:, -1, :].contiguous()
+        if return_next_prev_hidden:
+            # Extract final hidden state
+            final_hidden = output[:, -1, :].contiguous()
+            return output, final_hidden
         
-        return output, final_hidden
+        return output
