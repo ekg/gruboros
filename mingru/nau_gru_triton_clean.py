@@ -65,15 +65,10 @@ class NAU_GRU(torch.nn.Module):
         self.dim_in = dim
         self.dim_inner = int(dim * expansion_factor)
         self.use_nau = use_nau
-        self.use_barriers = use_barriers
         
-        # Linear transformations
-        self.to_hidden_and_gate = torch.nn.Linear(dim, self.dim_inner * 2, bias=False)
-        self.to_out = torch.nn.Linear(self.dim_inner, dim, bias=False)
-        
-        # Initialize weights
-        torch.nn.init.xavier_uniform_(self.to_hidden_and_gate.weight)
-        torch.nn.init.xavier_uniform_(self.to_out.weight)
+        # Parameters
+        self.W_h = torch.nn.Parameter(torch.randn(self.dim_in, self.dim_inner) * 0.02)
+        self.W_g = torch.nn.Parameter(torch.randn(self.dim_in, self.dim_inner) * 0.02)
         
         # NAU-specific parameters
         self.nau_gate = torch.nn.Parameter(torch.zeros(self.dim_inner))
@@ -81,26 +76,24 @@ class NAU_GRU(torch.nn.Module):
         self.barrier_min = barrier_min
         self.barrier_max = barrier_max
     
-    def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
+    def forward(self, x, prev_hidden=None, doc_boundaries=None):
         B, T, C = x.shape
-        device = x.device
-        dtype = x.dtype
         
-        # Combined projection for efficiency
-        combined = self.to_hidden_and_gate(x)
-        h, g = combined.chunk(2, dim=-1)
+        # Linear transformations
+        h = torch.einsum('btc,cd->btd', x, self.W_h)
+        g = torch.einsum('btc,cd->btd', x, self.W_g)
         
         # Initialize hidden state
         if prev_hidden is None:
-            prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+            prev_hidden = torch.zeros(B, self.dim_inner, device=x.device, dtype=x.dtype)
         
         # Make sure tensors are contiguous
         h = h.contiguous()
         g = g.contiguous()
         prev_hidden = prev_hidden.contiguous()
         
-        # Create output tensor for hidden states
-        h_output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
+        # Create output tensor
+        output = torch.empty_like(h)
         
         # Calculate strides
         stride_batch = T * self.dim_inner
@@ -115,18 +108,13 @@ class NAU_GRU(torch.nn.Module):
         
         nau_gru_forward_kernel[grid](
             h, g, prev_hidden,
-            h_output,
+            output,
             T, self.dim_inner,
             stride_batch, stride_seq, stride_dim,
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
-        # Project back to output dimension
-        output = self.to_out(h_output)
+        # Extract final hidden state
+        final_hidden = output[:, -1, :].contiguous()
         
-        if return_next_prev_hidden:
-            # Extract final hidden state
-            final_hidden = h_output[:, -1, :].contiguous()
-            return output, final_hidden
-        
-        return output
+        return output, final_hidden
