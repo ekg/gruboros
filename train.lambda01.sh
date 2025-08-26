@@ -72,8 +72,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --weight_decay 0.0001 \
   --grad_clip 0.0 \
   --grad_accum 32 \
-  --chunk_size 16 \
-  --batch_size 16 \
+  --chunk_size 8 \
+  --batch_size 8 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
@@ -91,6 +91,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --elite-checkpoint-multiplier 20.0 \
   --cuda \
   --bf16 \
+  --compile \
   --use_nau \
   --use_barriers \
   --barrier_min -8 \
