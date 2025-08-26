@@ -7,21 +7,22 @@ from torch.nn import Module, ModuleList
 from mingru.minGRU import minGRU
 
 # Try importing NAU implementations in order of preference
+# Use JIT version by default since it's stable (though slower)
 try:
-    from mingru.nau_gru_triton_exact import NAU_GRU
-    print("Using NAU_GRU exact Triton implementation (matches JIT math)")
+    from mingru.nau_gru_cell import NAU_GRU
+    print("Using NAU_GRU JIT implementation (stable)")
 except ImportError as e:
-    print(f"Failed to import triton_exact: {e}")
+    print(f"Failed to import nau_gru_cell: {e}")
     try:
-        from mingru.nau_gru_triton_clean import NAU_GRU
-        print("Using NAU_GRU clean Triton implementation")
+        from mingru.nau_gru_triton_simple import NAU_GRU
+        print("Using NAU_GRU simple Triton implementation")
     except ImportError as e2:
-        print(f"Failed to import triton_clean: {e2}")
+        print(f"Failed to import triton_simple: {e2}")
         try:
-            from mingru.nau_gru_cell import NAU_GRU
-            print("Using NAU_GRU JIT implementation")
+            from mingru.nau_gru_triton_exact import NAU_GRU
+            print("Using NAU_GRU exact Triton implementation")
         except ImportError as e3:
-            print(f"Failed to import nau_gru_cell: {e3}")
+            print(f"Failed to import triton_exact: {e3}")
             NAU_GRU = None
             print("No NAU_GRU implementation available")
 
