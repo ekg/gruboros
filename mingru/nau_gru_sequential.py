@@ -37,9 +37,8 @@ class NAU_GRU(nn.Module):
             nn.init.xavier_uniform_(self.W_gate.weight)
             nn.init.zeros_(self.W_gate.bias)
     
-    @torch.jit.ignore
     def forward_sequential(self, x, prev_hidden=None):
-        """Force sequential processing by disabling JIT optimization"""
+        """Sequential processing with shape compatibility"""
         batch_size, seq_len, _ = x.shape
         
         # Process all at once for efficiency
