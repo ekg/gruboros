@@ -66,12 +66,15 @@ class NAU_GRU(torch.nn.Module):
         self.dim_inner = int(dim * expansion_factor)
         self.use_nau = use_nau
         
-        # Parameters
-        self.W_h = torch.nn.Parameter(torch.randn(self.dim_in, self.dim_inner) * 0.02)
-        self.W_g = torch.nn.Parameter(torch.randn(self.dim_in, self.dim_inner) * 0.02)
+        # Linear transformations  
+        self.to_hidden_and_gate = torch.nn.Linear(dim, self.dim_inner * 2, bias=False)
+        self.to_out = torch.nn.Linear(self.dim_inner, dim, bias=False)
+        
+        # Initialize
+        torch.nn.init.xavier_uniform_(self.to_hidden_and_gate.weight)
+        torch.nn.init.xavier_uniform_(self.to_out.weight)
         
         # NAU-specific parameters
-        self.nau_gate = torch.nn.Parameter(torch.zeros(self.dim_inner))
         self.barrier_strength = barrier_strength
         self.barrier_min = barrier_min
         self.barrier_max = barrier_max
@@ -79,10 +82,9 @@ class NAU_GRU(torch.nn.Module):
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         B, T, C = x.shape
         
-        # Combined projection for efficiency (like JIT version)
-        # Use self.W_h and self.W_g to create hidden and gate values
-        h = torch.matmul(x, self.W_h)
-        g = torch.matmul(x, self.W_g)
+        # Combined projection for efficiency
+        combined = self.to_hidden_and_gate(x)
+        h, g = combined.chunk(2, dim=-1)
         
         # Initialize hidden state
         if prev_hidden is None:
@@ -93,8 +95,8 @@ class NAU_GRU(torch.nn.Module):
         g = g.contiguous()
         prev_hidden = prev_hidden.contiguous()
         
-        # Create output tensor
-        output = torch.empty_like(h)
+        # Create output tensor for hidden states (dim_inner)
+        h_output = torch.empty_like(h)
         
         # Calculate strides
         stride_batch = T * self.dim_inner
@@ -109,15 +111,18 @@ class NAU_GRU(torch.nn.Module):
         
         nau_gru_forward_kernel[grid](
             h, g, prev_hidden,
-            output,
+            h_output,
             T, self.dim_inner,
             stride_batch, stride_seq, stride_dim,
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
+        # Project back to output dimension
+        output = self.to_out(h_output)
+        
         if return_next_prev_hidden:
-            # Extract final hidden state
-            final_hidden = output[:, -1, :].contiguous()
+            # Extract final hidden state (from h_output, not projected output)
+            final_hidden = h_output[:, -1, :].contiguous()
             return output, final_hidden
         
         return output
