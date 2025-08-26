@@ -63,8 +63,10 @@ class NAU_GRU(torch.nn.Module):
         combined = self.to_hidden_and_gate(x)
         h_and_g = combined.view(B, T, 2, self.dim_inner)
         
-        # Initialize hidden
+        # Initialize hidden - handle batch size changes
         if prev_hidden is None:
+            prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+        elif prev_hidden.shape[0] != B:
             prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
         
         # Ensure contiguous

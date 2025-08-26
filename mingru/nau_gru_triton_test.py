@@ -67,10 +67,13 @@ class NAU_GRU(torch.nn.Module):
         h = h.contiguous()
         g = g.contiguous()
         
-        # Initialize hidden
+        # Initialize hidden - handle batch size changes
         if prev_hidden is None:
             prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
-        prev_hidden = prev_hidden.contiguous()
+        elif prev_hidden.shape[0] != B:
+            prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+        else:
+            prev_hidden = prev_hidden.contiguous()
         
         # Output tensor
         h_output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
