@@ -94,7 +94,9 @@ class NAU_GRU(nn.Module):
             outputs.append(out_t)
         
         # Stack outputs - this ensures correct shape [batch, seq_len, dim]
+        assert len(outputs) == seq_len, f"Output length {len(outputs)} != seq_len {seq_len}"
         output = torch.stack(outputs, dim=1)
+        assert output.shape == (batch_size, seq_len, self.dim), f"Output shape {output.shape} != expected {(batch_size, seq_len, self.dim)}"
         
         return output, h
     
