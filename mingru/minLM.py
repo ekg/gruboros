@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
 from mingru.minGRU import minGRU
-from mingru.nau_gru_minimal import NAU_GRU
+from mingru.nau_gru_scan import NAU_GRU
 
 def exists(v):
     return v is not None
