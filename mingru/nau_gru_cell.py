@@ -40,11 +40,18 @@ class NAU_GRU(nn.Module):
     
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         # Get dimensions
-        batch_size, seq_len, _ = x.shape
+        if x.dim() == 4 and x.size(2) == 1:
+            # Squeeze out singleton dimension if present
+            x = x.squeeze(2)
+        if x.dim() != 3:
+            raise ValueError(f"Expected 3D input [batch, seq, dim], got shape {x.shape}")
+        batch_size, seq_len, input_dim = x.shape
         device = x.device
         dtype = x.dtype
-        # DEBUG
-        # print(f"NAU_GRU input shape: {x.shape}")
+        
+        # Sanity check input
+        if input_dim != self.dim:
+            raise ValueError(f"Input dim {input_dim} != expected dim {self.dim}")
         
         # Single projection for all timesteps
         combined = self.to_hidden_and_gate(x)
@@ -69,12 +76,16 @@ class NAU_GRU(nn.Module):
         
         # Ensure we have exactly seq_len outputs
         assert h_outputs.size(1) == seq_len, f"Output seq_len {h_outputs.size(1)} != input seq_len {seq_len}"
+        assert h_outputs.shape == (batch_size, seq_len, self.dim_inner), f"h_outputs shape {h_outputs.shape} != expected {(batch_size, seq_len, self.dim_inner)}"
         
         # Project to output dimension
         output = self.to_out(h_outputs)
         
         # Final sanity check
-        assert output.shape == (batch_size, seq_len, self.dim), f"Output shape {output.shape} != expected {(batch_size, seq_len, self.dim)}"
+        if output.shape != (batch_size, seq_len, self.dim):
+            print(f"Debug: input x.shape={x.shape}, batch_size={batch_size}, seq_len={seq_len}, self.dim={self.dim}")
+            print(f"Debug: h_outputs.shape={h_outputs.shape}, output.shape={output.shape}")
+            assert False, f"Output shape {output.shape} != expected {(batch_size, seq_len, self.dim)}"
         
         # Return
         if not return_next_prev_hidden:
