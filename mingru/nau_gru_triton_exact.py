@@ -89,17 +89,22 @@ class NAU_GRU(torch.nn.Module):
         h = h.contiguous()
         g = g.contiguous()
         
-        # Initialize hidden state
+        # Initialize hidden state - ALWAYS create new tensor to avoid shape mismatches
         if prev_hidden is None:
             prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
         else:
-            prev_hidden = prev_hidden.contiguous()
+            # Ensure prev_hidden has correct batch size
+            if prev_hidden.shape[0] != B:
+                # Batch size changed (e.g., validation) - reinitialize
+                prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+            else:
+                prev_hidden = prev_hidden.contiguous()
             
         # Output tensor
         h_output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
         
-        # Kernel config
-        BLOCK_SIZE = 256
+        # Kernel config  
+        BLOCK_SIZE = min(256, triton.next_power_of_2(self.dim_inner))
         grid = (B,)
         
         # Launch kernel
