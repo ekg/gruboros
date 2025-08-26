@@ -962,17 +962,8 @@ def main():
     accumulated_steps = 0
 
     while step < train_steps:
-        # Check for and apply any pending model updates
-        was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
-        if needs_optimizer_reset:
-            if global_rank == 0: 
-                print(f"Rank {global_rank} resetting optimizer state at step {step} due to recombination.")
-            optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
-            if args.schedulefree: optimizer.train()
-            evolutionary_node.optimizer = optimizer
-            optimizer.zero_grad()
-            accumulated_steps = 0  # Reset accumulation counter
-            total_actual_tokens = 0  # Reset token counter
+        # NOTE: Moved gossip updates to after optimization for safety
+        # This prevents mid-batch model updates that could cause segfaults
 
         # Get a full batch of data
         chunk_data, is_doc_end, actual_lengths = next(data_iterator)
@@ -1049,23 +1040,28 @@ def main():
             optimizer.zero_grad()
             accumulated_steps = 0
             
-            evolutionary_node.update_fitness(chunk_loss, step)
-            evolutionary_node.check_for_updates()
-            
-            # Get mix counts before requesting
-            status_before = evolutionary_node.get_status()
-            mixes_before = status_before.get('mixes_won', 0) + status_before.get('mixes_lost', 0)
-            
-            evolutionary_node.request_mix()
-            
-            # Check if a mix occurred by comparing counts
-            status_after = evolutionary_node.get_status()
-            mixes_after = status_after.get('mixes_won', 0) + status_after.get('mixes_lost', 0)
-            
-            # CRITICAL: Reinitialize hidden states if model weights changed
-            if mixes_after > mixes_before:
+            # SAFE GOSSIP SYNCHRONIZATION POINT - all updates happen here
+            # First check and apply any pending model updates
+            was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
+            if was_updated:
+                if global_rank == 0:
+                    print(f"Rank {global_rank} received model update at step {step}")
+                # CRITICAL: Always reset hidden states after model update
                 hidden_state = []
                 conv_buffers = []
+                
+                if needs_optimizer_reset:
+                    if global_rank == 0:
+                        print(f"Rank {global_rank} resetting optimizer at step {step}")
+                    optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+                    if args.schedulefree: optimizer.train()
+                    evolutionary_node.optimizer = optimizer
+                    total_actual_tokens = 0  # Reset token counter
+            
+            # Now safe to update fitness and request mixing
+            evolutionary_node.update_fitness(chunk_loss, step)
+            evolutionary_node.check_for_updates()
+            evolutionary_node.request_mix()
             
             current_validation_fitness = evolutionary_node.get_current_fitness()
         else:
