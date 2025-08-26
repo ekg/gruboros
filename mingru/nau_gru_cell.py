@@ -43,6 +43,8 @@ class NAU_GRU(nn.Module):
         batch_size, seq_len, _ = x.shape
         device = x.device
         dtype = x.dtype
+        # DEBUG
+        # print(f"NAU_GRU input shape: {x.shape}")
         
         # Single projection for all timesteps
         combined = self.to_hidden_and_gate(x)
@@ -65,8 +67,14 @@ class NAU_GRU(nn.Module):
         # Stack outputs efficiently
         h_outputs = torch.stack(output_list, dim=1)
         
+        # Ensure we have exactly seq_len outputs
+        assert h_outputs.size(1) == seq_len, f"Output seq_len {h_outputs.size(1)} != input seq_len {seq_len}"
+        
         # Project to output dimension
         output = self.to_out(h_outputs)
+        
+        # Final sanity check
+        assert output.shape == (batch_size, seq_len, self.dim), f"Output shape {output.shape} != expected {(batch_size, seq_len, self.dim)}"
         
         # Return
         if not return_next_prev_hidden:
