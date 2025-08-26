@@ -55,12 +55,19 @@ class NAU_GRU(nn.Module):
         
         # Single projection for all timesteps
         combined = self.to_hidden_and_gate(x)
+        if combined.shape != (batch_size, seq_len, self.dim_inner * 2):
+            raise ValueError(f"combined shape {combined.shape} != expected {(batch_size, seq_len, self.dim_inner * 2)}")
+        
         hidden_seq, gate_seq = combined.chunk(2, dim=-1)
+        if hidden_seq.shape != (batch_size, seq_len, self.dim_inner):
+            raise ValueError(f"hidden_seq shape {hidden_seq.shape} != expected {(batch_size, seq_len, self.dim_inner)}")
         
         # Initialize state
         if prev_hidden is None:
             h = torch.zeros(batch_size, self.dim_inner, device=device, dtype=dtype)
         else:
+            if prev_hidden.shape != (batch_size, self.dim_inner):
+                raise ValueError(f"prev_hidden shape {prev_hidden.shape} != expected {(batch_size, self.dim_inner)}")
             h = prev_hidden
         
         # Process sequence
@@ -68,7 +75,19 @@ class NAU_GRU(nn.Module):
         
         # Use the JIT-compiled cell
         for t in range(seq_len):
-            h = gru_cell(h, hidden_seq[:, t], gate_seq[:, t])
+            h_t = hidden_seq[:, t]  # Should be [batch_size, dim_inner]
+            g_t = gate_seq[:, t]    # Should be [batch_size, dim_inner]
+            
+            # Debug check
+            if h_t.shape != (batch_size, self.dim_inner):
+                raise ValueError(f"h_t shape {h_t.shape} != expected {(batch_size, self.dim_inner)}")
+            
+            h = gru_cell(h, h_t, g_t)
+            
+            # Check output shape
+            if h.shape != (batch_size, self.dim_inner):
+                raise ValueError(f"gru_cell output shape {h.shape} != expected {(batch_size, self.dim_inner)}")
+                
             output_list.append(h)
         
         # Stack outputs efficiently
