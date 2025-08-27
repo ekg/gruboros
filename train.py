@@ -971,43 +971,46 @@ def main():
         if device.type == 'cuda':
             torch.cuda.synchronize()
         
-        # Mark that we're entering forward pass - no weight updates allowed
-        evolutionary_node.enter_forward_pass(hidden_state, conv_buffers)
-        
-        # Forward pass with both RNN hidden states and conv buffers
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
-            result = model(
-                chunk,
-                return_loss=True,
-                return_prev_hiddens=True,
-                prev_hiddens=hidden_state,
-                prev_conv_buffers=conv_buffers,
-                actual_length=actual_lengths
-            )
-        
-        # Mark that we've exited forward pass - safe for weight updates
-        evolutionary_node.exit_forward_pass()
-        
-        # Unpack the result - could be just loss or loss + (hiddens, buffers)
-        if isinstance(result, tuple) and len(result) == 2:
-            loss, (next_hidden_state, next_conv_buffers) = result
-        else:
-            # Backward compatibility - model without conv buffers
-            loss = result
-            next_hidden_state = None
-            next_conv_buffers = None
-        
-        # Scale loss for gradient accumulation
-        scaled_loss = loss / args.grad_accum
-        chunk_loss = loss.detach().item()
-        
-        # Track accumulation progress
-        accumulated_steps += 1
-        
-        if scaler is not None:
-            scaler.scale(scaled_loss).backward()
-        else:
-            scaled_loss.backward()
+        # Acquire model mutex for entire forward/backward pass
+        with evolutionary_node.model_mutex:
+            # Mark that we're entering forward pass - no weight updates allowed
+            evolutionary_node.enter_forward_pass(hidden_state, conv_buffers)
+            
+            # Forward pass with both RNN hidden states and conv buffers
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                result = model(
+                    chunk,
+                    return_loss=True,
+                    return_prev_hiddens=True,
+                    prev_hiddens=hidden_state,
+                    prev_conv_buffers=conv_buffers,
+                    actual_length=actual_lengths
+                )
+            
+            # Unpack the result - could be just loss or loss + (hiddens, buffers)
+            if isinstance(result, tuple) and len(result) == 2:
+                loss, (next_hidden_state, next_conv_buffers) = result
+            else:
+                # Backward compatibility - model without conv buffers
+                loss = result
+                next_hidden_state = None
+                next_conv_buffers = None
+            
+            # Scale loss for gradient accumulation
+            scaled_loss = loss / args.grad_accum
+            chunk_loss = loss.detach().item()
+            
+            # Track accumulation progress
+            accumulated_steps += 1
+            
+            # Backward pass - still under mutex protection
+            if scaler is not None:
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+            
+            # Mark that we've exited forward pass - safe for weight updates
+            evolutionary_node.exit_forward_pass()
         
         # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET ---
         # Create a broadcastable mask: [B] -> [B, 1] for RNN states (2D tensors)

@@ -145,7 +145,7 @@ class EvolutionaryTrainingNode:
         self.step_notifications = queue.Queue()
         
         # Atomic coordination for safe model updates
-        self.batch_boundary_lock = threading.Lock()
+        self.model_mutex = threading.RLock()  # Recursive lock for model access
         self.in_forward_pass = threading.Event()  # Set during forward pass
         self.forward_pass_count = 0  # Reference count for nested forward passes
         self.forward_pass_lock = threading.Lock()  # Protect the counter
@@ -214,16 +214,18 @@ class EvolutionaryTrainingNode:
         # Check if we should run validation
         if self.validation_tracker.should_validate(step):
             with self.validation_lock:
-                # Mark we're in forward pass to prevent weight updates
-                self.enter_forward_pass()  # Use reference counting
-                try:
-                    fitness = self.validation_tracker.run_validation(
-                        self.model, 
-                        step, 
-                        seed=self.global_rank * 1000
-                    )
-                finally:
-                    self.exit_forward_pass()  # Use reference counting
+                # Must acquire model mutex for validation forward passes
+                with self.model_mutex:
+                    # Mark we're in forward pass to prevent weight updates
+                    self.enter_forward_pass()  # Use reference counting
+                    try:
+                        fitness = self.validation_tracker.run_validation(
+                            self.model, 
+                            step, 
+                            seed=self.global_rank * 1000
+                        )
+                    finally:
+                        self.exit_forward_pass()  # Use reference counting
                 
             # Log validation event
             self.logger.log_event(
@@ -274,68 +276,70 @@ class EvolutionaryTrainingNode:
 
     def _load_and_transfer_payload(self, update: WeightUpdate):
         """Load weights using PyTorch's native memory mapping to minimize memory usage"""
-        with self.weight_transfer_lock:
-            try:
-                log_memory_usage(self.global_rank, "Before mmap load")
-                
-                device = next(self.model.parameters()).device
-                
-                # Step 1: Memory-map the checkpoint (no actual loading yet!)
-                mmap_checkpoint = torch.load(
-                    update.payload_path,
-                    map_location='cpu',
-                    mmap=True,  # This is the key!
-                    weights_only=False  # We need optimizer state too
-                )
-                
-                # Extract metadata without loading tensors
-                source_ema_loss = mmap_checkpoint.get('ema_loss', float('inf'))
-                
-                # Step 2: Process weights one at a time to minimize memory
-                if self.merge_method == 'recombination':
-                    needs_optimizer_reset = self._apply_recombination_mmap(
-                        mmap_checkpoint, device, self.recombination_alpha
+        # Must acquire model mutex to modify weights safely
+        with self.model_mutex:
+            with self.weight_transfer_lock:
+                try:
+                    log_memory_usage(self.global_rank, "Before mmap load")
+                    
+                    device = next(self.model.parameters()).device
+                    
+                    # Step 1: Memory-map the checkpoint (no actual loading yet!)
+                    mmap_checkpoint = torch.load(
+                        update.payload_path,
+                        map_location='cpu',
+                        mmap=True,  # This is the key!
+                        weights_only=False  # We need optimizer state too
                     )
-                else:  # clonal replacement
-                    needs_optimizer_reset = self._apply_clonal_mmap(
-                        mmap_checkpoint, device
-                    )
-                
-                # Update fitness tracker
-                with self.validation_lock:
-                    self.validation_tracker.inherit_fitness(source_ema_loss)
-                
-                # CRITICAL: Ensure all weight transfers are complete before continuing
-                if device.type == 'cuda':
-                    torch.cuda.synchronize()
-                
-                # Clean up - mmap checkpoint will be released
-                del mmap_checkpoint
-                gc.collect()
-                
-                if device.type == 'cuda':
-                    torch.cuda.empty_cache()
-                
-                # Remove the payload file
-                os.remove(update.payload_path)
-                
-                self.successful_mixes += 1
-                self.logger.log_event(
-                    "MMAP_UPDATE_APPLIED",
-                    step=self.current_step,
-                    correlation_id=update.correlation_id,
-                    message=f"Memory-mapped update completed"
-                )
-                
-                log_memory_usage(self.global_rank, "After mmap update")
-                
-                return True, needs_optimizer_reset
-                
-            except Exception as e:
-                self.logger.log_event("MMAP_LOAD_ERROR", message=str(e))
-                if os.path.exists(update.payload_path):
+                    
+                    # Extract metadata without loading tensors
+                    source_ema_loss = mmap_checkpoint.get('ema_loss', float('inf'))
+                    
+                    # Step 2: Process weights one at a time to minimize memory
+                    if self.merge_method == 'recombination':
+                        needs_optimizer_reset = self._apply_recombination_mmap(
+                            mmap_checkpoint, device, self.recombination_alpha
+                        )
+                    else:  # clonal replacement
+                        needs_optimizer_reset = self._apply_clonal_mmap(
+                            mmap_checkpoint, device
+                        )
+                    
+                    # Update fitness tracker
+                    with self.validation_lock:
+                        self.validation_tracker.inherit_fitness(source_ema_loss)
+                    
+                    # CRITICAL: Ensure all weight transfers are complete before continuing
+                    if device.type == 'cuda':
+                        torch.cuda.synchronize()
+                    
+                    # Clean up - mmap checkpoint will be released
+                    del mmap_checkpoint
+                    gc.collect()
+                    
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+                    
+                    # Remove the payload file
                     os.remove(update.payload_path)
-                return False, False
+                    
+                    self.successful_mixes += 1
+                    self.logger.log_event(
+                        "MMAP_UPDATE_APPLIED",
+                        step=self.current_step,
+                        correlation_id=update.correlation_id,
+                        message=f"Memory-mapped update completed"
+                    )
+                    
+                    log_memory_usage(self.global_rank, "After mmap update")
+                    
+                    return True, needs_optimizer_reset
+                    
+                except Exception as e:
+                    self.logger.log_event("MMAP_LOAD_ERROR", message=str(e))
+                    if os.path.exists(update.payload_path):
+                        os.remove(update.payload_path)
+                    return False, False
 
     def _apply_recombination_mmap(self, mmap_checkpoint, device, alpha):
         """Apply recombination using memory-mapped weights"""
@@ -618,12 +622,14 @@ class EvolutionaryTrainingNode:
             
             # 4. Run our validation with same seed
             validation_start = time.time()
-            # Mark we're in forward pass to prevent weight updates
-            self.enter_forward_pass()  # Use reference counting
-            try:
-                our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
-            finally:
-                self.exit_forward_pass()  # Use reference counting
+            # Must acquire model mutex for validation
+            with self.model_mutex:
+                # Mark we're in forward pass to prevent weight updates
+                self.enter_forward_pass()  # Use reference counting
+                try:
+                    our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+                finally:
+                    self.exit_forward_pass()  # Use reference counting
             validation_time = time.time() - validation_start
             
             # Update our fitness with this validation result
@@ -798,12 +804,14 @@ class EvolutionaryTrainingNode:
             
             # Run validation with provided seed
             validation_start = time.time()
-            # Mark we're in forward pass to prevent weight updates
-            self.enter_forward_pass()  # Use reference counting
-            try:
-                our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
-            finally:
-                self.exit_forward_pass()  # Use reference counting
+            # Must acquire model mutex for validation
+            with self.model_mutex:
+                # Mark we're in forward pass to prevent weight updates
+                self.enter_forward_pass()  # Use reference counting
+                try:
+                    our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+                finally:
+                    self.exit_forward_pass()  # Use reference counting
             validation_time = time.time() - validation_start
             
             # Update our fitness with this validation result
