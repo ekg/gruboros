@@ -7,6 +7,9 @@ def nau_gru_exact_kernel(
     h_ptr, g_ptr, h_prev_ptr,
     output_ptr,
     batch_size, seq_len, dim_inner,
+    use_barriers: tl.constexpr,
+    barrier_min: tl.constexpr, 
+    barrier_max: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     # Get position in grid
@@ -63,8 +66,22 @@ def nau_gru_exact_kernel(
             max_val = tl.maximum(term1, term2)
             h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
             
-            # Clamp for stability but STAY IN LOG SPACE
-            h_log = tl.minimum(tl.maximum(h_log, -20.0), 20.0)
+            # Apply energy barriers to prevent explosion
+            if use_barriers:
+                # Soft barrier forces that grow exponentially near boundaries
+                # Lower barrier: repulsive force when h_log approaches barrier_min
+                lower_force = 0.5 * tl.exp(barrier_min - h_log + 5.0)  # +5 to activate earlier
+                # Upper barrier: repulsive force when h_log approaches barrier_max  
+                upper_force = 0.5 * tl.exp(h_log - barrier_max + 5.0)
+                
+                # Apply corrections - push away from barriers
+                h_log = h_log + lower_force - upper_force
+                
+                # Hard clamp as final safety
+                h_log = tl.minimum(tl.maximum(h_log, barrier_min), barrier_max)
+            else:
+                # Simple clamp without barriers
+                h_log = tl.minimum(tl.maximum(h_log, -20.0), 20.0)
             
             # Only exp() for output, keep h_log for next iteration
             h_output = tl.exp(h_log)
@@ -73,10 +90,13 @@ def nau_gru_exact_kernel(
             tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
-    def __init__(self, dim, expansion_factor=1.5, **kwargs):
+    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, **kwargs):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
+        self.use_barriers = use_barriers
+        self.barrier_min = barrier_min
+        self.barrier_max = barrier_max
         
         # Match JIT version exactly
         self.to_hidden_and_gate = torch.nn.Linear(dim, self.dim_inner * 2, bias=False)
@@ -122,6 +142,9 @@ class NAU_GRU(torch.nn.Module):
             h, g, prev_hidden,
             h_output,
             B, T, self.dim_inner,
+            use_barriers=self.use_barriers,
+            barrier_min=self.barrier_min,
+            barrier_max=self.barrier_max,
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
