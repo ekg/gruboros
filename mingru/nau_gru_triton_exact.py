@@ -7,7 +7,7 @@ def nau_gru_exact_kernel(
     h_ptr, g_ptr, h_prev_ptr,
     output_ptr,
     h_log_final_ptr,
-    batch_idx,
+    batch_idx: tl.constexpr,
     seq_len, 
     dim_inner,
     BLOCK_SIZE: tl.constexpr,
@@ -115,8 +115,8 @@ class NAU_GRU(torch.nn.Module):
         BLOCK_SIZE = min(256, triton.next_power_of_2(self.dim_inner))
         grid = (B,)  # One kernel per batch element
         
-        # Launch kernel - one per batch element
-        for b in range(B):
+        # Launch kernel - parallel across batch
+        def launch_kernel(b):
             nau_gru_exact_kernel[(1,)](
                 h, g, prev_hidden,
                 h_output,
@@ -125,6 +125,10 @@ class NAU_GRU(torch.nn.Module):
                 T, self.dim_inner,
                 BLOCK_SIZE=BLOCK_SIZE,
             )
+        
+        # Launch all batch elements in parallel
+        for b in range(B):
+            launch_kernel(b)
         
         # Project back
         output = self.to_out(h_output)
