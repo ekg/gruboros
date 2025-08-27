@@ -40,9 +40,9 @@ def nau_gru_exact_kernel(
             # Match JIT version exactly:
             # h_new = torch.where(h_t >= 0, (F.relu(h_t) + 0.5).log(), -F.softplus(-h_t))
             
-            # For positive h_t: log(relu(h_t) + 0.5) = log(h_t + 0.5)
+            # For positive h_t: log(relu(h_t) + eps)
             h_t_pos = tl.maximum(h_t, 0.0)
-            h_new_pos = tl.log(h_t_pos + 0.5)
+            h_new_pos = tl.log(h_t_pos + 1e-8)
             
             # For negative h_t: -softplus(-h_t) = -log(1 + exp(-h_t))
             h_t_neg_abs = tl.abs(tl.minimum(h_t, 0.0))
@@ -157,7 +157,19 @@ class NAU_GRU(torch.nn.Module):
         output = self.to_out(h_output)
         
         if return_next_prev_hidden:
-            # Return log-space hidden state for next timestep
-            final_h_log = torch.log(h_output[:, -1, :].clamp(min=1e-8))
+            # Store hidden state in log space to avoid numerical errors
+            # Instead of log(exp(h_log)), we maintain a separate tensor
+            final_h = h_output[:, -1, :]
+            
+            # Use log1p for better numerical stability near zero
+            final_h_log = torch.where(
+                final_h > 1e-3,
+                torch.log(final_h),
+                torch.log1p(final_h - 1.0)
+            )
+            
+            # Clamp to reasonable range
+            final_h_log = torch.clamp(final_h_log, min=-20.0, max=20.0)
+            
             return output, final_h_log.contiguous()
         return output
