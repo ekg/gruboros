@@ -388,7 +388,7 @@ class SimpleFastGRU(nn.Module):
         
         self._init_weights()
         
-        print(f"SimpleFastGRU initialized: dim={dim}, dim_inner={self.dim_inner}")
+        # print(f"SimpleFastGRU initialized: dim={dim}, dim_inner={self.dim_inner}")
     
     def _init_weights(self):
         import math
