@@ -41,9 +41,9 @@ def nau_gru_exact_kernel(
             # Match JIT version exactly:
             # h_new = torch.where(h_t >= 0, (F.relu(h_t) + 0.5).log(), -F.softplus(-h_t))
             
-            # For positive h_t: log(relu(h_t) + eps) for sparsity
+            # For positive h_t: log(relu(h_t) + 0.5) = log(h_t + 0.5)
             h_t_pos = tl.maximum(h_t, 0.0)
-            h_new_pos = tl.log(h_t_pos + 1e-8)
+            h_new_pos = tl.log(h_t_pos + 0.5)
             
             # For negative h_t: -softplus(-h_t) = -log(1 + exp(-h_t))
             h_t_neg_abs = tl.abs(tl.minimum(h_t, 0.0))
@@ -129,8 +129,8 @@ class NAU_GRU(torch.nn.Module):
         
         # Initialize hidden state IN LOG SPACE
         if prev_hidden is None:
-            # Start at -5.0: exp(-5) ≈ 0.0067 - allows learning sparse representations
-            prev_hidden = torch.full((B, self.dim_inner), -5.0, device=device, dtype=dtype)
+            # Start at -2.0 instead of -20.0: exp(-2) ≈ 0.135 vs exp(-20) ≈ 2e-9
+            prev_hidden = torch.full((B, self.dim_inner), -2.0, device=device, dtype=dtype)
         else:
             # Ensure prev_hidden has correct batch size
             if prev_hidden.shape[0] != B:
