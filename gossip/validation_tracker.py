@@ -4,6 +4,12 @@ from collections import deque
 from typing import Optional, List, Tuple
 import statistics
 import time
+import sys
+import os
+# Add parent directory to path to import from train.py
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from train import DocumentStreamDataset, SingleStreamDataset
+from torch.utils.data import DataLoader
 
 class ValidationTracker:
     """Tracks model fitness using training-like validation"""
@@ -17,12 +23,6 @@ class ValidationTracker:
         self.batch_size = batch_size
         self.validation_interval = validation_interval
         self.validation_batches = validation_batches
-        # Validation sequences are chunk_size long, same as training
-        self.sequence_length = chunk_size
-        
-        self.mmap = np.memmap(data_path, dtype=np.uint8, mode='r')
-        self.file_size = len(self.mmap)
-        
         # Store validation results
         self.validation_losses = deque(maxlen=window_size)
         self.current_fitness = float('inf')
@@ -58,68 +58,41 @@ class ValidationTracker:
         """
         model.eval()
         device = next(model.parameters()).device
-        rng = np.random.RandomState(seed)
         
         all_sequence_losses = []
         all_document_losses = []
         
-        # Initialize batch_size parallel streams at random positions (like training)
-        # Each stream will read sequentially through all validation batches
-        positions = []
+        # Create validation dataset using the same class as training
+        # Each batch element gets a different random start position based on seed
+        val_datasets = []
         for i in range(self.batch_size):
-            start_pos = rng.randint(0, max(1, self.file_size - 1000))  # Leave some buffer
-            # Scan to next document boundary
-            while start_pos < self.file_size and self.mmap[start_pos] != 0x1e:
-                start_pos += 1
-            positions.append((start_pos + 1) % self.file_size)
+            dataset = SingleStreamDataset(
+                self.data_path,
+                self.chunk_size,
+                total_chunks=self.validation_batches,
+                rank=i,  # Use index as rank for different positions
+                seed=seed + i  # Different seed per stream
+            )
+            val_datasets.append(dataset)
         
         # Initialize hidden states - these persist across batches
         hidden_states = None
         conv_buffers = None
         
-        # Process multiple batches contiguously
-        num_batches = self.validation_batches
-        
+        # Process multiple batches contiguously  
         with torch.no_grad():
-            for batch_idx in range(num_batches):
+            for batch_idx in range(self.validation_batches):
                 
-                # Process one chunk for each stream
+                # Get one chunk from each stream using the same data loading as training
                 batch_chunks = []
                 actual_lengths = []
                 is_doc_end = []
                 
                 for seq_idx in range(self.batch_size):
-                    # Collect one chunk from this stream's current position
-                    chunk_data = []
-                    doc_ended = False
-                    actual_len = self.chunk_size
-                    hit_boundary = False
-                    
-                    for i in range(self.chunk_size):
-                        if hit_boundary:
-                            # Once we hit boundary, pad rest with zeros
-                            chunk_data.append(0)
-                        else:
-                            if positions[seq_idx] >= self.file_size:
-                                positions[seq_idx] = 0  # Wrap around
-                            
-                            byte_val = int(self.mmap[positions[seq_idx]])
-                            positions[seq_idx] += 1
-                            
-                            if byte_val == 0x1e:  # Document boundary
-                                doc_ended = True
-                                hit_boundary = True
-                                actual_len = len(chunk_data)  # Record length before padding
-                                chunk_data.append(0)  # Start padding
-                                # Move past the boundary for next chunk
-                                positions[seq_idx] += 1 if positions[seq_idx] < self.file_size else 0
-                            else:
-                                chunk_data.append(byte_val)
-                    
-                    batch_chunks.append(torch.tensor(chunk_data, dtype=torch.long))
+                    chunk, doc_ended, actual_len = val_datasets[seq_idx][batch_idx]
+                    batch_chunks.append(chunk)
                     actual_lengths.append(actual_len)
                     is_doc_end.append(doc_ended)
-                    
                 
                 # Stack into batch tensors
                 chunks_tensor = torch.stack(batch_chunks).to(device)  # [batch_size, chunk_size]
