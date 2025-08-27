@@ -131,6 +131,10 @@ class NAU_GRU(torch.nn.Module):
             # Start at -2.0 instead of -20.0: exp(-2) ≈ 0.135 vs exp(-20) ≈ 2e-9
             prev_hidden = torch.full((B, self.dim_inner), -2.0, device=device, dtype=dtype)
         else:
+            # Handle minGRU's [B, 1, D] format!
+            if prev_hidden.dim() == 3 and prev_hidden.size(1) == 1:
+                prev_hidden = prev_hidden.squeeze(1)
+            
             # Ensure prev_hidden has correct batch size
             if prev_hidden.shape[0] != B:
                 # Batch size changed (e.g., validation) - reinitialize
@@ -164,5 +168,6 @@ class NAU_GRU(torch.nn.Module):
         
         if return_next_prev_hidden:
             # Return the actual log-space hidden state from kernel
-            return output, h_log_final.contiguous()
+            # CRITICAL: Must be [B, 1, D] to match minGRU's format!
+            return output, h_log_final.unsqueeze(1).contiguous()
         return output
