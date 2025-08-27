@@ -40,9 +40,9 @@ def nau_gru_exact_kernel(
             # Match JIT version exactly:
             # h_new = torch.where(h_t >= 0, (F.relu(h_t) + 0.5).log(), -F.softplus(-h_t))
             
-            # For positive h_t: log(relu(h_t) + eps)
+            # For positive h_t: log(relu(h_t) + 0.5) - matches minGRU exactly
             h_t_pos = tl.maximum(h_t, 0.0)
-            h_new_pos = tl.log(h_t_pos + 1e-8)
+            h_new_pos = tl.log(h_t_pos + 0.5)
             
             # For negative h_t: -softplus(-h_t) = -log(1 + exp(-h_t))
             h_new_neg = -tl.log(1.0 + tl.exp(-h_t))
