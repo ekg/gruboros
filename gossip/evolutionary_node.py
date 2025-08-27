@@ -144,6 +144,12 @@ class EvolutionaryTrainingNode:
         self.incoming_updates = queue.Queue(maxsize=2)  # Limit pending updates to prevent memory growth
         self.step_notifications = queue.Queue()
         
+        # Atomic coordination for safe model updates
+        self.batch_boundary_lock = threading.Lock()
+        self.in_forward_pass = threading.Event()  # Set during forward pass
+        self.pending_exchange = None  # Store exchange request during forward pass
+        self.hidden_state_cache = None  # Store hidden states for preservation
+        
         # Replace fitness_tracker with validation_tracker
         self.validation_tracker = ValidationTracker(
             data_path=data_path,
@@ -235,10 +241,14 @@ class EvolutionaryTrainingNode:
         """Check for incoming weight updates and start transfer"""
         try:
             update = self.incoming_updates.get_nowait()
-            # We now process immediately instead of staging
-            was_applied, needs_reset = self._start_async_weight_transfer(update)
-            if was_applied:
-                return update
+            # Only process if we're at a safe point (not in forward pass)
+            if not self.in_forward_pass.is_set():
+                was_applied, needs_reset = self._start_async_weight_transfer(update)
+                if was_applied:
+                    return update
+            else:
+                # Store for later processing at batch boundary
+                self.pending_exchange = update
             return None
         except queue.Empty:
             return None
@@ -512,7 +522,14 @@ class EvolutionaryTrainingNode:
                 )
 
     def apply_pending_update(self) -> tuple[bool, bool]:
-        """Apply any pending weight updates"""
+        """Apply any pending weight updates at safe batch boundary"""
+        # First check if we have a stored pending exchange
+        if self.pending_exchange:
+            update = self.pending_exchange
+            self.pending_exchange = None
+            return self._start_async_weight_transfer(update)
+        
+        # Otherwise check the queue
         try:
             update = self.incoming_updates.get_nowait()
             return self._start_async_weight_transfer(update)
@@ -660,14 +677,25 @@ class EvolutionaryTrainingNode:
                             source_ema_loss=source_fitness,
                             correlation_id=correlation_id
                         )
-                        self.incoming_updates.put(update)
-                        self.logger.log_event(
-                            "WEIGHT_UPDATE_QUEUED",
-                            step=self.current_step,
-                            correlation_id=correlation_id,
-                            peer_addr=peer_addr,
-                            fitness=source_fitness
-                        )
+                        # If we're in forward pass, store for later
+                        if self.in_forward_pass.is_set():
+                            self.pending_exchange = update
+                            self.logger.log_event(
+                                "EXCHANGE_DEFERRED",
+                                step=self.current_step,
+                                correlation_id=correlation_id,
+                                peer_addr=peer_addr,
+                                message="Deferring weight exchange until batch boundary"
+                            )
+                        else:
+                            self.incoming_updates.put(update)
+                            self.logger.log_event(
+                                "WEIGHT_UPDATE_QUEUED",
+                                step=self.current_step,
+                                correlation_id=correlation_id,
+                                peer_addr=peer_addr,
+                                fitness=source_fitness
+                            )
                 else:
                     # Exact tie within statistical significance
                     self.mixes_tied += 1
@@ -809,12 +837,23 @@ class EvolutionaryTrainingNode:
                 sock.settimeout(120.0)
                 payload_path, source_fitness = self._receive_weights_from_peer(sock, correlation_id)
                 if payload_path:
-                    self.incoming_updates.put(WeightUpdate(
+                    update = WeightUpdate(
                         payload_path=payload_path,
                         source_node=peer_address,
                         source_ema_loss=source_fitness,
                         correlation_id=correlation_id
-                    ))
+                    )
+                    # If we're in forward pass, store for later
+                    if self.in_forward_pass.is_set():
+                        self.pending_exchange = update
+                        self.logger.log_event(
+                            "EXCHANGE_DEFERRED",
+                            step=self.current_step,
+                            correlation_id=correlation_id,
+                            message="Deferring weight exchange until batch boundary"
+                        )
+                    else:
+                        self.incoming_updates.put(update)
                     
             elif decision.startswith("LOSER:SEND_ME_WEIGHTS"):
                 # We won, send weights
@@ -968,6 +1007,28 @@ class EvolutionaryTrainingNode:
 
     def request_mix(self): pass
 
+    def enter_forward_pass(self, hidden_states=None, conv_buffers=None):
+        """Mark that we're entering a forward pass - no weight updates allowed"""
+        self.in_forward_pass.set()
+        # Save hidden states for potential restoration
+        if hidden_states is not None:
+            self.hidden_state_cache = {
+                'hidden': [h.clone() if h is not None else None for h in hidden_states],
+                'conv': [b.clone() if b is not None else None for b in (conv_buffers or [])]
+            }
+    
+    def exit_forward_pass(self):
+        """Mark that we've exited the forward pass - weight updates are safe now"""
+        self.in_forward_pass.clear()
+    
+    def get_cached_hidden_states(self):
+        """Get cached hidden states if available"""
+        if self.hidden_state_cache:
+            cache = self.hidden_state_cache
+            self.hidden_state_cache = None  # Clear cache after retrieval
+            return cache['hidden'], cache['conv']
+        return None, None
+    
     def get_status(self) -> dict:
         outbound = self.outbound_mixes_attempted
         inbound = self.inbound_mixes_attempted

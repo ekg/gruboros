@@ -967,6 +967,9 @@ def main():
         # Move actual_lengths to GPU to prevent device mismatch
         actual_lengths = actual_lengths.to(device, non_blocking=True)
         
+        # Mark that we're entering forward pass - no weight updates allowed
+        evolutionary_node.enter_forward_pass(hidden_state, conv_buffers)
+        
         # Forward pass with both RNN hidden states and conv buffers
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
             result = model(
@@ -977,6 +980,9 @@ def main():
                 prev_conv_buffers=conv_buffers,
                 actual_length=actual_lengths
             )
+        
+        # Mark that we've exited forward pass - safe for weight updates
+        evolutionary_node.exit_forward_pass()
         
         # Unpack the result - could be just loss or loss + (hiddens, buffers)
         if isinstance(result, tuple) and len(result) == 2:
@@ -1051,9 +1057,17 @@ def main():
             if was_updated:
                 if global_rank == 0:
                     print(f"Rank {global_rank} received model update at step {step}")
-                # CRITICAL: Always reset hidden states after model update
-                hidden_state = []
-                conv_buffers = []
+                # Try to restore cached hidden states if available
+                cached_hidden, cached_conv = evolutionary_node.get_cached_hidden_states()
+                if cached_hidden is not None:
+                    hidden_state = cached_hidden
+                    conv_buffers = cached_conv if cached_conv else []
+                    if global_rank == 0:
+                        print(f"Rank {global_rank} restored hidden states after model update")
+                else:
+                    # CRITICAL: Reset hidden states if no cache available
+                    hidden_state = []
+                    conv_buffers = []
                 
                 if needs_optimizer_reset:
                     if global_rank == 0:
