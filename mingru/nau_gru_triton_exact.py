@@ -102,8 +102,12 @@ class NAU_GRU(torch.nn.Module):
         self.to_hidden_and_gate = torch.nn.Linear(dim, self.dim_inner * 2, bias=False)
         self.to_out = torch.nn.Linear(self.dim_inner, dim, bias=False)
         
-        torch.nn.init.xavier_uniform_(self.to_hidden_and_gate.weight)
-        torch.nn.init.xavier_uniform_(self.to_out.weight)
+        # Match minLM's careful initialization
+        import math
+        std = 0.02 / math.sqrt(dim)
+        torch.nn.init.normal_(self.to_hidden_and_gate.weight, mean=0.0, std=std)
+        # CRITICAL: Zero-initialize output for residual identity
+        torch.nn.init.constant_(self.to_out.weight, 0.0)
     
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         B, T, C = x.shape
@@ -120,7 +124,8 @@ class NAU_GRU(torch.nn.Module):
         
         # Initialize hidden state IN LOG SPACE
         if prev_hidden is None:
-            prev_hidden = torch.full((B, self.dim_inner), -20.0, device=device, dtype=dtype)
+            # Start at -2.0 instead of -20.0: exp(-2) ≈ 0.135 vs exp(-20) ≈ 2e-9
+            prev_hidden = torch.full((B, self.dim_inner), -2.0, device=device, dtype=dtype)
         else:
             # Ensure prev_hidden has correct batch size
             if prev_hidden.shape[0] != B:

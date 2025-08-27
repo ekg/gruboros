@@ -54,9 +54,12 @@ class NAU_GRU(nn.Module):
         self.to_hidden_and_gate = nn.Linear(dim, self.dim_inner * 2, bias=False)
         self.to_out = nn.Linear(self.dim_inner, dim, bias=False)
         
-        # Initialize
-        nn.init.xavier_uniform_(self.to_hidden_and_gate.weight)
-        nn.init.xavier_uniform_(self.to_out.weight)
+        # Match minLM's careful initialization
+        import math
+        std = 0.02 / math.sqrt(dim)
+        nn.init.normal_(self.to_hidden_and_gate.weight, mean=0.0, std=std)
+        # CRITICAL: Zero-initialize output for residual identity
+        nn.init.constant_(self.to_out.weight, 0.0)
     
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         # Get dimensions
@@ -84,7 +87,8 @@ class NAU_GRU(nn.Module):
         
         # Initialize state IN LOG SPACE
         if prev_hidden is None:
-            h_log = torch.full((batch_size, self.dim_inner), -20.0, device=device, dtype=dtype)
+            # Start at -2.0 instead of -20.0: exp(-2) ≈ 0.135 vs exp(-20) ≈ 2e-9
+            h_log = torch.full((batch_size, self.dim_inner), -2.0, device=device, dtype=dtype)
         else:
             if prev_hidden.shape != (batch_size, self.dim_inner):
                 # Batch size changed - reinitialize
