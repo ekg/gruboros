@@ -14,7 +14,7 @@ from datetime import timedelta
 import sys
 import shutil
 import glob
-from tqdm import tqdm
+# from tqdm import tqdm  # Removed to save display space for gradient logging
 from schedulefree import AdamWScheduleFree
 import fcntl
 import contextlib
@@ -843,7 +843,7 @@ def main():
         header = [
             "rank", "step", "time_s", "loss", "val", 
             "tok_seen", "tok_sec", "lr",
-            "docs", "gb_pos", "acc_steps", "opt",
+            "docs", "gb_pos", "acc_steps", "opt", "grad_norm",
             # --- NEW COLUMNS ---
             "mix_out", "mix_in", "won", "lost", "tied", "failed"
         ]
@@ -912,8 +912,8 @@ def main():
 
     # --- 4. UNIFIED TRAINING LOOP ---
     
-    # Modified log_metrics function
-    def log_metrics(step, train_loss, validation_fitness, mix_status, doc_stats, acc_steps, optimized):
+    # Modified log_metrics function  
+    def log_metrics(step, train_loss, validation_fitness, mix_status, doc_stats, acc_steps, optimized, grad_norm=None):
         nonlocal total_tokens_processed
         elapsed = time.time() - start_time
         
@@ -931,6 +931,7 @@ def main():
             f"{doc_stats['current_position'] / 1e9:.3f}",  # NEW
             acc_steps,  # NEW: accumulated steps
             1 if optimized else 0,  # NEW: whether optimizer stepped
+            f"{grad_norm:.6f}" if grad_norm is not None else "NA",  # NEW: gradient norm
             mix_status['initiated_mixes'],
             mix_status['received_mixes'],
             mix_status['won_mixes'],
@@ -944,15 +945,7 @@ def main():
         with open(metrics_log_path, 'a') as f:
             f.write('\t'.join(values) + '\n')
 
-    # Main training loop
-    pbar = tqdm(
-        total=train_steps, 
-        desc="Train", 
-        initial=resume_step, 
-        disable=(global_rank != 0),
-        ncols=120,  # Fixed width
-        bar_format='{desc}: {percentage:3.0f}%|{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
-    )
+    # Main training loop (progress bar removed to save space for gradient logging)
     step = resume_step
     data_iterator = iter(train_loader)
     # Hidden states are now lists that will contain batched tensors
@@ -1022,14 +1015,24 @@ def main():
         # Use a fixed, synchronous optimization schedule
         should_optimize = accumulated_steps >= args.grad_accum
         
+        # Calculate gradient norm before optimization (for logging)
+        grad_norm = None
         if should_optimize:
+            # Unscale gradients first if using scaler
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+            
+            # Calculate gradient norm for logging
+            total_norm = 0.0
+            for param in model.parameters():
+                if param.grad is not None:
+                    param_norm = param.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            grad_norm = total_norm ** 0.5
+            
             # Conditionally perform gradient clipping if args.grad_clip is set > 0
             if args.grad_clip > 0.0:
-                # 1. Unscale gradients before clipping, as required by GradScaler
-                if scaler is not None:
-                    scaler.unscale_(optimizer)
-                
-                # 2. Clip the gradients using the value from the command line
+                # Clip the gradients using the value from the command line
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
             # 3. The optimizer step proceeds as usual, operating on the (now clipped) gradients
@@ -1080,16 +1083,16 @@ def main():
             'file_wraps': sum(s['file_wraps'] for s in all_stats),
             'current_position': 0  # Not meaningful with multiple streams
         }
-        log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize)
+        log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize, grad_norm)
         
         if global_rank == 0:
             elapsed = time.time() - start_time
             tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
-            pbar_str = f"L={chunk_loss:.3f} V={status['fitness']:.3f} D={doc_stats['documents_processed']} T/s={tokens_per_sec:.0f}"
+            # Console logging instead of progress bar (more space for gradient info)
+            log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={grad_norm:.4f if grad_norm else 'NA':>6s} T/s={tokens_per_sec:.0f} D={doc_stats['documents_processed']}"
             if 'skipped_due_to_lock' in status:
-                pbar_str += f" skipped={status['skipped_due_to_lock']}"
-            pbar.set_postfix_str(pbar_str)
-            pbar.update(1)
+                log_str += f" skipped={status['skipped_due_to_lock']}"
+            print(log_str)
 
         # MODIFIED: Simplified saving (opportunistic saving happens in gossip wins)
         if step > 0 and save_probability > 0:
@@ -1114,7 +1117,7 @@ def main():
         
         step += 1
 
-    pbar.close()
+    # pbar.close()  # No progress bar anymore
     evolutionary_node.stop_gossip_protocol()
     checkpoint_manager.stop()
     if global_rank == 0: print("\nTraining complete.")
