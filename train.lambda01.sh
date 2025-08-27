@@ -93,7 +93,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --cuda \
   --bf16 \
   --compile \
-  --use_nau
+  --hybrid_gru
 
 echo "Training finished."
 

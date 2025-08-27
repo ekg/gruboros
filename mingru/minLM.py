@@ -8,17 +8,13 @@ from mingru.minGRU import minGRU
 
 # Import GRU implementations
 try:
-    from mingru.hybrid_fused_gru import HybridFusedGRU, FusedGRU
-    print("Using HybridFusedGRU (PyTorch matmul + Triton fused cell)")
+    from mingru.hybrid_fused_gru import HybridFusedGRU
+    print("HybridFusedGRU available (PyTorch matmul + Triton fused cell)")
 except ImportError as e:
     print(f"Failed to import hybrid_fused_gru: {e}")
     HybridFusedGRU = None
-    FusedGRU = None
 
-# Backwards compatibility alias
-NAU_GRU = HybridFusedGRU
-
-# Import test GRU
+# Import test GRU for debugging
 try:
     from mingru.test_gru import TestGRU
     print("Test GRU available")
@@ -105,7 +101,7 @@ class minLM(Module):
         use_lstm = None,  # Kept for backward compatibility but ignored
         enable_conv = None,  # Deprecated - for backwards compatibility only
         dropout = 0.,
-        use_nau = False,  # Enable Neural Arithmetic Units
+        use_hybrid_gru = False,  # Use HybridFusedGRU with Triton kernel
         use_test_gru = False,  # Use simple test GRU
         use_barriers = True,  # Enable log-barrier dynamics
         barrier_min = -10,  # Minimum log value before barrier
@@ -130,14 +126,14 @@ class minLM(Module):
             min_rnn_klass = TestGRU
             print(f"Using Test GRU for depth={depth} model")
             rnn_kwargs = {'expansion_factor': expansion}
-        elif use_nau:
-            min_rnn_klass = NAU_GRU
-            # NAU_GRU is already the Triton version from the import above
-            print(f"Using NAU-GRU (Triton kernel) for depth={depth} model")
+        elif use_hybrid_gru:
+            min_rnn_klass = HybridFusedGRU
+            # HybridFusedGRU uses PyTorch matmul + Triton fused cell
+            print(f"Using HybridFusedGRU (Triton kernel) for depth={depth} model")
             
             rnn_kwargs = {
                 'expansion_factor': expansion,
-                'use_nau': use_nau,
+                'use_hybrid_gru': use_hybrid_gru,
                 'use_barriers': use_barriers,
                 'barrier_min': barrier_min,
                 'barrier_max': barrier_max

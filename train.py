@@ -658,7 +658,7 @@ def get_args():
                         help='If elite losses are within this fractional threshold, use step count as a tie-breaker (e.g., 0.01 for 1%).')
     
     # --- GRU Implementation Selection ---
-    parser.add_argument('--use_nau', action='store_true',
+    parser.add_argument('--hybrid_gru', action='store_true',
                         help='Use fused GRU implementation (HybridFusedGRU) instead of minGRU')
     parser.add_argument('--use_test_gru', action='store_true',
                         help='Use simple test GRU implementation for debugging')
@@ -787,7 +787,7 @@ def main():
             depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult)
             dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult)
             
-        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "conv_kernel_size": args.conv_kernel_size, "dropout": args.dropout, "use_nau": args.use_nau, "use_test_gru": args.use_test_gru, "use_barriers": args.use_barriers, "barrier_min": args.barrier_min, "barrier_max": args.barrier_max}
+        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "conv_kernel_size": args.conv_kernel_size, "dropout": args.dropout, "use_hybrid_gru": args.hybrid_gru, "use_test_gru": args.use_test_gru, "use_barriers": args.use_barriers, "barrier_min": args.barrier_min, "barrier_max": args.barrier_max}
 
     if global_rank == 0:
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")
