@@ -8,17 +8,22 @@ from mingru.minGRU import minGRU
 
 # Try importing NAU implementations in order of preference
 try:
-    from mingru.nau_gru_triton_exact import NAU_GRU
-    print("Using NAU_GRU exact Triton implementation")
+    from mingru.fixed_nau_gru import NAU_GRU
+    print("Using FixedGRU (proper GRU mathematics)")
 except ImportError as e:
-    print(f"Failed to import triton_exact: {e}")
+    print(f"Failed to import fixed_nau_gru: {e}")
     try:
-        from mingru.nau_gru_cell import NAU_GRU
-        print("Using NAU_GRU JIT implementation (fallback)")
+        from mingru.nau_gru_triton_exact import NAU_GRU
+        print("Using NAU_GRU exact Triton implementation (BUGGY - uses wrong math)")
     except ImportError as e2:
-        print(f"Failed to import nau_gru_cell: {e2}")
-        NAU_GRU = None
-        print("No NAU_GRU implementation available")
+        print(f"Failed to import triton_exact: {e2}")
+        try:
+            from mingru.nau_gru_cell import NAU_GRU
+            print("Using NAU_GRU JIT implementation (BUGGY - fallback)")
+        except ImportError as e3:
+            print(f"Failed to import nau_gru_cell: {e3}")
+            NAU_GRU = None
+            print("No NAU_GRU implementation available")
 
 # Import test GRU
 try:
