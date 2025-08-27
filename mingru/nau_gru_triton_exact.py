@@ -52,14 +52,6 @@ def nau_gru_exact_kernel(
             # Combine
             h_new = tl.where(h_t >= 0, h_new_pos, h_new_neg)
             
-            # Optional tanh-like nonlinearity in log space
-            if use_tanh:
-                # Apply tanh to exp(h_new), then take log
-                # log(tanh(exp(h_new))) = log((exp(2*h_new) - 1)/(exp(2*h_new) + 1))
-                # For numerical stability, use log-space computation
-                two_h_new = 2.0 * h_new
-                h_new = two_h_new - tl.log(1.0 + tl.exp(two_h_new)) - tl.log(2.0)
-            
             # Gate
             g_sigmoid = tl.sigmoid(g_t)
             
@@ -74,6 +66,13 @@ def nau_gru_exact_kernel(
             # Stable log-sum-exp
             max_val = tl.maximum(term1, term2)
             h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
+            
+            # Optional log-sigmoid nonlinearity AFTER gating (true RNN)
+            if use_tanh:
+                # Apply log-sigmoid: -log(1 + exp(-x)) = -softplus(-x)
+                # This makes it a TRUE RNN (not linearizable like minGRU)
+                # Stays in log space throughout - no exp/log round trips!
+                h_log = -tl.log(1.0 + tl.exp(-h_log))
             
             # Apply energy barriers to prevent explosion
             if use_barriers:
@@ -104,14 +103,14 @@ def nau_gru_exact_kernel(
             tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
-    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, use_tanh=False, **kwargs):
+    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, use_nonlinearity=False, **kwargs):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
         self.use_barriers = use_barriers
         self.barrier_min = barrier_min
         self.barrier_max = barrier_max
-        self.use_tanh = use_tanh
+        self.use_nonlinearity = use_nonlinearity
         
         # Match JIT version exactly
         self.to_hidden_and_gate = torch.nn.Linear(dim, self.dim_inner * 2, bias=False)
@@ -167,7 +166,7 @@ class NAU_GRU(torch.nn.Module):
             use_barriers=self.use_barriers,
             barrier_min=self.barrier_min,
             barrier_max=self.barrier_max,
-            use_tanh=self.use_tanh,
+            use_tanh=self.use_nonlinearity,
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
