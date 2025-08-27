@@ -193,9 +193,12 @@ class DocumentStreamDataset(Dataset):
         """Return current dataset statistics"""
         return {
             'chunks_served': self.chunks_served,
-            'docs_completed': self.docs_completed,
+            'documents_processed': self.docs_completed,  # Use consistent naming with train.py
+            'docs_completed': self.docs_completed,  # Keep for backwards compatibility
             'bytes_processed': self.bytes_processed,
-            'wraps': self.wraps,
+            'file_wraps': self.wraps,  # Match train.py naming
+            'wraps': self.wraps,  # Keep for backwards compatibility
+            'current_position': self.position,
             'position': self.position
         }
     
