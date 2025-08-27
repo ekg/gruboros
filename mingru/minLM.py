@@ -102,10 +102,7 @@ class minLM(Module):
         enable_conv = None,  # Deprecated - for backwards compatibility only
         dropout = 0.,
         use_hybrid_gru = False,  # Use HybridFusedGRU with Triton kernel
-        use_test_gru = False,  # Use simple test GRU
-        use_barriers = True,  # Enable log-barrier dynamics
-        barrier_min = -10,  # Minimum log value before barrier
-        barrier_max = 10  # Maximum log value before barrier
+        use_test_gru = False  # Use simple test GRU
     ):
         super().__init__()
         
@@ -133,10 +130,7 @@ class minLM(Module):
             
             rnn_kwargs = {
                 'expansion_factor': expansion,
-                'use_hybrid_gru': use_hybrid_gru,
-                'use_barriers': use_barriers,
-                'barrier_min': barrier_min,
-                'barrier_max': barrier_max
+                'use_hybrid_gru': use_hybrid_gru
             }
         else:
             min_rnn_klass = minGRU
