@@ -2,71 +2,54 @@ import torch
 import triton
 import triton.language as tl
 
-@triton.jit
-def nau_gru_exact_kernel(
-    h_ptr, g_ptr, h_prev_ptr,
-    output_ptr,
-    h_log_final_ptr,
-    batch_size, seq_len, dim_inner,
-    BLOCK_SIZE: tl.constexpr,
-):
-    # Grid: (batch, dim_blocks)
-    pid = tl.program_id(0)
+# TEMPORARY: Process in PyTorch until we fix the Triton kernel
+def nau_gru_sequential_forward(h, g, prev_hidden, B, T, dim_inner):
+    """
+    Pure PyTorch sequential forward - processes ALL dimensions together
+    """
+    device = h.device
+    dtype = h.dtype
     
-    # Calculate which batch element and dimension block
-    num_dim_blocks = tl.cdiv(dim_inner, BLOCK_SIZE)
-    batch_idx = pid // num_dim_blocks
-    dim_block = pid % num_dim_blocks
+    # Initialize or use previous hidden state (in log space)
+    if prev_hidden is None:
+        h_log = torch.full((B, dim_inner), -2.0, device=device, dtype=dtype)
+    else:
+        h_log = prev_hidden
+        if h_log.dim() == 3:  # Handle [B, 1, D] format
+            h_log = h_log.squeeze(1)
     
-    if batch_idx >= batch_size or dim_block >= num_dim_blocks:
-        return  # Extra safety check
+    outputs = []
     
-    # This kernel handles specific dimensions for specific batch element
-    dim_start = dim_block * BLOCK_SIZE
-    dim_idx = dim_start + tl.arange(0, BLOCK_SIZE)
-    mask = dim_idx < dim_inner
-    
-    # Load initial hidden state for these dimensions
-    h_prev_offset = batch_idx * dim_inner + dim_idx
-    h_log = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=-20.0).to(tl.float32)
-    
-    # Forward scan through time (data dependency preserved per sequence)
-    for t in range(seq_len):
-        # Current timestep offset
-        offset = batch_idx * seq_len * dim_inner + t * dim_inner + dim_idx
-        
-        # Load h and g for current timestep
-        h_t = tl.load(h_ptr + offset, mask=mask, other=0.0).to(tl.float32)
-        g_t = tl.load(g_ptr + offset, mask=mask, other=0.0).to(tl.float32)
+    # Sequential forward pass
+    for t in range(T):
+        h_t = h[:, t, :]  # [B, D]
+        g_t = g[:, t, :]  # [B, D]
         
         # Activation (matches minGRU)
-        h_t_pos = tl.maximum(h_t, 0.0)
-        h_new_pos = tl.log(h_t_pos + 0.5)
-        h_new_neg = -tl.log(1.0 + tl.exp(-h_t))
-        log_h_new = tl.where(h_t >= 0, h_new_pos, h_new_neg)
+        log_h_new = torch.where(
+            h_t >= 0,
+            torch.log(torch.relu(h_t) + 0.5),
+            -F.softplus(-h_t)
+        )
         
         # Gate
-        gate_sigmoid = tl.sigmoid(g_t)
-        eps = 1e-8
-        log_gate = tl.log(tl.maximum(gate_sigmoid, eps))
-        log_one_minus_gate = tl.log(tl.maximum(1.0 - gate_sigmoid, eps))
+        gate_sigmoid = torch.sigmoid(g_t)
+        log_gate = torch.log(gate_sigmoid.clamp(min=1e-8))
+        log_one_minus_gate = torch.log((1 - gate_sigmoid).clamp(min=1e-8))
         
-        # Update hidden state (preserving temporal dependency)
-        term1 = log_one_minus_gate + h_log
-        term2 = log_gate + log_h_new
-        max_val = tl.maximum(term1, term2)
-        h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
+        # Update ALL dimensions together
+        h_log = torch.logaddexp(
+            log_one_minus_gate + h_log,
+            log_gate + log_h_new
+        )
         
-        # Store output with extra safety
-        h_log_clamped = tl.minimum(tl.maximum(h_log, -30.0), 30.0)  # Wider clamp
-        h_output = tl.exp(h_log_clamped)
-        # Extra safety: ensure we're not writing out of bounds
-        if t < seq_len:
-            tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
+        # Clamp and output
+        h_log = h_log.clamp(min=-20.0, max=20.0)
+        outputs.append(torch.exp(h_log))
     
-    # Store final hidden state for these dimensions
-    final_offset = batch_idx * dim_inner + dim_idx
-    tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
+    # Stack outputs and return
+    output = torch.stack(outputs, dim=1)  # [B, T, D]
+    return output, h_log
 
 class NAU_GRU(torch.nn.Module):
     def __init__(self, dim, expansion_factor=1.5, **kwargs):
@@ -119,18 +102,9 @@ class NAU_GRU(torch.nn.Module):
         h_output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
         h_log_final = torch.empty(B, self.dim_inner, device=device, dtype=dtype)
         
-        # Kernel config  
-        BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))  # Reduced for safety
-        num_dim_blocks = triton.cdiv(self.dim_inner, BLOCK_SIZE)
-        grid = (B * num_dim_blocks,)  # Parallel across batch AND dimension blocks
-        
-        # Launch kernel - parallel across entire batch
-        nau_gru_exact_kernel[grid](
-            h, g, prev_hidden,
-            h_output,
-            h_log_final,
-            B, T, self.dim_inner,
-            BLOCK_SIZE=BLOCK_SIZE,
+        # TEMPORARY: Use PyTorch implementation until Triton kernel is fixed
+        h_output, h_log_final = nau_gru_sequential_forward(
+            h, g, prev_hidden, B, T, self.dim_inner
         )
         
         # Project back
