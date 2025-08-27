@@ -655,6 +655,8 @@ def get_args():
     # --- Neural Arithmetic Unit (NAU) Arguments ---
     parser.add_argument('--use_nau', action='store_true',
                         help='Use Neural Arithmetic Units for learned arithmetic operations in minGRU')
+    parser.add_argument('--use_test_gru', action='store_true',
+                        help='Use simple test GRU implementation for debugging')
     parser.add_argument('--use_barriers', action='store_true', default=True,
                         help='Use log-barrier dynamics for numerical stability')
     parser.add_argument('--barrier_min', type=float, default=-10,
@@ -780,7 +782,7 @@ def main():
             depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult)
             dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult)
             
-        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "conv_kernel_size": args.conv_kernel_size, "dropout": args.dropout, "use_nau": args.use_nau, "use_barriers": args.use_barriers, "barrier_min": args.barrier_min, "barrier_max": args.barrier_max}
+        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "conv_kernel_size": args.conv_kernel_size, "dropout": args.dropout, "use_nau": args.use_nau, "use_test_gru": args.use_test_gru, "use_barriers": args.use_barriers, "barrier_min": args.barrier_min, "barrier_max": args.barrier_max}
 
     if global_rank == 0:
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")

@@ -20,6 +20,13 @@ except ImportError as e:
         NAU_GRU = None
         print("No NAU_GRU implementation available")
 
+# Import test GRU
+try:
+    from mingru.test_gru import TestGRU
+    print("Test GRU available")
+except ImportError:
+    TestGRU = None
+
 def exists(v):
     return v is not None
 
@@ -101,6 +108,7 @@ class minLM(Module):
         enable_conv = None,  # Deprecated - for backwards compatibility only
         dropout = 0.,
         use_nau = False,  # Enable Neural Arithmetic Units
+        use_test_gru = False,  # Use simple test GRU
         use_barriers = True,  # Enable log-barrier dynamics
         barrier_min = -10,  # Minimum log value before barrier
         barrier_max = 10  # Maximum log value before barrier
@@ -119,8 +127,12 @@ class minLM(Module):
 
         self.layers = ModuleList([])
 
-        # Choose RNN class based on use_nau
-        if use_nau:
+        # Choose RNN class based on flags
+        if use_test_gru:
+            min_rnn_klass = TestGRU
+            print(f"Using Test GRU for depth={depth} model")
+            rnn_kwargs = {'expansion_factor': expansion}
+        elif use_nau:
             min_rnn_klass = NAU_GRU
             # NAU_GRU is already the Triton version from the import above
             print(f"Using NAU-GRU (Triton kernel) for depth={depth} model")
