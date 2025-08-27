@@ -11,7 +11,6 @@ def nau_gru_exact_kernel(
     use_barriers: tl.constexpr,
     barrier_min: tl.constexpr, 
     barrier_max: tl.constexpr,
-    use_tanh: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     # Get position in grid
@@ -67,13 +66,6 @@ def nau_gru_exact_kernel(
             max_val = tl.maximum(term1, term2)
             h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
             
-            # Optional log-sigmoid nonlinearity AFTER gating (true RNN)
-            if use_tanh:
-                # Apply log-sigmoid: -log(1 + exp(-x)) = -softplus(-x)
-                # This makes it a TRUE RNN (not linearizable like minGRU)
-                # Stays in log space throughout - no exp/log round trips!
-                h_log = -tl.log(1.0 + tl.exp(-h_log))
-            
             # Apply energy barriers to prevent explosion
             if use_barriers:
                 # Soft barrier forces that grow exponentially near boundaries
@@ -103,14 +95,13 @@ def nau_gru_exact_kernel(
             tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
-    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, use_nonlinearity=True, **kwargs):
+    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, **kwargs):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
         self.use_barriers = use_barriers
         self.barrier_min = barrier_min
         self.barrier_max = barrier_max
-        self.use_nonlinearity = use_nonlinearity
         
         # Match JIT version exactly
         self.to_hidden_and_gate = torch.nn.Linear(dim, self.dim_inner * 2, bias=False)
@@ -166,7 +157,6 @@ class NAU_GRU(torch.nn.Module):
             use_barriers=self.use_barriers,
             barrier_min=self.barrier_min,
             barrier_max=self.barrier_max,
-            use_tanh=self.use_nonlinearity,
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
