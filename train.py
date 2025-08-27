@@ -967,6 +967,10 @@ def main():
         # Move actual_lengths to GPU to prevent device mismatch
         actual_lengths = actual_lengths.to(device, non_blocking=True)
         
+        # CRITICAL: Synchronize async transfers before forward pass
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        
         # Mark that we're entering forward pass - no weight updates allowed
         evolutionary_node.enter_forward_pass(hidden_state, conv_buffers)
         
@@ -1050,6 +1054,10 @@ def main():
             
             optimizer.zero_grad()
             accumulated_steps = 0
+            
+            # CRITICAL: Ensure optimizer updates are complete before gossip
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
             
             # SAFE GOSSIP SYNCHRONIZATION POINT - all updates happen here
             # First check and apply any pending model updates

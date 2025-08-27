@@ -305,6 +305,10 @@ class EvolutionaryTrainingNode:
                 with self.validation_lock:
                     self.validation_tracker.inherit_fitness(source_ema_loss)
                 
+                # CRITICAL: Ensure all weight transfers are complete before continuing
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
+                
                 # Clean up - mmap checkpoint will be released
                 del mmap_checkpoint
                 gc.collect()
