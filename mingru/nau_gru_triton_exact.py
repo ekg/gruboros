@@ -45,8 +45,7 @@ def nau_gru_exact_kernel(
             h_new_pos = tl.log(h_t_pos + 1e-8)
             
             # For negative h_t: -softplus(-h_t) = -log(1 + exp(-h_t))
-            h_t_neg_abs = tl.abs(tl.minimum(h_t, 0.0))
-            h_new_neg = -tl.log(1.0 + tl.exp(-h_t_neg_abs))
+            h_new_neg = -tl.log(1.0 + tl.exp(-h_t))
             
             # Combine
             h_new = tl.where(h_t >= 0, h_new_pos, h_new_neg)
