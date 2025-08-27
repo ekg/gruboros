@@ -30,13 +30,6 @@ def nau_gru_exact_kernel(
         h_prev_offset = batch_idx * dim_inner + dim_idx
         h_log = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=-20.0).to(tl.float32)
         
-        # Early exit if no timesteps
-        if seq_len == 0:
-            # Just copy input to output
-            final_offset = batch_idx * dim_inner + dim_idx
-            tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
-            continue
-        
         # Process sequence
         for t in range(seq_len):
             offset = batch_idx * seq_len * dim_inner + t * dim_inner + dim_idx
@@ -97,15 +90,8 @@ def nau_gru_exact_kernel(
             tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
         
         # Store final h_log for next chunk (avoiding log(exp()) round-trip)
-        # Only store if we actually processed timesteps
-        if seq_len > 0:
-            final_offset = batch_idx * dim_inner + dim_idx
-            tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
-        else:
-            # No timesteps - preserve the input hidden state
-            final_offset = batch_idx * dim_inner + dim_idx
-            h_log_init = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=-20.0)
-            tl.store(h_log_final_ptr + final_offset, h_log_init.to(h_ptr.dtype.element_ty), mask=mask)
+        final_offset = batch_idx * dim_inner + dim_idx
+        tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
     def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, **kwargs):
