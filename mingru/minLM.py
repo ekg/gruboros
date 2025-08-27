@@ -9,33 +9,16 @@ from mingru.minGRU import minGRU
 # Try importing NAU implementations in order of preference
 try:
     from mingru.nau_gru_triton_exact import NAU_GRU
-    print("Using NAU_GRU exact Triton implementation (matches JIT math)")
+    print("Using NAU_GRU exact Triton implementation")
 except ImportError as e:
     print(f"Failed to import triton_exact: {e}")
     try:
-        from mingru.nau_gru_triton_clean import NAU_GRU
-        print("Using NAU_GRU clean Triton implementation")
+        from mingru.nau_gru_cell import NAU_GRU
+        print("Using NAU_GRU JIT implementation (fallback)")
     except ImportError as e2:
-        print(f"Failed to import triton_clean: {e2}")
-        try:
-            from mingru.nau_gru_cell import NAU_GRU
-            print("Using NAU_GRU JIT implementation")
-        except ImportError as e3:
-            print(f"Failed to import nau_gru_cell: {e3}")
-            NAU_GRU = None
-            print("No NAU_GRU implementation available")
-
-# Try importing other Triton versions for testing
-try:
-    from mingru.nau_gru_triton import NAU_GRU_Triton
-    from mingru.nau_gru_triton_stable import NAU_GRU_Triton_Stable
-    from mingru.nau_gru_triton_minimal import NAU_GRU_Triton_Minimal
-    from mingru.nau_gru_triton_autograd import NAU_GRU_Triton_Autograd
-    from mingru.nau_gru_log_space import NAU_GRU_LogSpace
-    from mingru.nau_gru_triton_barriers import NAU_GRU_Triton_Barriers
-    TRITON_AVAILABLE = True
-except ImportError:
-    TRITON_AVAILABLE = False
+        print(f"Failed to import nau_gru_cell: {e2}")
+        NAU_GRU = None
+        print("No NAU_GRU implementation available")
 
 def exists(v):
     return v is not None
