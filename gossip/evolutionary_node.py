@@ -113,7 +113,8 @@ class EvolutionaryTrainingNode:
                  batch_size: int = None,
                  p_value_threshold: float = 0.01,
                  validation_interval: int = 10000,
-                 validation_batches: int = 8):
+                 validation_batches: int = 8,
+                 gossip_lock_timeout: float = 2.0):
         
         self.node_id = node_id
         self.model = model
@@ -132,6 +133,7 @@ class EvolutionaryTrainingNode:
         self.output_dir = output_dir
         self.save_callback = save_callback
         self.p_value_threshold = p_value_threshold
+        self.gossip_lock_timeout = gossip_lock_timeout
         
         self.coordinator: Optional[FilesystemCoordinator] = None
         if self.use_filesystem_coordinator:
@@ -568,7 +570,7 @@ class EvolutionaryTrainingNode:
                 if self.mixing_rng.random() < self.mixing_probability:
                     if self.use_node_local_lock:
                         try:
-                            with file_lock(self.node_lock_path, timeout=0.05): self._try_mix_with_peer()
+                            with file_lock(self.node_lock_path, timeout=self.gossip_lock_timeout): self._try_mix_with_peer()
                         except TimeoutError: self.mixes_skipped_locked += 1
                     else: self._try_mix_with_peer()
                 self.step_notifications.task_done()

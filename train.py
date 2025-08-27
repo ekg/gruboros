@@ -633,6 +633,8 @@ def get_args():
                         help='Enable a node-local lock to serialize gossip operations and prevent resource storms on multi-node systems.')
     parser.add_argument('--gossip_p_value_threshold', type=float, default=0.01,
                         help='P-value threshold for statistical significance in fitness comparison (default: 0.01).')
+    parser.add_argument('--gossip_lock_timeout', type=float, default=2.0,
+                        help='Timeout in seconds for gossip lock acquisition (default: 2.0)')
     parser.add_argument('--validation_interval', type=int, default=10000,
                         help='Steps between validation runs (default: 10000)')
     parser.add_argument('--validation_batches', type=int, default=8,
@@ -899,7 +901,8 @@ def main():
         batch_size=batch_size,
         p_value_threshold=args.gossip_p_value_threshold,
         validation_interval=args.validation_interval,
-        validation_batches=args.validation_batches
+        validation_batches=args.validation_batches,
+        gossip_lock_timeout=args.gossip_lock_timeout
     )
     evolutionary_node.start_gossip_protocol()
     if global_rank == 0:

@@ -82,6 +82,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --gossip_optimizer_recombination interpolate \
   --gossip_mixing_rate 0.001 \
   --gossip_p_value_threshold 0.1 \
+  --gossip_lock_timeout 5.0 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
   --gossip_fitness_window 10000 \
   --validation_interval 10000 \
