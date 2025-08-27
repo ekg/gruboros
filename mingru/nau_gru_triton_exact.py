@@ -19,7 +19,7 @@ def nau_gru_exact_kernel(
     batch_idx = pid // num_dim_blocks
     dim_block_idx = pid % num_dim_blocks
     
-    if batch_idx >= batch_size:
+    if batch_idx >= batch_size or dim_block_idx >= num_dim_blocks:
         return
     
     # This kernel handles these specific dimensions
@@ -30,6 +30,10 @@ def nau_gru_exact_kernel(
     # Load initial hidden state for THESE dimensions
     h_prev_offset = batch_idx * dim_inner + dim_idx
     h_log = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=-20.0).to(tl.float32)
+    
+    # Safety check for empty sequences
+    if seq_len <= 0:
+        return
     
     # Process sequence for THESE dimensions
     for t in range(seq_len):
@@ -59,13 +63,15 @@ def nau_gru_exact_kernel(
         max_val = tl.maximum(term1, term2)
         h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
         
-        # Output
-        h_output = tl.exp(h_log)
+        # Output - clamp before exp to prevent overflow
+        h_log_clamped = tl.minimum(tl.maximum(h_log, -20.0), 20.0)
+        h_output = tl.exp(h_log_clamped)
         tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
     
     # Store final hidden state for THESE dimensions
-    final_offset = batch_idx * dim_inner + dim_idx
-    tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
+    if seq_len > 0:  # Only store if we processed timesteps
+        final_offset = batch_idx * dim_inner + dim_idx
+        tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
     def __init__(self, dim, expansion_factor=1.5, **kwargs):
