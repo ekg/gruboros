@@ -22,9 +22,9 @@ def nau_gru_exact_kernel(
         dim_idx = dim_start + tl.arange(0, BLOCK_SIZE)
         mask = dim_idx < dim_inner
         
-        # Load initial hidden state
+        # Load initial hidden state - IT'S ALREADY IN LOG SPACE
         h_prev_offset = batch_idx * dim_inner + dim_idx
-        h_prev = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=1e-8).to(tl.float32)
+        h_log = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=-20.0).to(tl.float32)
         
         # Process sequence
         for t in range(seq_len):
@@ -51,26 +51,26 @@ def nau_gru_exact_kernel(
             # Gate
             g_sigmoid = tl.sigmoid(g_t)
             
-            # Log space update - CORRECTED with log-sum-exp
-            # This computes log((1-g)*h_prev + g*exp(h_new)) correctly
-            log_g_sigmoid = -tl.log(1.0 + tl.exp(-g_t))  # log(sigmoid(g_t))
+            # Gate log probabilities
+            log_g = -tl.log(1.0 + tl.exp(-g_t))        # log(sigmoid(g_t))
             log_one_minus_g = -tl.log(1.0 + tl.exp(g_t))  # log(1 - sigmoid(g_t))
             
-            # Terms for log-sum-exp
-            h_prev_log = tl.log(tl.abs(h_prev) + 1e-8)
-            term1 = log_one_minus_g + h_prev_log  # log((1-g)*h_prev)
-            term2 = log_g_sigmoid + h_new         # log(g*exp(h_new))
+            # Log-sum-exp (h_log is ALREADY in log space, no log() needed!)
+            term1 = log_one_minus_g + h_log  # log((1-g)*exp(h_log))
+            term2 = log_g + h_new            # log(g*exp(h_new))
             
-            # Manual logaddexp in Triton: log(exp(a) + exp(b))
+            # Stable log-sum-exp
             max_val = tl.maximum(term1, term2)
-            h_log_new = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
+            h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
             
-            # Clamp and exp
-            h_log_new = tl.minimum(tl.maximum(h_log_new, -20.0), 20.0)
-            h_prev = tl.exp(h_log_new)
+            # Clamp for stability but STAY IN LOG SPACE
+            h_log = tl.minimum(tl.maximum(h_log, -20.0), 20.0)
             
-            # Store as original dtype
-            tl.store(output_ptr + offset, h_prev.to(h_ptr.dtype.element_ty), mask=mask)
+            # Only exp() for output, keep h_log for next iteration
+            h_output = tl.exp(h_log)
+            
+            # Store exp(h_log) as original dtype
+            tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
     def __init__(self, dim, expansion_factor=1.5, **kwargs):
@@ -98,15 +98,16 @@ class NAU_GRU(torch.nn.Module):
         h = h.contiguous()
         g = g.contiguous()
         
-        # Initialize hidden state - ALWAYS create new tensor to avoid shape mismatches
+        # Initialize hidden state IN LOG SPACE
         if prev_hidden is None:
-            prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+            prev_hidden = torch.full((B, self.dim_inner), -20.0, device=device, dtype=dtype)
         else:
             # Ensure prev_hidden has correct batch size
             if prev_hidden.shape[0] != B:
                 # Batch size changed (e.g., validation) - reinitialize
-                prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+                prev_hidden = torch.full((B, self.dim_inner), -20.0, device=device, dtype=dtype)
             else:
+                # prev_hidden is already in log space, don't convert
                 prev_hidden = prev_hidden.contiguous()
             
         # Output tensor
@@ -128,5 +129,7 @@ class NAU_GRU(torch.nn.Module):
         output = self.to_out(h_output)
         
         if return_next_prev_hidden:
-            return output, h_output[:, -1, :].contiguous()
+            # Return log-space hidden state for next timestep
+            final_h_log = torch.log(h_output[:, -1, :].clamp(min=1e-8))
+            return output, final_h_log.contiguous()
         return output
