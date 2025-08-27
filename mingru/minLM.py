@@ -8,10 +8,10 @@ from mingru.minGRU import minGRU
 
 # Try importing NAU implementations in order of preference
 try:
-    from mingru.real_fused_gru_triton import NAU_GRU
-    print("Using RealFusedGRUTriton (fully fused Triton kernel with tl.dot)")
+    from mingru.proper_fused_gru import NAU_GRU
+    print("Using ProperFusedGRU (fully fused Triton kernel with fp32 accumulation)")
 except ImportError as e:
-    print(f"Failed to import real_fused_gru_triton: {e}")
+    print(f"Failed to import proper_fused_gru: {e}")
     try:
         from mingru.fast_gru_triton import NAU_GRU
         print("Using FastGRU (proper GRU math + optimized)")
