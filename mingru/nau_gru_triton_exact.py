@@ -6,6 +6,7 @@ import triton.language as tl
 def nau_gru_exact_kernel(
     h_ptr, g_ptr, h_prev_ptr,
     output_ptr,
+    h_log_final_ptr,  # ADD: output buffer for final log-space hidden state
     batch_size, seq_len, dim_inner,
     use_barriers: tl.constexpr,
     barrier_min: tl.constexpr, 
@@ -88,6 +89,10 @@ def nau_gru_exact_kernel(
             
             # Store exp(h_log) as original dtype
             tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
+        
+        # CRITICAL: Store final h_log (not exp!) for next chunk
+        final_offset = batch_idx * dim_inner + dim_idx
+        tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
     def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, **kwargs):
@@ -135,8 +140,9 @@ class NAU_GRU(torch.nn.Module):
                 # prev_hidden is already in log space, don't convert
                 prev_hidden = prev_hidden.contiguous()
             
-        # Output tensor
+        # Output tensors
         h_output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
+        h_log_final = torch.empty(B, self.dim_inner, device=device, dtype=dtype)
         
         # Kernel config  
         BLOCK_SIZE = min(256, triton.next_power_of_2(self.dim_inner))
@@ -146,6 +152,7 @@ class NAU_GRU(torch.nn.Module):
         nau_gru_exact_kernel[grid](
             h, g, prev_hidden,
             h_output,
+            h_log_final,  # Pass buffer for final log-space hidden
             B, T, self.dim_inner,
             use_barriers=self.use_barriers,
             barrier_min=self.barrier_min,
@@ -157,7 +164,6 @@ class NAU_GRU(torch.nn.Module):
         output = self.to_out(h_output)
         
         if return_next_prev_hidden:
-            # Return log-space hidden state for next timestep
-            final_h_log = torch.log(h_output[:, -1, :].clamp(min=1e-8))
-            return output, final_h_log.contiguous()
+            # Return the ACTUAL log-space hidden state (no log(exp()) conversion!)
+            return output, h_log_final.contiguous()
         return output
