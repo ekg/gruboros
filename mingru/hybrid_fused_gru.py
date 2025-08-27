@@ -115,16 +115,9 @@ class HybridFusedGRU(nn.Module):
         if prev_hidden is None:
             h = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
         else:
-            # Handle various shapes that might come from validation
-            if prev_hidden.dim() == 3:
-                # If we get [B, T, H], take the last timestep
-                if prev_hidden.size(1) == T:
-                    prev_hidden = prev_hidden[:, -1, :]  # Take last timestep
-                elif prev_hidden.size(1) == 1:
-                    prev_hidden = prev_hidden.squeeze(1)
-                else:
-                    print(f"WARNING: Unexpected prev_hidden shape {prev_hidden.shape}, using zeros")
-                    prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+            # Squeeze any extra dimensions if needed
+            if prev_hidden.dim() == 3 and prev_hidden.size(1) == 1:
+                prev_hidden = prev_hidden.squeeze(1)
             h = prev_hidden if prev_hidden.shape[0] == B else torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
         
         # Pre-compute ALL input projections at once (FAST!)

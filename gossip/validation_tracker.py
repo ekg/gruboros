@@ -139,8 +139,18 @@ class ValidationTracker:
                 
                 # Handle hidden state resets based on document boundaries
                 if next_hidden_states:
-                    reset_mask = doc_end_mask.view(-1, 1, 1)
-                    hidden_states = [h.detach() * (~reset_mask) for h in next_hidden_states]
+                    # Create appropriate mask shape based on hidden state dimensions
+                    if isinstance(next_hidden_states, list):
+                        # List of hidden states from multiple layers
+                        reset_mask = doc_end_mask.view(-1, 1)  # [B, 1] for 2D states
+                        hidden_states = [h.detach() * (~reset_mask) for h in next_hidden_states]
+                    else:
+                        # Single hidden state
+                        if next_hidden_states.dim() == 2:
+                            reset_mask = doc_end_mask.view(-1, 1)  # [B, 1]
+                        else:
+                            reset_mask = doc_end_mask.view(-1, 1, 1)  # [B, 1, 1] for 3D
+                        hidden_states = next_hidden_states.detach() * (~reset_mask)
                 else:
                     hidden_states = None
                 
