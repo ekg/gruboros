@@ -18,8 +18,8 @@ def nau_gru_exact_kernel(
     batch_idx = pid // num_dim_blocks
     dim_block = pid % num_dim_blocks
     
-    if batch_idx >= batch_size:
-        return
+    if batch_idx >= batch_size or dim_block >= num_dim_blocks:
+        return  # Extra safety check
     
     # This kernel handles specific dimensions for specific batch element
     dim_start = dim_block * BLOCK_SIZE
@@ -57,10 +57,12 @@ def nau_gru_exact_kernel(
         max_val = tl.maximum(term1, term2)
         h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
         
-        # Store output
-        h_log_clamped = tl.minimum(tl.maximum(h_log, -20.0), 20.0)
+        # Store output with extra safety
+        h_log_clamped = tl.minimum(tl.maximum(h_log, -30.0), 30.0)  # Wider clamp
         h_output = tl.exp(h_log_clamped)
-        tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
+        # Extra safety: ensure we're not writing out of bounds
+        if t < seq_len:
+            tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
     
     # Store final hidden state for these dimensions
     final_offset = batch_idx * dim_inner + dim_idx
@@ -118,7 +120,7 @@ class NAU_GRU(torch.nn.Module):
         h_log_final = torch.empty(B, self.dim_inner, device=device, dtype=dtype)
         
         # Kernel config  
-        BLOCK_SIZE = min(256, triton.next_power_of_2(self.dim_inner))
+        BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))  # Reduced for safety
         num_dim_blocks = triton.cdiv(self.dim_inner, BLOCK_SIZE)
         grid = (B * num_dim_blocks,)  # Parallel across batch AND dimension blocks
         
