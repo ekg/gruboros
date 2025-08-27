@@ -92,8 +92,9 @@ class ValidationTracker:
                     # Collect one chunk from this stream's current position
                     chunk_data = []
                     doc_ended = False
+                    actual_len = self.chunk_size
                     
-                    for _ in range(self.chunk_size):
+                    for i in range(self.chunk_size):
                         if positions[seq_idx] >= self.file_size:
                             positions[seq_idx] = 0  # Wrap around
                         
@@ -102,12 +103,16 @@ class ValidationTracker:
                         
                         if byte_val == 0x1e:  # Document boundary
                             doc_ended = True
-                            # Don't break - fill the rest of chunk with next doc
-                        
-                        chunk_data.append(byte_val)
+                            # Record actual length before padding
+                            if actual_len == self.chunk_size:
+                                actual_len = i + 1
+                            # Continue to scan past boundary but pad with zeros
+                            chunk_data.append(0)  # Pad rest of chunk
+                        else:
+                            chunk_data.append(byte_val)
                     
                     batch_chunks.append(torch.tensor(chunk_data, dtype=torch.long))
-                    actual_lengths.append(self.chunk_size)  # Always full chunks
+                    actual_lengths.append(actual_len)
                     is_doc_end.append(doc_ended)
                     
                 
