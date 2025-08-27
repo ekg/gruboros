@@ -115,8 +115,16 @@ class HybridFusedGRU(nn.Module):
         if prev_hidden is None:
             h = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
         else:
-            if prev_hidden.dim() == 3 and prev_hidden.size(1) == 1:
-                prev_hidden = prev_hidden.squeeze(1)
+            # Handle various shapes that might come from validation
+            if prev_hidden.dim() == 3:
+                # If we get [B, T, H], take the last timestep
+                if prev_hidden.size(1) == T:
+                    prev_hidden = prev_hidden[:, -1, :]  # Take last timestep
+                elif prev_hidden.size(1) == 1:
+                    prev_hidden = prev_hidden.squeeze(1)
+                else:
+                    print(f"WARNING: Unexpected prev_hidden shape {prev_hidden.shape}, using zeros")
+                    prev_hidden = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
             h = prev_hidden if prev_hidden.shape[0] == B else torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
         
         # Pre-compute ALL input projections at once (FAST!)
@@ -130,11 +138,6 @@ class HybridFusedGRU(nn.Module):
             input_gates = input_gates_all[:, t].contiguous()  # [B, 3*H]
             
             # Compute hidden gates with PyTorch matmul
-            # Ensure h is 2D before projection
-            if h.dim() != 2:
-                print(f"ERROR: h has shape {h.shape}, expected 2D tensor")
-                if h.dim() == 3 and h.size(1) == 1:
-                    h = h.squeeze(1)
             hidden_gates = self.hidden_projection(h).contiguous()  # [B, 3*H]
             
             # Prepare output tensor
@@ -144,16 +147,6 @@ class HybridFusedGRU(nn.Module):
             BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))
             grid = (B, triton.cdiv(self.dim_inner, BLOCK_SIZE))
             
-            # Fix shape issues if hidden_gates comes out 3D
-            if hidden_gates.dim() == 3:
-                # This can happen during validation - squeeze out the middle dimension
-                hidden_gates = hidden_gates.squeeze(1)
-            
-            # Ensure proper shapes (but don't assert, just fix)
-            if input_gates.shape != (B, 3 * self.dim_inner):
-                print(f"WARNING: Input gates shape {input_gates.shape}, expected ({B}, {3 * self.dim_inner})")
-            if hidden_gates.shape != (B, 3 * self.dim_inner):
-                print(f"WARNING: Hidden gates shape {hidden_gates.shape}, expected ({B}, {3 * self.dim_inner})")
             
             gru_cell_fused[grid](
                 input_gates, hidden_gates,
