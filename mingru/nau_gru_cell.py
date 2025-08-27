@@ -16,10 +16,21 @@ def gru_cell(h: Tensor, h_t: Tensor, g_t: Tensor) -> Tensor:
         -F.softplus(-h_t)
     )
     
-    # Gate mixing in log space for stability
-    g_sigmoid = torch.sigmoid(g_t)
-    h_log = torch.log(torch.abs(h) + 1e-8)
-    h_log_new = (1 - g_sigmoid) * h_log + g_sigmoid * h_new
+    # --- CORRECTED UPDATE ---
+    # Convert gate to log probabilities
+    log_gate = -F.softplus(-g_t)            # log(sigmoid(g_t))
+    log_one_minus_gate = -F.softplus(g_t)   # log(1 - sigmoid(g_t))
+    
+    # Previous hidden state to log space
+    h_log = torch.log(torch.abs(h).clamp(min=1e-8))
+    
+    # Use log-sum-exp for the correct arithmetic mean in log space
+    # This computes log((1-g)*h + g*exp(h_new))
+    h_log_new = torch.logaddexp(
+        log_one_minus_gate + h_log,
+        log_gate + h_new
+    )
+    # --- END CORRECTION ---
     
     # Clamp to prevent numerical issues
     h_log_new = torch.clamp(h_log_new, min=-20.0, max=20.0)

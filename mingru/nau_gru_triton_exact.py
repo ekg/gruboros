@@ -51,12 +51,21 @@ def nau_gru_exact_kernel(
             # Gate
             g_sigmoid = tl.sigmoid(g_t)
             
-            # Log space update - match JIT exactly
-            h_prev_abs = tl.abs(h_prev) + 1e-8
-            h_log = tl.log(h_prev_abs)
-            h_log_new = (1.0 - g_sigmoid) * h_log + g_sigmoid * h_new
+            # Log space update - CORRECTED with log-sum-exp
+            # This computes log((1-g)*h_prev + g*exp(h_new)) correctly
+            log_g_sigmoid = -tl.log(1.0 + tl.exp(-g_t))  # log(sigmoid(g_t))
+            log_one_minus_g = -tl.log(1.0 + tl.exp(g_t))  # log(1 - sigmoid(g_t))
             
-            # Clamp
+            # Terms for log-sum-exp
+            h_prev_log = tl.log(tl.abs(h_prev) + 1e-8)
+            term1 = log_one_minus_g + h_prev_log  # log((1-g)*h_prev)
+            term2 = log_g_sigmoid + h_new         # log(g*exp(h_new))
+            
+            # Manual logaddexp in Triton: log(exp(a) + exp(b))
+            max_val = tl.maximum(term1, term2)
+            h_log_new = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
+            
+            # Clamp and exp
             h_log_new = tl.minimum(tl.maximum(h_log_new, -20.0), 20.0)
             h_prev = tl.exp(h_log_new)
             

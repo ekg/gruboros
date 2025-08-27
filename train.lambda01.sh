@@ -66,11 +66,11 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --ff_mult 2 \
   --train_steps 10000000 \
   --save_every 500 \
-  --lr 0.001 \
+  --lr 0.0003 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
-  --grad_clip 0.0 \
+  --grad_clip 1.0 \
   --grad_accum 32 \
   --chunk_size 256 \
   --batch_size 64 \
