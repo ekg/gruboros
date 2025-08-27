@@ -8,61 +8,64 @@ def nau_gru_exact_kernel(
     output_ptr,
     h_log_final_ptr,
     batch_size, seq_len, dim_inner,
+    dim_offset: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    # Each kernel processes one batch element (ALL dimensions together)
+    # Grid-strided pattern: each kernel handles specific dimensions across all batches
     pid = tl.program_id(0)
-    batch_idx = pid
+    
+    # Calculate batch and dimension block
+    num_dim_blocks = tl.cdiv(dim_inner, BLOCK_SIZE)
+    batch_idx = pid // num_dim_blocks
+    dim_block_idx = pid % num_dim_blocks
     
     if batch_idx >= batch_size:
         return
     
-    # Process ALL dimensions in blocks
-    for dim_start in range(0, dim_inner, BLOCK_SIZE):
-        dim_idx = dim_start + tl.arange(0, BLOCK_SIZE)
-        mask = dim_idx < dim_inner
+    # This kernel handles these specific dimensions
+    dim_start = dim_block_idx * BLOCK_SIZE
+    dim_idx = dim_start + tl.arange(0, BLOCK_SIZE)
+    mask = dim_idx < dim_inner
+    
+    # Load initial hidden state for THESE dimensions
+    h_prev_offset = batch_idx * dim_inner + dim_idx
+    h_log = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=-20.0).to(tl.float32)
+    
+    # Process sequence for THESE dimensions
+    for t in range(seq_len):
+        offset = batch_idx * seq_len * dim_inner + t * dim_inner + dim_idx
         
-        # Load initial hidden state (already in log space)
-        h_prev_offset = batch_idx * dim_inner + dim_idx
-        h_log = tl.load(h_prev_ptr + h_prev_offset, mask=mask, other=-20.0).to(tl.float32)
+        # Load inputs
+        h_t = tl.load(h_ptr + offset, mask=mask, other=0.0).to(tl.float32)
+        g_t = tl.load(g_ptr + offset, mask=mask, other=0.0).to(tl.float32)
         
-        # Process sequence
-        for t in range(seq_len):
-            offset = batch_idx * seq_len * dim_inner + t * dim_inner + dim_idx
-            
-            # Load inputs
-            h_t = tl.load(h_ptr + offset, mask=mask, other=0.0).to(tl.float32)
-            g_t = tl.load(g_ptr + offset, mask=mask, other=0.0).to(tl.float32)
-            
-            # Match minGRU exactly: log_g activation
-            # For positive: log(relu(h_t) + 0.5)
-            # For negative: -softplus(-h_t) = -log(1 + exp(-h_t))
-            h_t_pos = tl.maximum(h_t, 0.0)
-            h_new_pos = tl.log(h_t_pos + 0.5)
-            h_new_neg = -tl.log(1.0 + tl.exp(-h_t))
-            log_h_new = tl.where(h_t >= 0, h_new_pos, h_new_neg)
-            
-            # Gate - match minGRU exactly
-            gate_sigmoid = tl.sigmoid(g_t)
-            eps = 1e-8
-            
-            # Match minGRU's gate computation exactly
-            log_gate = tl.log(tl.maximum(gate_sigmoid, eps))
-            log_one_minus_gate = tl.log(tl.maximum(1.0 - gate_sigmoid, eps))
-            
-            # Combine with log-sum-exp (matching torch.logaddexp)
-            term1 = log_one_minus_gate + h_log
-            term2 = log_gate + log_h_new
-            max_val = tl.maximum(term1, term2)
-            h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
-            
-            # Output (exp for projection)
-            h_output = tl.exp(h_log)
-            tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
+        # Match minGRU exactly: log_g activation
+        h_t_pos = tl.maximum(h_t, 0.0)
+        h_new_pos = tl.log(h_t_pos + 0.5)
+        h_new_neg = -tl.log(1.0 + tl.exp(-h_t))
+        log_h_new = tl.where(h_t >= 0, h_new_pos, h_new_neg)
         
-        # Store final log-space hidden state
-        final_offset = batch_idx * dim_inner + dim_idx
-        tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
+        # Gate - match minGRU exactly
+        gate_sigmoid = tl.sigmoid(g_t)
+        eps = 1e-8
+        
+        # Match minGRU's gate computation
+        log_gate = tl.log(tl.maximum(gate_sigmoid, eps))
+        log_one_minus_gate = tl.log(tl.maximum(1.0 - gate_sigmoid, eps))
+        
+        # Combine with log-sum-exp
+        term1 = log_one_minus_gate + h_log
+        term2 = log_gate + log_h_new
+        max_val = tl.maximum(term1, term2)
+        h_log = max_val + tl.log(tl.exp(term1 - max_val) + tl.exp(term2 - max_val))
+        
+        # Output
+        h_output = tl.exp(h_log)
+        tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
+    
+    # Store final hidden state for THESE dimensions
+    final_offset = batch_idx * dim_inner + dim_idx
+    tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
     def __init__(self, dim, expansion_factor=1.5, **kwargs):
@@ -117,7 +120,8 @@ class NAU_GRU(torch.nn.Module):
         
         # Kernel config  
         BLOCK_SIZE = min(256, triton.next_power_of_2(self.dim_inner))
-        grid = (B,)  # One kernel per batch element
+        num_dim_blocks = triton.cdiv(self.dim_inner, BLOCK_SIZE)
+        grid = (B * num_dim_blocks,)  # Grid-strided: each kernel handles specific dims
         
         # Launch kernel
         nau_gru_exact_kernel[grid](
@@ -125,6 +129,7 @@ class NAU_GRU(torch.nn.Module):
             h_output,
             h_log_final,
             B, T, self.dim_inner,
+            dim_offset=0,  # Not used but required for signature
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
