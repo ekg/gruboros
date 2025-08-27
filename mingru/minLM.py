@@ -6,34 +6,17 @@ from torch.nn import Module, ModuleList
 
 from mingru.minGRU import minGRU
 
-# Try importing NAU implementations in order of preference
+# Import GRU implementations
 try:
-    from mingru.proper_fused_gru import NAU_GRU
-    print("Using ProperFusedGRU (fully fused Triton kernel with fp32 accumulation)")
+    from mingru.hybrid_fused_gru import HybridFusedGRU, FusedGRU
+    print("Using HybridFusedGRU (PyTorch matmul + Triton fused cell)")
 except ImportError as e:
-    print(f"Failed to import proper_fused_gru: {e}")
-    try:
-        from mingru.fast_gru_triton import NAU_GRU
-        print("Using FastGRU (proper GRU math + optimized)")
-    except ImportError as e2:
-        print(f"Failed to import fast_gru_triton: {e2}")
-        try:
-            from mingru.fixed_nau_gru import NAU_GRU
-            print("Using FixedGRU (proper GRU mathematics)")
-        except ImportError as e3:
-            print(f"Failed to import fixed_nau_gru: {e3}")
-        try:
-            from mingru.nau_gru_triton_exact import NAU_GRU
-            print("Using NAU_GRU exact Triton implementation (BUGGY - uses wrong math)")
-        except ImportError as e3:
-            print(f"Failed to import triton_exact: {e3}")
-            try:
-                from mingru.nau_gru_cell import NAU_GRU
-                print("Using NAU_GRU JIT implementation (BUGGY - fallback)")
-            except ImportError as e4:
-                print(f"Failed to import nau_gru_cell: {e4}")
-                NAU_GRU = None
-                print("No NAU_GRU implementation available")
+    print(f"Failed to import hybrid_fused_gru: {e}")
+    HybridFusedGRU = None
+    FusedGRU = None
+
+# Backwards compatibility alias
+NAU_GRU = HybridFusedGRU
 
 # Import test GRU
 try:

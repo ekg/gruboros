@@ -657,9 +657,9 @@ def get_args():
     parser.add_argument('--rejuvenation-tiebreaker-threshold', type=float, default=0.005,
                         help='If elite losses are within this fractional threshold, use step count as a tie-breaker (e.g., 0.01 for 1%).')
     
-    # --- Neural Arithmetic Unit (NAU) Arguments ---
+    # --- GRU Implementation Selection ---
     parser.add_argument('--use_nau', action='store_true',
-                        help='Use Neural Arithmetic Units for learned arithmetic operations in minGRU')
+                        help='Use fused GRU implementation (HybridFusedGRU) instead of minGRU')
     parser.add_argument('--use_test_gru', action='store_true',
                         help='Use simple test GRU implementation for debugging')
     parser.add_argument('--use_barriers', action='store_true', default=True,

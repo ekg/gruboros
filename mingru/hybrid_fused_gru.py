@@ -160,8 +160,9 @@ class HybridFusedGRU(nn.Module):
         return out
 
 
-# Export as NAU_GRU
-NAU_GRU = HybridFusedGRU
+# Export with clearer name (keeping NAU_GRU for backwards compatibility)
+NAU_GRU = HybridFusedGRU  # Deprecated alias
+FusedGRU = HybridFusedGRU  # Preferred name
 
 
 if __name__ == "__main__":

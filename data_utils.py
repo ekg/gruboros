@@ -142,6 +142,10 @@ class DocumentStreamDataset(Dataset):
             self.position = 0
             self.wraps += 1
     
+    def get_next_chunk(self):
+        """Get next chunk - wrapper for compatibility with DocumentStreamWrapper"""
+        return self.__getitem__(0)
+    
     def __getitem__(self, idx):
         """
         Returns: (chunk_tensor, is_final_chunk_in_doc, actual_chunk_length)
