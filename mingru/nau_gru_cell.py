@@ -12,7 +12,7 @@ def gru_cell(h_log: Tensor, h_t: Tensor, g_t: Tensor, use_barriers: bool, barrie
     # Activation with numerical stability
     h_new = torch.where(
         h_t >= 0,
-        (F.relu(h_t) + 0.5).log(),
+        torch.log(F.relu(h_t) + 1e-8),  # Remove +0.5 for sparsity
         -F.softplus(-h_t)
     )
     
@@ -87,8 +87,8 @@ class NAU_GRU(nn.Module):
         
         # Initialize state IN LOG SPACE
         if prev_hidden is None:
-            # Start at -2.0 instead of -20.0: exp(-2) ≈ 0.135 vs exp(-20) ≈ 2e-9
-            h_log = torch.full((batch_size, self.dim_inner), -2.0, device=device, dtype=dtype)
+            # Start at -5.0: exp(-5) ≈ 0.0067 - allows learning sparse representations
+            h_log = torch.full((batch_size, self.dim_inner), -5.0, device=device, dtype=dtype)
         else:
             if prev_hidden.shape != (batch_size, self.dim_inner):
                 # Batch size changed - reinitialize
