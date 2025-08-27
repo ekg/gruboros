@@ -139,6 +139,12 @@ class HybridFusedGRU(nn.Module):
             BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))
             grid = (B, triton.cdiv(self.dim_inner, BLOCK_SIZE))
             
+            # Ensure tensors are properly shaped and contiguous
+            assert input_gates.shape == (B, 3 * self.dim_inner), f"Input gates shape mismatch: {input_gates.shape}"
+            assert hidden_gates.shape == (B, 3 * self.dim_inner), f"Hidden gates shape mismatch: {hidden_gates.shape}"
+            assert h.shape == (B, self.dim_inner), f"Hidden state shape mismatch: {h.shape}"
+            assert h_new.shape == (B, self.dim_inner), f"New hidden state shape mismatch: {h_new.shape}"
+            
             gru_cell_fused[grid](
                 input_gates, hidden_gates,
                 h, h_new,
