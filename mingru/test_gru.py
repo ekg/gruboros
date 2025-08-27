@@ -43,7 +43,10 @@ def test_gru_kernel(
             g_t = tl.load(g_ptr + offset, mask=mask, other=0.0)
             
             # Simple tanh activation on new input
-            h_new = tl.tanh(h_t)
+            # Triton doesn't have tanh, so use approximation: tanh(x) ≈ x for small x
+            # Or use the formula: tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+            exp_2x = tl.exp(2.0 * h_t)
+            h_new = (exp_2x - 1.0) / (exp_2x + 1.0)
             
             # Gate (sigmoid)
             gate = tl.sigmoid(g_t)
