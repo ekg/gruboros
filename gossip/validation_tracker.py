@@ -93,23 +93,28 @@ class ValidationTracker:
                     chunk_data = []
                     doc_ended = False
                     actual_len = self.chunk_size
+                    hit_boundary = False
                     
                     for i in range(self.chunk_size):
-                        if positions[seq_idx] >= self.file_size:
-                            positions[seq_idx] = 0  # Wrap around
-                        
-                        byte_val = int(self.mmap[positions[seq_idx]])
-                        positions[seq_idx] += 1
-                        
-                        if byte_val == 0x1e:  # Document boundary
-                            doc_ended = True
-                            # Record actual length before padding
-                            if actual_len == self.chunk_size:
-                                actual_len = i + 1
-                            # Continue to scan past boundary but pad with zeros
-                            chunk_data.append(0)  # Pad rest of chunk
+                        if hit_boundary:
+                            # Once we hit boundary, pad rest with zeros
+                            chunk_data.append(0)
                         else:
-                            chunk_data.append(byte_val)
+                            if positions[seq_idx] >= self.file_size:
+                                positions[seq_idx] = 0  # Wrap around
+                            
+                            byte_val = int(self.mmap[positions[seq_idx]])
+                            positions[seq_idx] += 1
+                            
+                            if byte_val == 0x1e:  # Document boundary
+                                doc_ended = True
+                                hit_boundary = True
+                                actual_len = len(chunk_data)  # Record length before padding
+                                chunk_data.append(0)  # Start padding
+                                # Move past the boundary for next chunk
+                                positions[seq_idx] += 1 if positions[seq_idx] < self.file_size else 0
+                            else:
+                                chunk_data.append(byte_val)
                     
                     batch_chunks.append(torch.tensor(chunk_data, dtype=torch.long))
                     actual_lengths.append(actual_len)
