@@ -103,7 +103,7 @@ def nau_gru_exact_kernel(
             tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
-    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, use_nonlinearity=False, **kwargs):
+    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, use_nonlinearity=True, **kwargs):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
