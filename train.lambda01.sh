@@ -93,7 +93,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --bf16 \
   --compile \
   --use_nau \
-  --use_barriers \
+  \
   --barrier_min -8 \
   --barrier_max 8
 

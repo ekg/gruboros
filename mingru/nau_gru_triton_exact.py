@@ -21,8 +21,15 @@ def nau_gru_exact_kernel(
     if batch_idx >= batch_size:
         return
         
-    # Process dimensions in chunks
-    for dim_start in range(0, dim_inner, BLOCK_SIZE):
+    # Each kernel instance processes ONE block of dimensions
+    num_dim_blocks = tl.cdiv(dim_inner, BLOCK_SIZE)
+    dim_block = batch_idx % num_dim_blocks
+    batch_idx = batch_idx // num_dim_blocks
+    
+    if batch_idx >= batch_size:
+        return
+        
+    dim_start = dim_block * BLOCK_SIZE
         dim_idx = dim_start + tl.arange(0, BLOCK_SIZE)
         mask = dim_idx < dim_inner
         
@@ -149,7 +156,8 @@ class NAU_GRU(torch.nn.Module):
         
         # Kernel config  
         BLOCK_SIZE = min(256, triton.next_power_of_2(self.dim_inner))
-        grid = (B,)
+        num_dim_blocks = triton.cdiv(self.dim_inner, BLOCK_SIZE)
+        grid = (B * num_dim_blocks,)
         
         # Launch kernel
         nau_gru_exact_kernel[grid](
