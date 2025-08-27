@@ -6,10 +6,12 @@ import triton.language as tl
 def nau_gru_exact_kernel(
     h_ptr, g_ptr, h_prev_ptr,
     output_ptr,
+    h_log_final_ptr,  # Add output for final log-space hidden state
     batch_size, seq_len, dim_inner,
     use_barriers: tl.constexpr,
     barrier_min: tl.constexpr, 
     barrier_max: tl.constexpr,
+    use_tanh: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     # Get position in grid
@@ -50,6 +52,14 @@ def nau_gru_exact_kernel(
             # Combine
             h_new = tl.where(h_t >= 0, h_new_pos, h_new_neg)
             
+            # Optional tanh-like nonlinearity in log space
+            if use_tanh:
+                # Apply tanh to exp(h_new), then take log
+                # log(tanh(exp(h_new))) = log((exp(2*h_new) - 1)/(exp(2*h_new) + 1))
+                # For numerical stability, use log-space computation
+                two_h_new = 2.0 * h_new
+                h_new = two_h_new - tl.log(1.0 + tl.exp(two_h_new)) - tl.log(2.0)
+            
             # Gate
             g_sigmoid = tl.sigmoid(g_t)
             
@@ -87,15 +97,21 @@ def nau_gru_exact_kernel(
             
             # Store exp(h_log) as original dtype
             tl.store(output_ptr + offset, h_output.to(h_ptr.dtype.element_ty), mask=mask)
+        
+        # Store final h_log for next chunk (avoiding log(exp()) round-trip)
+        if seq_len > 0:
+            final_offset = batch_idx * dim_inner + dim_idx
+            tl.store(h_log_final_ptr + final_offset, h_log.to(h_ptr.dtype.element_ty), mask=mask)
 
 class NAU_GRU(torch.nn.Module):
-    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, **kwargs):
+    def __init__(self, dim, expansion_factor=1.5, use_barriers=True, barrier_min=-10, barrier_max=10, use_tanh=False, **kwargs):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
         self.use_barriers = use_barriers
         self.barrier_min = barrier_min
         self.barrier_max = barrier_max
+        self.use_tanh = use_tanh
         
         # Match JIT version exactly
         self.to_hidden_and_gate = torch.nn.Linear(dim, self.dim_inner * 2, bias=False)
@@ -134,8 +150,9 @@ class NAU_GRU(torch.nn.Module):
                 # prev_hidden is already in log space, don't convert
                 prev_hidden = prev_hidden.contiguous()
             
-        # Output tensor
+        # Output tensors
         h_output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
+        h_log_final = torch.empty(B, self.dim_inner, device=device, dtype=dtype)
         
         # Kernel config  
         BLOCK_SIZE = min(256, triton.next_power_of_2(self.dim_inner))
@@ -145,10 +162,12 @@ class NAU_GRU(torch.nn.Module):
         nau_gru_exact_kernel[grid](
             h, g, prev_hidden,
             h_output,
+            h_log_final,
             B, T, self.dim_inner,
             use_barriers=self.use_barriers,
             barrier_min=self.barrier_min,
             barrier_max=self.barrier_max,
+            use_tanh=self.use_tanh,
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
@@ -156,19 +175,6 @@ class NAU_GRU(torch.nn.Module):
         output = self.to_out(h_output)
         
         if return_next_prev_hidden:
-            # Store hidden state in log space to avoid numerical errors
-            # Instead of log(exp(h_log)), we maintain a separate tensor
-            final_h = h_output[:, -1, :]
-            
-            # Use log1p for better numerical stability near zero
-            final_h_log = torch.where(
-                final_h > 1e-3,
-                torch.log(final_h),
-                torch.log1p(final_h - 1.0)
-            )
-            
-            # Clamp to reasonable range
-            final_h_log = torch.clamp(final_h_log, min=-20.0, max=20.0)
-            
-            return output, final_h_log.contiguous()
+            # Return the actual log-space hidden state from kernel
+            return output, h_log_final.contiguous()
         return output
