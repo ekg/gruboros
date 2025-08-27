@@ -42,10 +42,11 @@ def test_gru_kernel(
             h_t = tl.load(h_ptr + offset, mask=mask, other=0.0)
             g_t = tl.load(g_ptr + offset, mask=mask, other=0.0)
             
-            # Simple tanh activation on new input
-            # Triton doesn't have tanh, so use approximation: tanh(x) ≈ x for small x
-            # Or use the formula: tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
-            exp_2x = tl.exp(2.0 * h_t)
+            # Simple tanh activation with numerical stability
+            # tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+            # For stability, clamp input
+            h_t_clamped = tl.minimum(tl.maximum(h_t, -10.0), 10.0)
+            exp_2x = tl.exp(2.0 * h_t_clamped)
             h_new = (exp_2x - 1.0) / (exp_2x + 1.0)
             
             # Gate (sigmoid)
@@ -74,9 +75,14 @@ class TestGRU(nn.Module):
         self.to_hidden_and_gate = nn.Linear(dim, self.dim_inner * 2, bias=False)
         self.to_out = nn.Linear(self.dim_inner, dim, bias=False)
         
-        # Simple initialization
-        nn.init.normal_(self.to_hidden_and_gate.weight, std=0.02)
-        nn.init.zeros_(self.to_out.weight)  # Start as identity
+        # Careful initialization to prevent NaN
+        with torch.no_grad():
+            # Xavier-like but smaller for stability
+            fan_in = dim
+            fan_out = self.dim_inner * 2
+            std = 0.1 * torch.sqrt(torch.tensor(2.0 / (fan_in + fan_out)))
+            nn.init.normal_(self.to_hidden_and_gate.weight, std=std)
+            nn.init.zeros_(self.to_out.weight)  # Start as identity
         
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         B, T, C = x.shape
