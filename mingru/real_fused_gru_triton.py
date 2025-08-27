@@ -116,14 +116,9 @@ def fused_gru_matmul_kernel(
         acc_hz = tl.zeros([BLOCK_SIZE_N], dtype=tl.float32)
         acc_hn = tl.zeros([BLOCK_SIZE_N], dtype=tl.float32)
         
-        # For this simplified version, just use local h
-        # Real implementation would need proper reduction across all hidden dims
-        for k in range(0, BLOCK_SIZE_N, BLOCK_SIZE_K):
-            k_offs = k + tl.arange(0, BLOCK_SIZE_K)
-            k_mask = k_offs < BLOCK_SIZE_N
-            
-            # Load weight blocks
-            wh_r_offs = offs_n[:, None] * stride_wh_r + k_offs[None, :] * stride_wh_c
+        # Hidden matmul: simplified - just use diagonal blocks
+        # Load weight blocks for our hidden dimensions
+        wh_r_offs = offs_n[:, None] * stride_wh_r + offs_n[None, :] * stride_wh_c
             wh_r = tl.load(W_h_ptr + wh_r_offs,
                           mask=mask_n[:, None] & k_mask[None, :], other=0.0)
             
@@ -135,9 +130,7 @@ def fused_gru_matmul_kernel(
             wh_n = tl.load(W_h_ptr + wh_n_offs,
                           mask=mask_n[:, None] & k_mask[None, :], other=0.0)
             
-            # Use local h block (simplified)
-            h_block = tl.where(k_mask, h, 0.0)
-            
+            # Accumulate matmul: W_h @ h
             acc_hr += tl.sum(wh_r * h_block[None, :], axis=1)
             acc_hz += tl.sum(wh_z * h_block[None, :], axis=1)
             acc_hn += tl.sum(wh_n * h_block[None, :], axis=1)
@@ -159,7 +152,10 @@ def fused_gru_matmul_kernel(
         z = tl.sigmoid(acc_z + b_z + acc_hz + bh_z)
         
         # New gate (candidate) - with reset-gated hidden
-        n = tl.tanh(acc_n + b_n + r * (acc_hn + bh_n))
+        # tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+        n_input = acc_n + b_n + r * (acc_hn + bh_n)
+        exp_2x = tl.exp(2.0 * n_input)
+        n = (exp_2x - 1.0) / (exp_2x + 1.0)
         
         # Update hidden state
         h = (1.0 - z) * h + z * n
