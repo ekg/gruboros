@@ -147,6 +147,8 @@ class EvolutionaryTrainingNode:
         # Atomic coordination for safe model updates
         self.batch_boundary_lock = threading.Lock()
         self.in_forward_pass = threading.Event()  # Set during forward pass
+        self.forward_pass_count = 0  # Reference count for nested forward passes
+        self.forward_pass_lock = threading.Lock()  # Protect the counter
         self.pending_exchange = None  # Store exchange request during forward pass
         self.hidden_state_cache = None  # Store hidden states for preservation
         
@@ -212,11 +214,16 @@ class EvolutionaryTrainingNode:
         # Check if we should run validation
         if self.validation_tracker.should_validate(step):
             with self.validation_lock:
-                fitness = self.validation_tracker.run_validation(
-                    self.model, 
-                    step, 
-                    seed=self.global_rank * 1000
-                )
+                # Mark we're in forward pass to prevent weight updates
+                self.enter_forward_pass()  # Use reference counting
+                try:
+                    fitness = self.validation_tracker.run_validation(
+                        self.model, 
+                        step, 
+                        seed=self.global_rank * 1000
+                    )
+                finally:
+                    self.exit_forward_pass()  # Use reference counting
                 
             # Log validation event
             self.logger.log_event(
@@ -607,7 +614,12 @@ class EvolutionaryTrainingNode:
             
             # 4. Run our validation with same seed
             validation_start = time.time()
-            our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            # Mark we're in forward pass to prevent weight updates
+            self.enter_forward_pass()  # Use reference counting
+            try:
+                our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            finally:
+                self.exit_forward_pass()  # Use reference counting
             validation_time = time.time() - validation_start
             
             # Update our fitness with this validation result
@@ -782,7 +794,12 @@ class EvolutionaryTrainingNode:
             
             # Run validation with provided seed
             validation_start = time.time()
-            our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            # Mark we're in forward pass to prevent weight updates
+            self.enter_forward_pass()  # Use reference counting
+            try:
+                our_losses = self.validation_tracker.evaluate_for_gossip(self.model, seed)
+            finally:
+                self.exit_forward_pass()  # Use reference counting
             validation_time = time.time() - validation_start
             
             # Update our fitness with this validation result
@@ -1009,8 +1026,11 @@ class EvolutionaryTrainingNode:
 
     def enter_forward_pass(self, hidden_states=None, conv_buffers=None):
         """Mark that we're entering a forward pass - no weight updates allowed"""
-        self.in_forward_pass.set()
-        # Save hidden states for potential restoration
+        with self.forward_pass_lock:
+            self.forward_pass_count += 1
+            if self.forward_pass_count == 1:
+                self.in_forward_pass.set()
+        # Save hidden states for potential restoration (only from training thread)
         if hidden_states is not None:
             self.hidden_state_cache = {
                 'hidden': [h.clone() if h is not None else None for h in hidden_states],
@@ -1019,7 +1039,10 @@ class EvolutionaryTrainingNode:
     
     def exit_forward_pass(self):
         """Mark that we've exited the forward pass - weight updates are safe now"""
-        self.in_forward_pass.clear()
+        with self.forward_pass_lock:
+            self.forward_pass_count -= 1
+            if self.forward_pass_count == 0:
+                self.in_forward_pass.clear()
     
     def get_cached_hidden_states(self):
         """Get cached hidden states if available"""
