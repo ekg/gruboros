@@ -1089,7 +1089,10 @@ def main():
             elapsed = time.time() - start_time
             tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
             # Console logging instead of progress bar (more space for gradient info)
-            log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={grad_norm:.4f if grad_norm else 'NA':>6s} T/s={tokens_per_sec:.0f} D={doc_stats['documents_processed']}"
+            if grad_norm is not None:
+                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={grad_norm:.4f} T/s={tokens_per_sec:.0f} D={doc_stats['documents_processed']}"
+            else:
+                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={'NA':>6s} T/s={tokens_per_sec:.0f} D={doc_stats['documents_processed']}"
             if 'skipped_due_to_lock' in status:
                 log_str += f" skipped={status['skipped_due_to_lock']}"
             print(log_str)
