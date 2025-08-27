@@ -71,9 +71,9 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --grad_clip 1.0 \
-  --grad_accum 32 \
-  --chunk_size 128 \
-  --batch_size 64 \
+  --grad_accum 8 \
+  --chunk_size 64 \
+  --batch_size 8 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
@@ -92,10 +92,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --cuda \
   --bf16 \
   --compile \
-  --use_nau \
-  \
-  --barrier_min -8 \
-  --barrier_max 8
+  --use_nau
 
 echo "Training finished."
 

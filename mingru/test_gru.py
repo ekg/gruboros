@@ -112,18 +112,26 @@ class TestGRU(nn.Module):
         output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
         final_hidden = torch.empty(B, self.dim_inner, device=device, dtype=dtype)
         
-        # Launch kernel
-        BLOCK_D = min(256, triton.next_power_of_2(self.dim_inner))
-        grid = (B,)
+        # TEMPORARY: Use PyTorch implementation to test pipeline
+        # Initialize hidden state
+        if prev_hidden is None:
+            h_state = torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
+        else:
+            h_state = prev_hidden
+            
+        outputs = []
+        for t in range(T):
+            h_t = h[:, t, :]
+            g_t = g[:, t, :]
+            
+            # Simple GRU-like update
+            h_new = torch.tanh(h_t)
+            gate = torch.sigmoid(g_t)
+            h_state = (1.0 - gate) * h_state + gate * h_new
+            outputs.append(h_state)
         
-        test_gru_kernel[grid](
-            x, h, g,
-            prev_hidden,
-            output,
-            final_hidden,
-            B, T, self.dim_inner,
-            BLOCK_D=BLOCK_D
-        )
+        output = torch.stack(outputs, dim=1)
+        final_hidden = h_state
         
         # Project output back
         output = self.to_out(output)

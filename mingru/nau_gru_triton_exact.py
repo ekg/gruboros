@@ -3,54 +3,82 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-# TEMPORARY: Process in PyTorch until we fix the Triton kernel
-def nau_gru_sequential_forward(h, g, prev_hidden, B, T, dim_inner):
+@triton.jit
+def gru_kernel(
+    # Inputs
+    h_ptr, g_ptr,           # [B, T, D] input and gate
+    h_prev_ptr,             # [B, D] previous hidden state (log space)
+    # Outputs
+    output_ptr,             # [B, T, D] output
+    h_final_ptr,            # [B, D] final hidden state (log space)
+    # Dimensions
+    batch_size, seq_len, hidden_dim,
+    # Block size
+    BLOCK_DIM: tl.constexpr
+):
     """
-    Pure PyTorch sequential forward - processes ALL dimensions together
+    Regular GRU that processes ALL dimensions together.
+    Each program handles one batch element.
     """
-    device = h.device
-    dtype = h.dtype
+    # One program per batch element
+    batch_idx = tl.program_id(0)
+    if batch_idx >= batch_size:
+        return
     
-    # Initialize or use previous hidden state (in log space)
-    if prev_hidden is None:
-        h_log = torch.full((B, dim_inner), -2.0, device=device, dtype=dtype)
-    else:
-        h_log = prev_hidden
-        if h_log.dim() == 3:  # Handle [B, 1, D] format
-            h_log = h_log.squeeze(1)
-    
-    outputs = []
-    
-    # Sequential forward pass
-    for t in range(T):
-        h_t = h[:, t, :]  # [B, D]
-        g_t = g[:, t, :]  # [B, D]
+    # Process ALL hidden dimensions in blocks
+    # This is just for memory efficiency - they all update together
+    for d_start in range(0, hidden_dim, BLOCK_DIM):
+        d_offs = d_start + tl.arange(0, BLOCK_DIM)
+        d_mask = d_offs < hidden_dim
         
-        # Activation (matches minGRU)
-        log_h_new = torch.where(
-            h_t >= 0,
-            torch.log(torch.relu(h_t) + 0.5),
-            -F.softplus(-h_t)
-        )
+        # Load previous hidden state (in log space)
+        h_prev_offs = batch_idx * hidden_dim + d_offs
+        h_log = tl.load(h_prev_ptr + h_prev_offs, mask=d_mask, other=-2.0)
         
-        # Gate
-        gate_sigmoid = torch.sigmoid(g_t)
-        log_gate = torch.log(gate_sigmoid.clamp(min=1e-8))
-        log_one_minus_gate = torch.log((1 - gate_sigmoid).clamp(min=1e-8))
+        # Process sequence timestep by timestep
+        for t in range(seq_len):
+            # Offset for this timestep
+            offset = batch_idx * seq_len * hidden_dim + t * hidden_dim + d_offs
+            
+            # Load inputs
+            h_t = tl.load(h_ptr + offset, mask=d_mask, other=0.0)
+            g_t = tl.load(g_ptr + offset, mask=d_mask, other=0.0)
+            
+            # MinGRU-style activation: log_g(x)
+            h_pos = tl.maximum(h_t, 0.0)
+            h_new_pos = tl.log(h_pos + 0.5)
+            h_new_neg = -tl.log1p(tl.exp(-tl.abs(tl.minimum(h_t, 0.0))))
+            h_new = tl.where(h_t >= 0, h_new_pos, h_new_neg)
+            
+            # Gate (sigmoid)
+            g_sigmoid = tl.sigmoid(g_t)
+            
+            # Compute in log space for stability
+            eps = 1e-8
+            log_gate = tl.log(tl.maximum(g_sigmoid, eps))
+            log_one_minus_gate = tl.log(tl.maximum(1.0 - g_sigmoid, eps))
+            
+            # GRU update: h = (1-g) * h_prev + g * h_new
+            # In log space: log(exp(a) + exp(b))
+            term1 = log_one_minus_gate + h_log
+            term2 = log_gate + h_new
+            
+            # Stable log-sum-exp
+            max_term = tl.maximum(term1, term2)
+            h_log = max_term + tl.log(
+                tl.exp(term1 - max_term) + tl.exp(term2 - max_term)
+            )
+            
+            # Clamp for stability
+            h_log = tl.minimum(tl.maximum(h_log, -20.0), 20.0)
+            
+            # Store output (exp of log-space hidden)
+            h_out = tl.exp(h_log)
+            tl.store(output_ptr + offset, h_out, mask=d_mask)
         
-        # Update ALL dimensions together
-        h_log = torch.logaddexp(
-            log_one_minus_gate + h_log,
-            log_gate + log_h_new
-        )
-        
-        # Clamp and output
-        h_log = h_log.clamp(min=-20.0, max=20.0)
-        outputs.append(torch.exp(h_log))
-    
-    # Stack outputs and return
-    output = torch.stack(outputs, dim=1)  # [B, T, D]
-    return output, h_log
+        # Store final hidden state in log space
+        h_final_offs = batch_idx * hidden_dim + d_offs
+        tl.store(h_final_ptr + h_final_offs, h_log, mask=d_mask)
 
 class NAU_GRU(torch.nn.Module):
     def __init__(self, dim, expansion_factor=1.5, **kwargs):
@@ -103,9 +131,15 @@ class NAU_GRU(torch.nn.Module):
         h_output = torch.empty(B, T, self.dim_inner, device=device, dtype=dtype)
         h_log_final = torch.empty(B, self.dim_inner, device=device, dtype=dtype)
         
-        # TEMPORARY: Use PyTorch implementation until Triton kernel is fixed
-        h_output, h_log_final = nau_gru_sequential_forward(
-            h, g, prev_hidden, B, T, self.dim_inner
+        # Launch GRU kernel
+        grid = (B,)  # One program per batch element
+        BLOCK_DIM = 256  # Process dims in blocks of 256
+        
+        gru_kernel[grid](
+            h, g, prev_hidden,
+            h_output, h_log_final,
+            B, T, self.dim_inner,
+            BLOCK_DIM=BLOCK_DIM
         )
         
         # Project back
