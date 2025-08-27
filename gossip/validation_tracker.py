@@ -6,9 +6,9 @@ import statistics
 import time
 import sys
 import os
-# Add parent directory to path to import from train.py
+# Add parent directory to path to import data utilities
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from train import DocumentStreamDataset, SingleStreamDataset
+from data_utils import SingleStreamDataset
 from torch.utils.data import DataLoader
 
 class ValidationTracker:

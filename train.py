@@ -25,6 +25,7 @@ import atexit
 from mingru.minLM import minLM
 import logging
 from gossip import EvolutionaryTrainingNode
+from data_utils import DocumentStreamDataset, SingleStreamDataset
 from pathlib import Path
 
 def simple_barrier(barrier_name='default', timeout=300):
@@ -433,6 +434,8 @@ class ContinuousIIDDataset(Dataset):
         return tensor
 
 
+# DocumentStreamDataset moved to data_utils.py
+'''
 class DocumentStreamDataset(Dataset):
     """
     Document-aware streaming dataset for training.
@@ -533,7 +536,7 @@ class DocumentStreamDataset(Dataset):
             'file_wraps': self.wraps,
             'current_position': self.position
         }
-
+'''
 
 class DocumentStreamWrapper(IterableDataset):
     """
