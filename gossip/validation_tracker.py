@@ -62,6 +62,11 @@ class ValidationTracker:
         all_sequence_losses = []
         all_document_losses = []
         
+        # Create a single shared mmap for all validation streams to save memory
+        import mmap
+        data_file = open(self.data_path, 'rb')
+        shared_mmap = mmap.mmap(data_file.fileno(), 0, access=mmap.ACCESS_READ)
+        
         # Create validation dataset using the same class as training
         # Each batch element gets a different random start position based on seed
         val_datasets = []
@@ -71,7 +76,8 @@ class ValidationTracker:
                 self.chunk_size,
                 total_chunks=self.validation_batches,
                 rank=i,  # Use index as rank for different positions
-                seed=seed + i  # Different seed per stream
+                seed=seed + i,  # Different seed per stream
+                shared_mmap=shared_mmap  # Share the mmap across all streams
             )
             val_datasets.append(dataset)
         
@@ -144,6 +150,10 @@ class ValidationTracker:
                     conv_buffers = None
         
         model.train()
+        
+        # Clean up shared resources
+        shared_mmap.close()
+        data_file.close()
         
         # Return batch losses (no document tracking in streaming mode)
         return np.array(all_sequence_losses), None

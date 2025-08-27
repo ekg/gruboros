@@ -14,16 +14,22 @@ class SingleStreamDataset(Dataset):
     Used for single-stream data loading.
     """
     def __init__(self, data_path: str, chunk_size: int, total_chunks: int, 
-                 rank: int, seed: int):
+                 rank: int, seed: int, shared_mmap=None):
         self.data_path = data_path
         self.chunk_size = chunk_size
         self.total_chunks = total_chunks
         self.rank = rank
         
-        # Open the data file
-        self.data_file = open(data_path, 'rb')
-        self.mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
-        self.file_size = len(self.mmap)
+        # Use shared mmap if provided, otherwise open the data file
+        if shared_mmap is not None:
+            self.mmap = shared_mmap
+            self.file_size = len(self.mmap)
+            self.data_file = None  # No file handle when using shared mmap
+        else:
+            # Open the data file
+            self.data_file = open(data_path, 'rb')
+            self.mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
+            self.file_size = len(self.mmap)
         
         # Random start position based on rank and seed
         rng = np.random.RandomState(seed + rank)
@@ -82,9 +88,10 @@ class SingleStreamDataset(Dataset):
         return chunk, doc_ended, actual_length
     
     def __del__(self):
-        if hasattr(self, 'mmap'):
-            self.mmap.close()
-        if hasattr(self, 'data_file'):
+        # Only close mmap and file if we own them (not shared)
+        if hasattr(self, 'data_file') and self.data_file is not None:
+            if hasattr(self, 'mmap'):
+                self.mmap.close()
             self.data_file.close()
 
 
@@ -203,7 +210,8 @@ class DocumentStreamDataset(Dataset):
         }
     
     def __del__(self):
-        if hasattr(self, 'mmap'):
-            self.mmap.close()
-        if hasattr(self, 'data_file'):
+        # Only close mmap and file if we own them (not shared)
+        if hasattr(self, 'data_file') and self.data_file is not None:
+            if hasattr(self, 'mmap'):
+                self.mmap.close()
             self.data_file.close()
