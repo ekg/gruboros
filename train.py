@@ -803,7 +803,7 @@ def main():
     model = get_model(model_config).to(device)
     # Compile the model for better performance
     if args.compile:
-        model = torch.compile(model)
+        model = torch.compile(model, mode="max-autotune")
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     # Initialize GradScaler for mixed precision training
@@ -909,17 +909,25 @@ def main():
     start_time = time.time()
     # Initialize per-GPU token counter
     total_tokens_processed = 0  # Now per-GPU, not global!
+    last_step_time = start_time  # Track time for it/s calculation
+    warmup_complete = False  # Track if we've reset timers after torch.compile
+    bytes_at_reset = 0  # Track bytes processed at time of reset
 
     # --- 4. UNIFIED TRAINING LOOP ---
     
     # Modified log_metrics function  
     def log_metrics(step, train_loss, validation_fitness, mix_status, doc_stats, acc_steps, optimized, grad_norm=None):
         nonlocal total_tokens_processed
+        # Use actual start_time (may be reset after warmup)
         elapsed = time.time() - start_time
         
-        # Use per-GPU bytes processed from dataset (already summed across all streams)
-        total_tokens_processed = doc_stats['bytes_processed']
-        tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
+        # Track tokens processed since timing reset
+        if warmup_complete:
+            total_tokens_processed = doc_stats['bytes_processed']
+            tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
+        else:
+            total_tokens_processed = doc_stats['bytes_processed']
+            tokens_per_sec = 0  # Don't report during warmup
         current_lr = optimizer.param_groups[0]['lr']
         
         values = [str(v) for v in [
@@ -1111,13 +1119,36 @@ def main():
         log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize, grad_norm)
         
         if global_rank == 0:
-            elapsed = time.time() - start_time
-            tokens_per_sec = doc_stats['bytes_processed'] / elapsed if elapsed > 0 else 0
-            # Console logging instead of progress bar (more space for gradient info)
-            if grad_norm is not None:
-                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={grad_norm:.4f} T/s={tokens_per_sec:.0f} D={doc_stats['documents_processed']}"
+            # Reset timing after step 2 (after torch.compile warmup)
+            nonlocal last_step_time, start_time, warmup_complete, bytes_at_reset
+            if step == 2 and not warmup_complete:
+                start_time = time.time()
+                last_step_time = start_time
+                bytes_at_reset = doc_stats['bytes_processed']  # Remember bytes at reset
+                warmup_complete = True
+                print("\n=== Timing reset after torch.compile warmup ===")
+            
+            # Calculate timing metrics
+            current_time = time.time()
+            elapsed = current_time - start_time
+            step_time = current_time - last_step_time
+            last_step_time = current_time
+            
+            # Only calculate meaningful rates after warmup
+            if warmup_complete:
+                # Calculate tokens processed since reset
+                tokens_since_reset = doc_stats['bytes_processed'] - bytes_at_reset
+                tokens_per_sec = tokens_since_reset / elapsed if elapsed > 0 else 0
+                iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
             else:
-                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={'NA':>6s} T/s={tokens_per_sec:.0f} D={doc_stats['documents_processed']}"
+                tokens_per_sec = 0
+                iterations_per_sec = 0
+            
+            # Console logging with it/s added
+            if grad_norm is not None:
+                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={grad_norm:.4f} T/s={tokens_per_sec:.0f} it/s={iterations_per_sec:.2f} D={doc_stats['documents_processed']}"
+            else:
+                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={'NA':>6s} T/s={tokens_per_sec:.0f} it/s={iterations_per_sec:.2f} D={doc_stats['documents_processed']}"
             if 'skipped_due_to_lock' in status:
                 log_str += f" skipped={status['skipped_due_to_lock']}"
             print(log_str)
