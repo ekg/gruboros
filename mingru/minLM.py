@@ -151,9 +151,11 @@ class minLM(Module):
 
         self.can_cache = (conv_kernel_size is None)
         
-        # Store dimensions for initialization
+        # Store configuration for checkpointing and generation
         self.dim = dim
         self.depth = depth
+        self.use_hybrid_gru = use_hybrid_gru
+        self.use_test_gru = use_test_gru
         
         # Initialize weights with properly scaled standard deviations
         self._initialize_weights()

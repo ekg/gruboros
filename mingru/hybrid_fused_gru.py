@@ -11,6 +11,24 @@ import triton
 import triton.language as tl
 
 
+def gru_cell_pytorch(input_gates, hidden_gates, h_prev):
+    """Pure PyTorch GRU cell for CPU/debugging."""
+    B, H3 = input_gates.shape
+    H = H3 // 3
+    
+    # Split gates
+    i_r, i_z, i_n = input_gates.chunk(3, dim=-1)
+    h_r, h_z, h_n = hidden_gates.chunk(3, dim=-1)
+    
+    # GRU computation
+    r = torch.sigmoid(i_r + h_r)
+    z = torch.sigmoid(i_z + h_z)
+    n = torch.tanh(i_n + r * h_n)
+    h_new = (1 - z) * h_prev + z * n
+    
+    return h_new
+
+
 @triton.jit
 def gru_cell_fused(
     # Gate inputs from matmul
@@ -120,6 +138,36 @@ class HybridFusedGRU(nn.Module):
                 prev_hidden = prev_hidden.squeeze(1)
             h = prev_hidden if prev_hidden.shape[0] == B else torch.zeros(B, self.dim_inner, device=device, dtype=dtype)
         
+        # Special fast path for single-token generation (T=1)
+        if T == 1:
+            # Direct computation for single timestep
+            input_gates = self.input_projection(x.squeeze(1)).contiguous()  # [B, 3*H]
+            hidden_gates = self.hidden_projection(h).contiguous()  # [B, 3*H]
+            
+            if device.type == 'cuda':
+                h_new = torch.empty_like(h)
+                
+                # Launch Triton kernel
+                BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))
+                grid = (B, triton.cdiv(self.dim_inner, BLOCK_SIZE))
+                
+                gru_cell_fused[grid](
+                    input_gates, hidden_gates,
+                    h, h_new,
+                    B, self.dim_inner,
+                    BLOCK_SIZE
+                )
+            else:
+                # CPU fallback
+                h_new = gru_cell_pytorch(input_gates, hidden_gates, h)
+            
+            out = self.to_out(h_new.unsqueeze(1)) + x  # [B, 1, D]
+            
+            if return_next_prev_hidden:
+                return out, h_new
+            return out
+        
+        # Multi-timestep processing (for training and prompt processing)
         # Pre-compute ALL input projections at once (FAST!)
         input_gates_all = self.input_projection(x)  # [B, T, 3*H]
         
@@ -133,20 +181,23 @@ class HybridFusedGRU(nn.Module):
             # Compute hidden gates with PyTorch matmul
             hidden_gates = self.hidden_projection(h).contiguous()  # [B, 3*H]
             
-            # Prepare output tensor
-            h_new = torch.empty_like(h)
-            
-            # Launch Triton kernel for fused cell computation
-            BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))
-            grid = (B, triton.cdiv(self.dim_inner, BLOCK_SIZE))
-            
-            
-            gru_cell_fused[grid](
-                input_gates, hidden_gates,
-                h, h_new,
-                B, self.dim_inner,
-                BLOCK_SIZE
-            )
+            # Compute new hidden state
+            if device.type == 'cuda':
+                h_new = torch.empty_like(h)
+                
+                # Launch Triton kernel for fused cell computation
+                BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))
+                grid = (B, triton.cdiv(self.dim_inner, BLOCK_SIZE))
+                
+                gru_cell_fused[grid](
+                    input_gates, hidden_gates,
+                    h, h_new,
+                    B, self.dim_inner,
+                    BLOCK_SIZE
+                )
+            else:
+                # CPU fallback
+                h_new = gru_cell_pytorch(input_gates, hidden_gates, h)
             
             h = h_new
             outputs.append(h)

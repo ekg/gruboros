@@ -328,7 +328,9 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
         "ff_mult": config.get("ff_mult", 4.0),
         "expansion": config.get("expansion", 1.5),
         "enable_conv": config.get("enable_conv", False),
-        "dropout": config.get("dropout", 0.0)
+        "dropout": config.get("dropout", 0.0),
+        "use_hybrid_gru": config.get("use_hybrid_gru", False),
+        "use_test_gru": config.get("use_test_gru", False)
     }
     
     print(f"INFO: Creating model with dimension={model_params['dim']}, depth={model_params['depth']}...")
