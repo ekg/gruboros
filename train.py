@@ -916,19 +916,11 @@ def main():
     # --- 4. UNIFIED TRAINING LOOP ---
     
     # Modified log_metrics function  
-    def log_metrics(step, train_loss, validation_fitness, mix_status, doc_stats, acc_steps, optimized, grad_norm=None):
+    def log_metrics(step, train_loss, validation_fitness, mix_status, doc_stats, acc_steps, optimized, grad_norm=None, tokens_per_sec=0):
         nonlocal total_tokens_processed
-        # Use actual start_time (may be reset after warmup)
-        elapsed = time.time() - start_time
-        
-        # Track tokens processed since timing reset
-        if warmup_complete:
-            total_tokens_processed = doc_stats['bytes_processed']
-            tokens_per_sec = total_tokens_processed / elapsed if elapsed > 0 else 0
-        else:
-            total_tokens_processed = doc_stats['bytes_processed']
-            tokens_per_sec = 0  # Don't report during warmup
+        total_tokens_processed = doc_stats['bytes_processed']
         current_lr = optimizer.param_groups[0]['lr']
+        elapsed = time.time() - start_time  # Need elapsed for logging
         
         values = [str(v) for v in [
             global_rank, step, f"{elapsed:.2f}", f"{train_loss:.6f}",
@@ -1116,33 +1108,36 @@ def main():
             'file_wraps': sum(s['file_wraps'] for s in all_stats),
             'current_position': 0  # Not meaningful with multiple streams
         }
-        log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize, grad_norm)
+        # First calculate timing metrics (needed for log_metrics)
+        # Reset timing after step 2 (after torch.compile warmup) - ALL RANKS
+        if step == 2 and not warmup_complete:
+            start_time = time.time()
+            last_step_time = start_time
+            bytes_at_reset = doc_stats['bytes_processed']  # Remember bytes at reset
+            warmup_complete = True
+            if global_rank == 0:
+                print("\n=== Timing reset after torch.compile warmup ===")
+        
+        # Calculate timing metrics - ALL RANKS
+        current_time = time.time()
+        elapsed = current_time - start_time
+        step_time = current_time - last_step_time
+        last_step_time = current_time
+        
+        # Calculate it/s (always show, it's useful even during warmup)
+        iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
+        
+        # Calculate tok/s (only meaningful after warmup)
+        if warmup_complete:
+            # Calculate tokens processed since reset
+            tokens_since_reset = doc_stats['bytes_processed'] - bytes_at_reset
+            tokens_per_sec = tokens_since_reset / elapsed if elapsed > 0 else 0
+        else:
+            tokens_per_sec = 0  # Don't show during warmup
+        
+        log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize, grad_norm, tokens_per_sec)
         
         if global_rank == 0:
-            # Reset timing after step 2 (after torch.compile warmup)
-            if step == 2 and not warmup_complete:
-                start_time = time.time()
-                last_step_time = start_time
-                bytes_at_reset = doc_stats['bytes_processed']  # Remember bytes at reset
-                warmup_complete = True
-                print("\n=== Timing reset after torch.compile warmup ===")
-            
-            # Calculate timing metrics
-            current_time = time.time()
-            elapsed = current_time - start_time
-            step_time = current_time - last_step_time
-            last_step_time = current_time
-            
-            # Calculate it/s (always show, it's useful even during warmup)
-            iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
-            
-            # Calculate tok/s (only meaningful after warmup)
-            if warmup_complete:
-                # Calculate tokens processed since reset
-                tokens_since_reset = doc_stats['bytes_processed'] - bytes_at_reset
-                tokens_per_sec = tokens_since_reset / elapsed if elapsed > 0 else 0
-            else:
-                tokens_per_sec = 0  # Don't show during warmup
             
             # Console logging with it/s added
             if grad_norm is not None:
