@@ -1120,7 +1120,6 @@ def main():
         
         if global_rank == 0:
             # Reset timing after step 2 (after torch.compile warmup)
-            nonlocal last_step_time, start_time, warmup_complete, bytes_at_reset
             if step == 2 and not warmup_complete:
                 start_time = time.time()
                 last_step_time = start_time
