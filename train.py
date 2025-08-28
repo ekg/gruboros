@@ -1133,15 +1133,16 @@ def main():
             step_time = current_time - last_step_time
             last_step_time = current_time
             
-            # Only calculate meaningful rates after warmup
+            # Calculate it/s (always show, it's useful even during warmup)
+            iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
+            
+            # Calculate tok/s (only meaningful after warmup)
             if warmup_complete:
                 # Calculate tokens processed since reset
                 tokens_since_reset = doc_stats['bytes_processed'] - bytes_at_reset
                 tokens_per_sec = tokens_since_reset / elapsed if elapsed > 0 else 0
-                iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
             else:
-                tokens_per_sec = 0
-                iterations_per_sec = 0
+                tokens_per_sec = 0  # Don't show during warmup
             
             # Console logging with it/s added
             if grad_norm is not None:
