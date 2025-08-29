@@ -850,7 +850,7 @@ def main():
         elif args.dim and not args.depth:
             # User specified dim, solve for depth
             dim = int(parse_size_with_suffix(args.dim))
-            depth = solve_for_depth(params_value, dim, expansion=args.expansion_factor, ff_mult=args.ff_mult)
+            depth = solve_for_depth(params_value, dim, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
         elif not args.dim and args.depth:
             # User specified depth, solve for dim
             depth = args.depth
