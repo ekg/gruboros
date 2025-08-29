@@ -360,14 +360,50 @@ def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5
 
 def calculate_model_size(config):
     """Calculates the approximate parameter count of a minLM model."""
-    # This calculation uses the same approximation as the solvers for consistency.
-    dim, depth, vocab_size, ff_mult, expansion = config["dim"], config["depth"], config["num_tokens"], config["ff_mult"], config["expansion"]
-    embedding_params = 2 * dim * vocab_size
-    # The dominant term for layer parameters comes from d^2 matrices:
-    # minGRU: 3 * expansion * d^2
-    # FFN:    2 * ff_mult * d^2
-    layer_params = dim * dim * (3 * expansion + 2 * ff_mult)
-    total_params = embedding_params + depth * layer_params
+    dim = config["dim"]
+    depth = config["depth"]
+    vocab_size = config["num_tokens"]
+    ff_mult = config.get("ff_mult", 4)
+    expansion = config.get("expansion", 1.5)
+    use_hybrid_gru = config.get("use_hybrid_gru", False)
+    
+    # Embeddings and output projection
+    embedding_params = dim * vocab_size  # Token embeddings
+    output_params = dim * vocab_size  # Output projection
+    
+    if use_hybrid_gru:
+        # HybridFusedGRU has full GRU architecture
+        dim_inner = int(dim * expansion)
+        
+        # Per GRU layer:
+        # - input_projection: dim × (3 × dim_inner) + bias
+        # - hidden_projection: dim_inner × (3 × dim_inner) + bias  
+        # - to_out: dim_inner × dim (no bias)
+        gru_params_per_layer = (
+            dim * 3 * dim_inner + 3 * dim_inner +  # input_projection with bias
+            dim_inner * 3 * dim_inner + 3 * dim_inner +  # hidden_projection with bias
+            dim_inner * dim  # to_out without bias
+        )
+    else:
+        # minGRU approximation
+        gru_params_per_layer = dim * dim * 3 * expansion
+    
+    # FFN parameters (same for both)
+    if ff_mult > 0:
+        ffn_params_per_layer = 2 * dim * dim * ff_mult  # Two linear layers
+    else:
+        ffn_params_per_layer = 0
+    
+    # Layer norms: 2 per layer (before GRU and before FFN) 
+    norm_params_per_layer = 2 * dim
+    
+    # Total per layer
+    params_per_layer = gru_params_per_layer + ffn_params_per_layer + norm_params_per_layer
+    
+    # Final layer norm
+    final_norm_params = dim
+    
+    total_params = embedding_params + output_params + depth * params_per_layer + final_norm_params
     return int(total_params)
 
 def get_parameter_count_str(config):
