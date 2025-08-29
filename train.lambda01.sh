@@ -73,7 +73,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --grad_clip 0.0 \
   --grad_accum 8 \
   --chunk_size 128 \
-  --batch_size 64 \
+  --batch_size 128 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
