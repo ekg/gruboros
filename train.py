@@ -333,29 +333,75 @@ if torch.cuda.is_available():
 def round_to_multiple(n, multiple=64):
     return multiple * round(n / multiple)
 
-def solve_for_dimension(target_params, depth, vocab_size=256, ff_mult=4, expansion=1.5):
+def solve_for_dimension(target_params, depth, vocab_size=256, ff_mult=4, expansion=1.5, use_hybrid_gru=False):
     """Approximates the model dimension `d` for a target parameter count."""
-    # This solver is based on an approximation of the total parameters:
-    # P ≈ depth * (3*e + 2*f)*d^2 + 2*v*d
-    # where d=dim, e=expansion, f=ff_mult, v=vocab_size
-    # This is a quadratic equation in d: (depth*factor)*d^2 + (2*v)*d - P = 0
-    factor = 3 * expansion + 2 * ff_mult
-    a = depth * factor
-    b = 2 * vocab_size
-    c = -target_params
-    discriminant = b**2 - 4*a*c
-    if discriminant < 0: raise ValueError("No real solution for dimension exists with these parameters.")
-    dim = (-b + math.sqrt(discriminant)) / (2*a)
-    return round_to_multiple(dim)
+    if use_hybrid_gru:
+        # For HybridFusedGRU, iterate to find the right dimension
+        # Start with an initial guess
+        dim_guess = 512 if target_params < 1e9 else 1024
+        
+        for _ in range(20):  # Iterate to refine
+            dim_inner = int(dim_guess * expansion)
+            
+            # Calculate params with current guess
+            embed_params = 2 * dim_guess * vocab_size
+            gru_params = (
+                dim_guess * 3 * dim_inner + 3 * dim_inner +
+                dim_inner * 3 * dim_inner + 3 * dim_inner +
+                dim_inner * dim_guess
+            )
+            ffn_params = 2 * dim_guess * dim_guess * ff_mult if ff_mult > 0 else 0
+            norm_params = depth * 2 * dim_guess + dim_guess
+            
+            total_params = embed_params + depth * (gru_params + ffn_params) + norm_params
+            
+            # Adjust guess based on ratio
+            ratio = target_params / total_params
+            dim_guess = int(dim_guess * math.sqrt(ratio))  # sqrt because params scale with dim^2
+            
+            if abs(total_params - target_params) / target_params < 0.01:  # Within 1%
+                break
+        
+        return round_to_multiple(dim_guess)
+    else:
+        # Original minGRU formula
+        factor = 3 * expansion + 2 * ff_mult
+        a = depth * factor
+        b = 2 * vocab_size
+        c = -target_params
+        discriminant = b**2 - 4*a*c
+        if discriminant < 0: raise ValueError("No real solution for dimension exists with these parameters.")
+        dim = (-b + math.sqrt(discriminant)) / (2*a)
+        return round_to_multiple(dim)
 
-def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5):
+def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5, use_hybrid_gru=False):
     """Approximates the model depth for a target parameter count."""
-    # This solver is based on the same approximation as solve_for_dimension.
+    # Calculate embedding params
     embed_params = 2 * dim * vocab_size
-    factor = 3 * expansion + 2 * ff_mult
-    layer_params = dim * dim * factor
+    
+    # Calculate params per layer based on architecture
+    if use_hybrid_gru:
+        # HybridFusedGRU has full GRU architecture
+        dim_inner = int(dim * expansion)
+        gru_params = (
+            dim * 3 * dim_inner + 3 * dim_inner +  # input_projection with bias
+            dim_inner * 3 * dim_inner + 3 * dim_inner +  # hidden_projection with bias
+            dim_inner * dim  # to_out without bias
+        )
+    else:
+        # minGRU approximation
+        gru_params = dim * dim * 3 * expansion
+    
+    # FFN and norm params
+    ffn_params = 2 * dim * dim * ff_mult if ff_mult > 0 else 0
+    norm_params = 2 * dim  # 2 layer norms per layer
+    
+    layer_params = gru_params + ffn_params + norm_params
     if layer_params <= 0: return 1
-    depth = (target_params - embed_params) / layer_params
+    
+    # Account for final norm
+    available_for_layers = target_params - embed_params - dim
+    depth = available_for_layers / layer_params
     return max(1, round(depth))
 
 def calculate_model_size(config):
@@ -808,14 +854,14 @@ def main():
         elif not args.dim and args.depth:
             # User specified depth, solve for dim
             depth = args.depth
-            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult)
+            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
         else:
             # Default behavior: guess a dim and solve for depth, then refine dim
             base_dim = 512 if params_value < 1e9 else 1024
             # Heuristic scaling for dimension based on Chinchilla laws (very approximate)
             dim_guess = round_to_multiple(base_dim * (params_value / (100e6 if params_value < 1e9 else 1e9))**0.25)
-            depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult)
-            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult)
+            depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
+            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
             
         model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "conv_kernel_size": args.conv_kernel_size, "dropout": args.dropout, "use_hybrid_gru": args.hybrid_gru, "use_test_gru": args.use_test_gru}
 
