@@ -1108,16 +1108,17 @@ def main():
             # Mark that we've exited forward pass - safe for weight updates
             evolutionary_node.exit_forward_pass()
         
-        # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET ---
-        # Create a broadcastable mask: [B] -> [B, 1] for RNN states (2D tensors)
+        # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET (OPTIMIZED) ---
+        # Create broadcastable masks for branchless execution
         reset_mask = is_doc_end.view(-1, 1)
-        # Create a mask for conv buffers: [B] -> [B, 1, 1]
         conv_reset_mask = is_doc_end.view(-1, 1, 1)
 
-        # Apply the mask to zero-out states for batch items that hit a document end.
-        hidden_state = [h.detach() * (~reset_mask) for h in next_hidden_state]
+        # Use torch.where for branchless execution - more efficient than multiplication
+        hidden_state = [torch.where(reset_mask, torch.zeros_like(h), h.detach()) 
+                       for h in next_hidden_state]
         if next_conv_buffers and next_conv_buffers[0] is not None:
-            conv_buffers = [b.detach() * (~conv_reset_mask) for b in next_conv_buffers]
+            conv_buffers = [torch.where(conv_reset_mask, torch.zeros_like(b), b.detach()) 
+                           for b in next_conv_buffers]
         else:
             conv_buffers = [] # Ensure it's an empty list if no conv
         
