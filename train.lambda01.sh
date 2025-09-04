@@ -61,7 +61,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   --params $PARAMS \
-  --dim 1024 \
+  --dim 1536 \
   --expansion_factor 2.0 \
   --ff_mult 0 \
   --train_steps 10000000 \
