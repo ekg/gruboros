@@ -623,20 +623,27 @@ class DocumentStreamDataset(Dataset):
 class DocumentStreamWrapper(IterableDataset):
     """
     Wrapper to make DocumentStreamDataset work with PyTorch DataLoader
-    --- MODIFIED FOR BATCHING ---
+    --- MODIFIED FOR BATCHING WITH SHARED MEMORY MAP ---
     """
     def __init__(self, filepath, chunk_size, batch_size, seed=42, global_rank=0):
         self.filepath = filepath
         self.chunk_size = chunk_size
         self.batch_size = batch_size
         
-        # Each GPU manages its own set of parallel streams, each with a unique seed
+        # Create a single shared memory map for this rank
+        import mmap
+        self.data_file = open(filepath, 'rb')
+        self.shared_mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
+        
+        # Each GPU manages its own set of parallel streams, sharing the same mmap
         self.streams = [
             DocumentStreamDataset(
                 filepath, 
                 chunk_size, 
-                seed + (global_rank * batch_size) + i,
-                global_rank
+                rank=global_rank,
+                world_size=1,  # Not used in the dataset
+                seed=seed + (global_rank * batch_size) + i,
+                shared_mmap=self.shared_mmap
             ) for i in range(self.batch_size)
         ]
         
@@ -656,6 +663,13 @@ class DocumentStreamWrapper(IterableDataset):
                 torch.tensor(batch_is_doc_end, dtype=torch.bool), 
                 torch.tensor(batch_actual_len, dtype=torch.long)
             )
+    
+    def __del__(self):
+        """Clean up the shared memory map and file handle"""
+        if hasattr(self, 'shared_mmap'):
+            self.shared_mmap.close()
+        if hasattr(self, 'data_file'):
+            self.data_file.close()
 
 def get_model(model_config):
     return minLM(**model_config)

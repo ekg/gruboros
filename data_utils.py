@@ -107,15 +107,21 @@ class DocumentStreamDataset(Dataset):
     """
     
     def __init__(self, data_path: str, chunk_size: int, rank: int, 
-                 world_size: int, seed: int = 42):
+                 world_size: int, seed: int = 42, shared_mmap=None):
         self.chunk_size = chunk_size
         self.rank = rank
         self.world_size = world_size
         
-        # Open the data file
-        self.data_file = open(data_path, 'rb')
-        self.mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
-        self.file_size = len(self.mmap)
+        # Use shared mmap if provided, otherwise open the data file
+        if shared_mmap is not None:
+            self.mmap = shared_mmap
+            self.file_size = len(self.mmap)
+            self.data_file = None  # No file handle when using shared mmap
+        else:
+            # Open the data file
+            self.data_file = open(data_path, 'rb')
+            self.mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
+            self.file_size = len(self.mmap)
         
         # Random starting position for this rank
         rng = np.random.RandomState(seed + rank)
