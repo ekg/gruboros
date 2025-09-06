@@ -110,7 +110,12 @@ class HybridFusedGRU(nn.Module):
         # Standard GRU weights
         self.input_projection = nn.Linear(dim, 3 * self.dim_inner)
         self.hidden_projection = nn.Linear(self.dim_inner, 3 * self.dim_inner)
-        self.to_out = nn.Linear(self.dim_inner, dim, bias=False)
+        
+        # Only add output projection if expanding
+        if expansion_factor != 1.0:
+            self.to_out = nn.Linear(self.dim_inner, dim, bias=False)
+        else:
+            self.to_out = nn.Identity()
         
         self._init_weights()
     
@@ -120,7 +125,8 @@ class HybridFusedGRU(nn.Module):
         for module in [self.input_projection, self.hidden_projection]:
             nn.init.uniform_(module.weight, -std, std)
             nn.init.uniform_(module.bias, -std, std)
-        nn.init.normal_(self.to_out.weight, 0.0, 0.02)
+        if not isinstance(self.to_out, nn.Identity):
+            nn.init.normal_(self.to_out.weight, 0.0, 0.02)
     
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         if x.dim() == 4 and x.size(2) == 1:
