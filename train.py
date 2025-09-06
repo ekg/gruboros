@@ -345,10 +345,12 @@ def solve_for_dimension(target_params, depth, vocab_size=256, ff_mult=4, expansi
             
             # Calculate params with current guess
             embed_params = 2 * dim_guess * vocab_size
+            # Only include to_out projection if expansion != 1.0
+            to_out_params = dim_inner * dim_guess if expansion != 1.0 else 0
             gru_params = (
                 dim_guess * 3 * dim_inner + 3 * dim_inner +
                 dim_inner * 3 * dim_inner + 3 * dim_inner +
-                dim_inner * dim_guess
+                to_out_params
             )
             ffn_params = 2 * dim_guess * dim_guess * ff_mult if ff_mult > 0 else 0
             norm_params = depth * 2 * dim_guess + dim_guess
@@ -383,10 +385,12 @@ def solve_for_depth(target_params, dim, vocab_size=256, ff_mult=4, expansion=1.5
     if use_hybrid_gru:
         # HybridFusedGRU has full GRU architecture
         dim_inner = int(dim * expansion)
+        # Only include to_out projection if expansion != 1.0
+        to_out_params = dim_inner * dim if expansion != 1.0 else 0
         gru_params = (
             dim * 3 * dim_inner + 3 * dim_inner +  # input_projection with bias
             dim_inner * 3 * dim_inner + 3 * dim_inner +  # hidden_projection with bias
-            dim_inner * dim  # to_out without bias
+            to_out_params  # to_out without bias (only if expansion != 1.0)
         )
     else:
         # minGRU approximation
