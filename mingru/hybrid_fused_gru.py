@@ -147,9 +147,9 @@ class HybridFusedGRU(nn.Module):
             if device.type == 'cuda':
                 h_new = torch.empty_like(h)
                 
-                # Launch Triton kernel
-                BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))
-                grid = (B, triton.cdiv(self.dim_inner, BLOCK_SIZE))
+                # Launch Triton kernel - use full dimension as block size
+                BLOCK_SIZE = self.dim_inner  # Process entire hidden dimension in one block
+                grid = (B,)  # Just one block per batch element
                 
                 gru_cell_fused[grid](
                     input_gates, hidden_gates,
@@ -186,8 +186,8 @@ class HybridFusedGRU(nn.Module):
                 h_new = torch.empty_like(h)
                 
                 # Launch Triton kernel for fused cell computation
-                BLOCK_SIZE = min(128, triton.next_power_of_2(self.dim_inner))
-                grid = (B, triton.cdiv(self.dim_inner, BLOCK_SIZE))
+                BLOCK_SIZE = self.dim_inner  # Process entire hidden dimension in one block
+                grid = (B,)  # Just one block per batch element
                 
                 gru_cell_fused[grid](
                     input_gates, hidden_gates,
