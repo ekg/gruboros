@@ -71,7 +71,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --sf_beta2 0.995 \
   --weight_decay 0.0001 \
   --grad_clip 0.0 \
-  --grad_accum 2 \
+  --grad_accum 8 \
   --chunk_size 1024 \
   --batch_size 64 \
   --keep_checkpoints 5 \
@@ -80,7 +80,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.2 \
   --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.001 \
+  --gossip_mixing_rate 0.003 \
   --gossip_p_value_threshold 0.1 \
   --gossip_lock_timeout 5.0 \
   --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
