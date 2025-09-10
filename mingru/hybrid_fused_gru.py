@@ -121,11 +121,20 @@ class HybridFusedGRU(nn.Module):
     def _init_weights(self):
         import math
         std = 1.0 / math.sqrt(self.dim_inner)
-        for module in [self.input_projection, self.hidden_projection]:
-            nn.init.uniform_(module.weight, -std, std)
-            nn.init.uniform_(module.bias, -std, std)
+        
+        # Weights: mild uniform is fine
+        for lin in [self.input_projection, self.hidden_projection]:
+            nn.init.uniform_(lin.weight, -std, std)
+            nn.init.zeros_(lin.bias)  # start from zeros
+            
+            # gates layout: [r | z | n] each of size H = dim_inner
+            H = self.dim_inner
+            with torch.no_grad():
+                lin.bias[H:2*H].fill_(-2.0)  # bias the update gate z downward
+        
+        # Residual projection should start as identity
         if not isinstance(self.to_out, nn.Identity):
-            nn.init.normal_(self.to_out.weight, 0.0, 0.02)
+            nn.init.constant_(self.to_out.weight, 0.0)
     
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
         if x.dim() == 4 and x.size(2) == 1:
