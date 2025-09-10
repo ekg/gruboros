@@ -83,16 +83,15 @@ def gru_cell_fused(
     r = tl.sigmoid(i_r + h_r)
     z = tl.sigmoid(i_z + h_z)
     
-    # Candidate - tanh implemented manually
+    # Candidate - use numerically-safe tanh
     n_pre = i_n + r * h_n
-    exp_2x = tl.exp(2.0 * n_pre)
-    n = (exp_2x - 1.0) / (exp_2x + 1.0)
+    n = tl.tanh(n_pre)
     
     # Update hidden
     h_new = (1.0 - z) * h_prev + z * n
     
-    # Store result (convert back to bf16 for storage)
-    tl.store(h_out_ptr + h_prev_offset, h_new.to(tl.bfloat16), mask=mask)
+    # Store result in fp32
+    tl.store(h_out_ptr + h_prev_offset, h_new, mask=mask)
 
 
 class HybridFusedGRU(nn.Module):
