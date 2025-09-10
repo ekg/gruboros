@@ -7,7 +7,7 @@ ulimit -n 65536
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 PARAMS="1g"
-NAME="${PARAMS}_closed_z"
+NAME="${PARAMS}_maxperf"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -51,13 +51,15 @@ echo "Using GLOO backend for initial process group."
 NUM_GPUS=6
 
 # --- Launch Training ---
-echo "Starting 1B parameter training with MORE CLOSED Z-GATES"
-echo "Key z-gate configuration:"
-echo "  - z_bias_input: -3.0 (more closed than default -2.0)"
-echo "  - z_bias_hidden: -1.0 (slightly closed)"
-echo "This should prioritize memory retention over plasticity"
+echo "Starting 1B parameter BATCHED training with maximum performance optimizations."
+echo "Key optimizations:"
+echo "  - True batching with batch_size=16"
+echo "  - Reduced expansion_factor to 2.0"
+echo "  - BFloat16 mixed precision"
+echo "  - torch.compile enabled"
+echo "  - Optimized gradient accumulation"
 
-# Training configuration with more closed z-gates
+# Training configuration with real batching
 torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
@@ -78,8 +80,6 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
-  --z_bias_input -3.0 \
-  --z_bias_hidden -1.0 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.2 \
   --gossip_optimizer_recombination interpolate \
