@@ -769,6 +769,125 @@ def get_args():
     args = parser.parse_args()
     return args
 
+@torch.no_grad()
+def measure_z_stats(model, batch_x, hidden_state_snapshot=None, layer_index=0, norm_first=True):
+    """
+    Returns a dict with z gate stats for a given layer.
+    - batch_x: LongTensor tokens [B, T] from your current stream (small slice OK)
+    - hidden_state_snapshot: optional List[Tensor] like your 'hidden_state'; if None, uses zeros(h)
+    - layer_index: which layer's GRU to probe (0 = first)
+    - norm_first: apply that layer's RMSNorm before projection (matches forward path)
+    """
+    # 1) grab layer modules
+    layer = model.layers[layer_index]
+    norm = layer[1]
+    gru  = layer[2]  # HybridFusedGRU or minGRU
+
+    device = next(model.parameters()).device
+
+    # 2) embed + optional norm, then one step (use first token for speed / clarity)
+    x = model.token_emb(batch_x.to(device))[:, :1]  # [B, 1, D]
+    if norm_first:
+        x = norm(x)
+
+    # 3) choose h_{t-1}
+    if hasattr(gru, 'dim_inner'):
+        H = gru.dim_inner
+    else:
+        H = gru.to_hidden_and_gate.out_features // 2  # minGRU path
+
+    if hidden_state_snapshot is not None and len(hidden_state_snapshot) > layer_index:
+        h_prev = hidden_state_snapshot[layer_index]
+        if h_prev.ndim == 3:  # sometimes [B,1,H]
+            h_prev = h_prev.squeeze(1)
+    else:
+        h_prev = torch.zeros(x.size(0), H, device=device, dtype=x.dtype)
+
+    # 4) compute gates via the model's own projections
+    # NOTE: for HybridFusedGRU: input_projection: D -> 3H, hidden_projection: H -> 3H
+    if hasattr(gru, 'input_projection') and hasattr(gru, 'hidden_projection'):
+        inp = gru.input_projection(x.squeeze(1))      # [B, 3H]
+        hid = gru.hidden_projection(h_prev)           # [B, 3H]
+        # split: [r | z | n]
+        _, i_z, _ = inp.chunk(3, dim=-1)
+        _, h_z, _ = hid.chunk(3, dim=-1)
+        z = torch.sigmoid(i_z + h_z)
+    else:
+        # minGRU: single Linear to [hidden, gate], gate is the 'z'
+        hidden, gate = gru.to_hidden_and_gate(x.squeeze(1)).chunk(2, dim=-1)
+        z = torch.sigmoid(gate)  # effective openness
+    # 5) summarize
+    zf = z.float()
+    q = torch.quantile(zf, torch.tensor([0.01, 0.1, 0.5, 0.9, 0.99], device=zf.device))
+    return {
+        "mean": float(zf.mean().item()),
+        "std":  float(zf.std(unbiased=False).item()),
+        "p01":  float(q[0].item()),
+        "p10":  float(q[1].item()),
+        "p50":  float(q[2].item()),
+        "p90":  float(q[3].item()),
+        "p99":  float(q[4].item()),
+    }
+
+def log_z_stats_to_tsv(model, batch_x, hidden_state, step, tsv_file, num_layers_to_log=None):
+    """
+    Log z-gate statistics for multiple layers to a TSV file.
+    - model: the model to analyze
+    - batch_x: current batch tokens [B, T] 
+    - hidden_state: current hidden state snapshot
+    - step: current training step
+    - tsv_file: path to TSV file
+    - num_layers_to_log: how many layers to log (None = all)
+    """
+    import time
+    
+    # Extract model from DDP wrapper if needed
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    # Determine how many layers to log
+    total_layers = len(actual_model.layers)
+    layers_to_log = min(num_layers_to_log or total_layers, total_layers)
+    
+    # Use a small probe from current batch
+    probe_tokens = batch_x[:, :32].detach()
+    
+    # Write header if file doesn't exist
+    write_header = not os.path.exists(tsv_file)
+    
+    with open(tsv_file, 'a') as f:
+        if write_header:
+            # Header: step, timestamp, layer, type, then all stats
+            f.write("step\ttimestamp\tlayer\ttype\tmean\tstd\tp01\tp10\tp50\tp90\tp99\n")
+        
+        timestamp = time.time()
+        
+        for layer_idx in range(layers_to_log):
+            # Runtime z (with current hidden state)
+            stats_runtime = measure_z_stats(actual_model, probe_tokens, 
+                                           hidden_state_snapshot=hidden_state, 
+                                           layer_index=layer_idx)
+            
+            # Input-only z (with zero hidden state)
+            stats_input = measure_z_stats(actual_model, probe_tokens, 
+                                         hidden_state_snapshot=None, 
+                                         layer_index=layer_idx)
+            
+            # Write runtime stats
+            f.write(f"{step}\t{timestamp:.3f}\t{layer_idx}\truntime\t"
+                   f"{stats_runtime['mean']:.6f}\t{stats_runtime['std']:.6f}\t"
+                   f"{stats_runtime['p01']:.6f}\t{stats_runtime['p10']:.6f}\t"
+                   f"{stats_runtime['p50']:.6f}\t{stats_runtime['p90']:.6f}\t"
+                   f"{stats_runtime['p99']:.6f}\n")
+            
+            # Write input-only stats
+            f.write(f"{step}\t{timestamp:.3f}\t{layer_idx}\tinput\t"
+                   f"{stats_input['mean']:.6f}\t{stats_input['std']:.6f}\t"
+                   f"{stats_input['p01']:.6f}\t{stats_input['p10']:.6f}\t"
+                   f"{stats_input['p50']:.6f}\t{stats_input['p90']:.6f}\t"
+                   f"{stats_input['p99']:.6f}\n")
+        
+        f.flush()
+
 def main():
     args = get_args()
 
@@ -1055,6 +1174,12 @@ def main():
     
     # Track accumulated steps for gradient accumulation
     accumulated_steps = 0
+    
+    # Z-gate logging setup (rank 0 only)
+    z_stats_file = None
+    if global_rank == 0:
+        z_stats_file = os.path.join(checkpoint_dir, f"z_stats_rank{global_rank}.tsv")
+        print(f"[Rank {global_rank}] Logging z-gate stats to: {z_stats_file}")
 
     while step < train_steps:
         # NOTE: Moved gossip updates to after optimization for safety
@@ -1158,6 +1283,14 @@ def main():
             
             optimizer.zero_grad()
             accumulated_steps = 0
+            
+            # Log z-gate statistics on rank 0 after every gradient update
+            if global_rank == 0 and z_stats_file is not None:
+                try:
+                    # Log first 4 layers by default (adjust as needed)
+                    log_z_stats_to_tsv(model, chunk_data, hidden_state, step, z_stats_file, num_layers_to_log=4)
+                except Exception as e:
+                    print(f"[Rank {global_rank}] Warning: Failed to log z-stats: {e}")
             
             # CRITICAL: Ensure optimizer updates are complete before gossip
             if device.type == 'cuda':
