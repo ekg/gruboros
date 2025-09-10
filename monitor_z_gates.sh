@@ -32,9 +32,9 @@ show_latest() {
         layer = $3
         type = $4
         mean = $5
-        p10 = $7
-        p50 = $8
-        p90 = $9
+        p10 = $8
+        p50 = $9
+        p90 = $10
         
         # Store latest for each layer+type combo
         key = layer "_" type

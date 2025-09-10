@@ -164,7 +164,8 @@ class HybridFusedGRU(nn.Module):
             hidden_gates = self.hidden_projection(h).contiguous()  # [B, 3*H]
             
             if device.type == 'cuda':
-                h_new = torch.empty_like(h)
+                # Allocate fp32 buffer for Triton kernel output
+                h_new_fp32 = torch.empty(B, self.dim_inner, device=device, dtype=torch.float32)
                 
                 # Launch Triton kernel - use next power of 2 as block size
                 # Find next power of 2 >= dim_inner (required for tl.arange)
@@ -174,10 +175,12 @@ class HybridFusedGRU(nn.Module):
                 
                 gru_cell_fused[grid](
                     input_gates, hidden_gates,
-                    h, h_new,
+                    h, h_new_fp32,
                     B, self.dim_inner,
                     BLOCK_SIZE
                 )
+                # Cast back to original dtype
+                h_new = h_new_fp32.to(dtype)
             else:
                 # CPU fallback
                 h_new = gru_cell_pytorch(input_gates, hidden_gates, h)
@@ -204,7 +207,8 @@ class HybridFusedGRU(nn.Module):
             
             # Compute new hidden state
             if device.type == 'cuda':
-                h_new = torch.empty_like(h)
+                # Allocate fp32 buffer for Triton kernel output
+                h_new_fp32 = torch.empty(B, self.dim_inner, device=device, dtype=torch.float32)
                 
                 # Launch Triton kernel for fused cell computation
                 # Find next power of 2 >= dim_inner (required for tl.arange)
@@ -214,10 +218,12 @@ class HybridFusedGRU(nn.Module):
                 
                 gru_cell_fused[grid](
                     input_gates, hidden_gates,
-                    h, h_new,
+                    h, h_new_fp32,
                     B, self.dim_inner,
                     BLOCK_SIZE
                 )
+                # Cast back to original dtype
+                h_new = h_new_fp32.to(dtype)
             else:
                 # CPU fallback
                 h_new = gru_cell_pytorch(input_gates, hidden_gates, h)
