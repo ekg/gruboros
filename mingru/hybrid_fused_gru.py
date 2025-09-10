@@ -49,18 +49,14 @@ def gru_cell_fused(
     """
     # Program for each batch element
     pid_batch = tl.program_id(0)
-    pid_block = tl.program_id(1)
     
     if pid_batch >= batch_size:
         return
     
-    # Process this block of hidden dimensions
-    block_start = pid_block * BLOCK_SIZE
-    if block_start >= hidden_dim:
-        return
-        
-    # Offsets for this block
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
+    # Since we process the entire hidden dimension in one block,
+    # we don't need block-level partitioning
+    # Note: BLOCK_SIZE must be a power of 2 for tl.arange
+    offs = tl.arange(0, BLOCK_SIZE)
     mask = offs < hidden_dim
     
     # Load input gates for this block (convert to fp32 for computation)
@@ -83,9 +79,12 @@ def gru_cell_fused(
     r = tl.sigmoid(i_r + h_r)
     z = tl.sigmoid(i_z + h_z)
     
-    # Candidate - use numerically-safe tanh
+    # Candidate - numerically safer tanh using available Triton functions
     n_pre = i_n + r * h_n
-    n = tl.tanh(n_pre)
+    # Clamp input to avoid overflow (tanh saturates at ±3)
+    n_pre_clamped = tl.minimum(tl.maximum(n_pre, -3.0), 3.0)
+    exp_2x = tl.exp(2.0 * n_pre_clamped)
+    n = (exp_2x - 1.0) / (exp_2x + 1.0)
     
     # Update hidden
     h_new = (1.0 - z) * h_prev + z * n
@@ -161,8 +160,10 @@ class HybridFusedGRU(nn.Module):
             if device.type == 'cuda':
                 h_new = torch.empty_like(h)
                 
-                # Launch Triton kernel - use full dimension as block size
-                BLOCK_SIZE = self.dim_inner  # Process entire hidden dimension in one block
+                # Launch Triton kernel - use next power of 2 as block size
+                # Find next power of 2 >= dim_inner (required for tl.arange)
+                import math
+                BLOCK_SIZE = 2 ** math.ceil(math.log2(self.dim_inner))
                 grid = (B,)  # Just one block per batch element
                 
                 gru_cell_fused[grid](
@@ -200,7 +201,9 @@ class HybridFusedGRU(nn.Module):
                 h_new = torch.empty_like(h)
                 
                 # Launch Triton kernel for fused cell computation
-                BLOCK_SIZE = self.dim_inner  # Process entire hidden dimension in one block
+                # Find next power of 2 >= dim_inner (required for tl.arange)
+                import math
+                BLOCK_SIZE = 2 ** math.ceil(math.log2(self.dim_inner))
                 grid = (B,)  # Just one block per batch element
                 
                 gru_cell_fused[grid](
