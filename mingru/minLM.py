@@ -102,7 +102,9 @@ class minLM(Module):
         enable_conv = None,  # Deprecated - for backwards compatibility only
         dropout = 0.,
         use_hybrid_gru = False,  # Use HybridFusedGRU with Triton kernel
-        use_test_gru = False  # Use simple test GRU
+        use_test_gru = False,  # Use simple test GRU
+        z_bias_input = -2.0,  # Initial bias for z-gates on input projection
+        z_bias_hidden = -2.0  # Initial bias for z-gates on hidden projection
     ):
         super().__init__()
         
@@ -130,7 +132,9 @@ class minLM(Module):
             
             rnn_kwargs = {
                 'expansion_factor': expansion,
-                'use_hybrid_gru': use_hybrid_gru
+                'use_hybrid_gru': use_hybrid_gru,
+                'z_bias_input': z_bias_input,
+                'z_bias_hidden': z_bias_hidden
             }
         else:
             min_rnn_klass = minGRU

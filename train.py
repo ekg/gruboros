@@ -714,6 +714,14 @@ def get_args():
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
     parser.add_argument('--grad_clip', type=float, default=1.0, help='Gradient clipping threshold (L2 norm). Set to 0.0 to disable.')
     parser.add_argument('--grad_accum', type=int, default=1, help='gradient accumulation steps')
+    
+    # Z-gate initialization parameters
+    parser.add_argument('--z_bias_init', type=float, default=-2.0, 
+                        help='Initial bias for z-gates (default: -2.0, more negative = more closed)')
+    parser.add_argument('--z_bias_input', type=float, default=None,
+                        help='Initial bias for z-gates on input projection (overrides z_bias_init)')
+    parser.add_argument('--z_bias_hidden', type=float, default=None,
+                        help='Initial bias for z-gates on hidden projection (overrides z_bias_init)')
     parser.add_argument('--keep_checkpoints', type=int, default=3, help='number of recent checkpoints to keep')
     parser.add_argument('--keep_elite', type=int, default=10, help='number of elite models to preserve')
     parser.add_argument('--archive_rate', type=float, default=0.0, help='probability (0.0-1.0) of archiving checkpoints before deletion')
@@ -1000,7 +1008,19 @@ def main():
             depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
             dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
             
-        model_config = {"num_tokens": 256, "dim": dim, "depth": depth, "ff_mult": args.ff_mult, "expansion": args.expansion_factor, "conv_kernel_size": args.conv_kernel_size, "dropout": args.dropout, "use_hybrid_gru": args.hybrid_gru, "use_test_gru": args.use_test_gru}
+        model_config = {
+            "num_tokens": 256, 
+            "dim": dim, 
+            "depth": depth, 
+            "ff_mult": args.ff_mult, 
+            "expansion": args.expansion_factor, 
+            "conv_kernel_size": args.conv_kernel_size, 
+            "dropout": args.dropout, 
+            "use_hybrid_gru": args.hybrid_gru, 
+            "use_test_gru": args.use_test_gru,
+            "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
+            "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init
+        }
 
     if global_rank == 0:
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")

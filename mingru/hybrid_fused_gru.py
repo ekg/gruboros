@@ -100,10 +100,12 @@ class HybridFusedGRU(nn.Module):
     This should be faster than pure Triton but with fusion benefits.
     """
     
-    def __init__(self, dim: int, expansion_factor: float = 1.5, **kwargs):
+    def __init__(self, dim: int, expansion_factor: float = 1.5, z_bias_input: float = -2.0, z_bias_hidden: float = -2.0, **kwargs):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
+        self.z_bias_input = z_bias_input
+        self.z_bias_hidden = z_bias_hidden
         
         # Standard GRU weights
         self.input_projection = nn.Linear(dim, 3 * self.dim_inner)
@@ -129,7 +131,11 @@ class HybridFusedGRU(nn.Module):
             # gates layout: [r | z | n] each of size H = dim_inner
             H = self.dim_inner
             with torch.no_grad():
-                lin.bias[H:2*H].fill_(-2.0)  # bias the update gate z downward
+                # Apply z-gate biases based on whether this is input or hidden projection
+                if lin == self.input_projection:
+                    lin.bias[H:2*H].fill_(self.z_bias_input)  # bias the update gate z on input
+                else:  # hidden_projection
+                    lin.bias[H:2*H].fill_(self.z_bias_hidden)  # bias the update gate z on hidden
         
         # Residual projection should start as identity
         if not isinstance(self.to_out, nn.Identity):
