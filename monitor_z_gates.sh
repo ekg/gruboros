@@ -79,16 +79,22 @@ show_latest() {
         if (("0_runtime") in data) {
             # Extract mean from the data string
             match(data["0_runtime"], /mean=([0-9.]+)/, arr)
-            mean_val = arr[1]
+            mean_val = arr[1] + 0  # Force numeric conversion
             
             if (mean_val < 0.10) {
-                print "⚠️  WARNING: Layer 0 very closed (mean < 0.10)"
+                print "⚠️  WARNING: Layer 0 very closed (mean = " mean_val " < 0.10)"
                 print "   Consider: increase LR or reduce z-bias magnitude"
             } else if (mean_val > 0.50) {
-                print "⚠️  WARNING: Layer 0 very open (mean > 0.50)"
+                print "⚠️  WARNING: Layer 0 very open (mean = " mean_val " > 0.50)"
                 print "   Consider: decrease LR or increase z-bias magnitude"
             } else if (mean_val >= 0.15 && mean_val <= 0.35) {
-                print "✓  Layer 0 z-gate healthy (0.15 ≤ mean ≤ 0.35)"
+                print "✓  Layer 0 z-gate healthy (mean = " mean_val " in [0.15, 0.35])"
+            } else if (mean_val >= 0.10 && mean_val < 0.15) {
+                print "ℹ️  Layer 0 z-gate slightly closed (mean = " mean_val " in [0.10, 0.15))"
+                print "   Monitor for potential plateau"
+            } else if (mean_val > 0.35 && mean_val <= 0.50) {
+                print "ℹ️  Layer 0 z-gate slightly open (mean = " mean_val " in (0.35, 0.50])"
+                print "   Good for fast learning, watch for instability"
             }
         }
     }'
