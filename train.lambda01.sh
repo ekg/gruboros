@@ -77,6 +77,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
+  --z_bias_input -1.0 \
+  --z_bias_hidden 0.0 \
   --gossip_merge_method recombination \
   --gossip_recombination_alpha 0.2 \
   --gossip_optimizer_recombination interpolate \

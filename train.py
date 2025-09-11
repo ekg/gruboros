@@ -1305,12 +1305,13 @@ def main():
             accumulated_steps = 0
             
             # Log z-gate statistics on rank 0 after every gradient update
-            if global_rank == 0 and z_stats_file is not None:
-                try:
-                    # Log first 4 layers by default (adjust as needed)
-                    log_z_stats_to_tsv(model, chunk_data, hidden_state, step, z_stats_file, num_layers_to_log=4)
-                except Exception as e:
-                    print(f"[Rank {global_rank}] Warning: Failed to log z-stats: {e}")
+            # DISABLED: Z-gates are healthy, no need for monitoring
+            # if global_rank == 0 and z_stats_file is not None:
+            #     try:
+            #         # Log first 4 layers by default (adjust as needed)
+            #         log_z_stats_to_tsv(model, chunk_data, hidden_state, step, z_stats_file, num_layers_to_log=4)
+            #     except Exception as e:
+            #         print(f"[Rank {global_rank}] Warning: Failed to log z-stats: {e}")
             
             # CRITICAL: Ensure optimizer updates are complete before gossip
             if device.type == 'cuda':
