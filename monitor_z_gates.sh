@@ -77,8 +77,8 @@ show_latest() {
         
         # Health check for layer 0 runtime
         if (("0_runtime") in data) {
-            # Extract mean from the data string
-            match(data["0_runtime"], /mean=([0-9.]+)/, arr)
+            # Extract mean from the data string (handle optional space after =)
+            match(data["0_runtime"], /mean= *([0-9.]+)/, arr)
             mean_val = arr[1] + 0  # Force numeric conversion
             
             if (mean_val < 0.10) {
