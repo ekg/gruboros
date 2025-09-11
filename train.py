@@ -1196,10 +1196,11 @@ def main():
     accumulated_steps = 0
     
     # Z-gate logging setup (rank 0 only)
+    # DISABLED: Z-gates are healthy, no need for monitoring
     z_stats_file = None
-    if global_rank == 0:
-        z_stats_file = os.path.join(checkpoint_dir, f"z_stats_rank{global_rank}.tsv")
-        print(f"[Rank {global_rank}] Logging z-gate stats to: {z_stats_file}")
+    # if global_rank == 0:
+    #     z_stats_file = os.path.join(checkpoint_dir, f"z_stats_rank{global_rank}.tsv")
+    #     print(f"[Rank {global_rank}] Logging z-gate stats to: {z_stats_file}")
 
     while step < train_steps:
         # NOTE: Moved gossip updates to after optimization for safety
