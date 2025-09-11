@@ -39,16 +39,16 @@ mkdir -p "${GOSSIP_TEMP_DIR}"
 echo "Using local temporary directory: $GOSSIP_TEMP_DIR"
 
 # --- Distributed Settings for Launcher & Script ---
-export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export OMP_NUM_THREADS=4
-export RANKS_PER_NODE=6
+export RANKS_PER_NODE=8
 export MASTER_ADDR=127.0.0.1
 export MASTER_PORT=29500
 export TORCH_DISTRIBUTED_TIMEOUT=3600s
 # Use GLOO for peer discovery.
 export TORCH_DISTRIBUTED_BACKEND="gloo"
 echo "Using GLOO backend for initial process group."
-NUM_GPUS=6
+NUM_GPUS=8
 
 # --- Launch Training ---
 echo "Starting 1B parameter training with MORE CLOSED Z-GATES"
@@ -72,9 +72,9 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --save_every 500 \
   --lr 0.001 \
   --weight_decay 0.0001 \
-  --grad_accum 64 \
-  --chunk_size 256 \
-  --batch_size 16 \
+  --grad_accum 8 \
+  --chunk_size 512 \
+  --batch_size 64 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
