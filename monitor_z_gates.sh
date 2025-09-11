@@ -1,8 +1,29 @@
 #!/bin/bash
 # Real-time monitoring of z-gate statistics during training
 # Usage: ./monitor_z_gates.sh [output_dir]
+# If no output_dir provided, automatically finds the latest in /mnt/nvme2n1/erikg/minlms/
 
-OUTPUT_DIR=${1:-"output"}
+# Base directory where training outputs are stored
+BASE_DIR="/mnt/nvme2n1/erikg/minlms"
+
+# If argument provided, use it; otherwise find latest directory
+if [ -n "$1" ]; then
+    OUTPUT_DIR="$1"
+else
+    # Find the most recently created directory in BASE_DIR
+    if [ -d "$BASE_DIR" ]; then
+        OUTPUT_DIR=$(ls -dt "$BASE_DIR"/*/ 2>/dev/null | head -n 1)
+        if [ -z "$OUTPUT_DIR" ]; then
+            echo "No output directories found in $BASE_DIR"
+            exit 1
+        fi
+        echo "Auto-detected latest output directory: $OUTPUT_DIR"
+    else
+        echo "Base directory $BASE_DIR not found"
+        exit 1
+    fi
+fi
+
 TSV_FILE="${OUTPUT_DIR}/z_stats_rank0.tsv"
 
 if [ ! -f "$TSV_FILE" ]; then
