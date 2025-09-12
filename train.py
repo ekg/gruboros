@@ -27,6 +27,8 @@ import logging
 from gossip import EvolutionaryTrainingNode
 from data_utils import DocumentStreamDataset, SingleStreamDataset
 from pathlib import Path
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 def simple_barrier(barrier_name='default', timeout=300):
     """File-based barrier without MPI"""
@@ -55,6 +57,52 @@ def simple_barrier(barrier_name='default', timeout=300):
     if global_rank == 0:
         time.sleep(0.5)  # Let others pass
         shutil.rmtree(barrier_dir, ignore_errors=True)
+
+def setup_ddp_groups(global_rank, local_rank, world_size):
+    """
+    Setup DDP groups based on node topology.
+    Returns: ddp_group, ddp_rank, ddp_world_size, is_ddp_primary, node_id
+    """
+    # Initialize process group if not already done
+    if not dist.is_initialized():
+        backend = 'nccl' if torch.cuda.is_available() else 'gloo'
+        dist.init_process_group(backend=backend)
+    
+    # Determine node ID (which node this rank is on)
+    # This works for both SLURM and torchrun/deepspeed launchers
+    if 'SLURM_NODEID' in os.environ:
+        node_id = int(os.environ['SLURM_NODEID'])
+        gpus_per_node = int(os.environ.get('SLURM_NTASKS_PER_NODE', '8'))
+    else:
+        # For torchrun, ranks are assigned sequentially across nodes
+        # Assume equal distribution
+        gpus_per_node = torch.cuda.device_count() if torch.cuda.is_available() else 1
+        node_id = global_rank // gpus_per_node
+    
+    # Find all ranks on the same node
+    node_ranks = []
+    for rank in range(world_size):
+        # Check if this rank is on our node
+        if 'SLURM_NODEID' in os.environ:
+            # In SLURM, we can calculate directly
+            rank_node = rank // gpus_per_node
+        else:
+            rank_node = rank // gpus_per_node
+        
+        if rank_node == node_id:
+            node_ranks.append(rank)
+    
+    # Create DDP group for this node
+    ddp_group = dist.new_group(node_ranks)
+    
+    # Determine position within DDP group
+    ddp_rank = node_ranks.index(global_rank)
+    ddp_world_size = len(node_ranks)
+    
+    # Only rank 0 within each DDP group participates in gossip
+    is_ddp_primary = (ddp_rank == 0)
+    
+    return ddp_group, ddp_rank, ddp_world_size, is_ddp_primary, node_id
 
 class CheckpointManager:
     """Background thread for rank 0 to handle symlinks and cleanup"""
@@ -751,6 +799,12 @@ def get_args():
     parser.add_argument('--validation_batches', type=int, default=8,
                         help='Number of batches to run for validation (default: 8)')
     
+    # DDP (Distributed Data Parallel) support
+    parser.add_argument('--ddp', action='store_true', 
+                        help='Enable DDP within nodes, gossip between nodes')
+    parser.add_argument('--ddp-find-unused', action='store_true',
+                        help='Enable find_unused_parameters in DDP (slower but safer)')
+    
     # --- NEW: Filesystem-Augmented Evolution ---
     parser.add_argument('--filesystem-coordinator', action='store_true',
                         help='Enable filesystem-based coordination for rejuvenation and weighted checkpointing.')
@@ -1057,12 +1111,52 @@ def main():
     
     if args.schedulefree: optimizer.train()
 
+    # Setup DDP if enabled
+    if args.ddp:
+        # Setup DDP groups
+        ddp_group, ddp_rank, ddp_world_size, is_ddp_primary, node_id = setup_ddp_groups(
+            global_rank, local_rank, world_size
+        )
+        
+        if global_rank == 0:
+            print(f"\n=== DDP Configuration ===")
+            print(f"DDP enabled: {ddp_world_size} ranks per node")
+            print(f"Node {node_id}: ranks {global_rank - ddp_rank} to {global_rank - ddp_rank + ddp_world_size - 1}")
+            print(f"Gossip participants: rank 0 from each node")
+            print("=========================\n")
+        
+        # Wrap model in DDP
+        model = DDP(
+            model, 
+            device_ids=[device_id] if device.type == 'cuda' else None,
+            process_group=ddp_group,
+            find_unused_parameters=args.ddp_find_unused,
+            gradient_as_bucket_view=True  # Memory optimization
+        )
+        
+        # For DDP, we need to access the underlying module for gossip
+        base_model = model.module
+    else:
+        ddp_group = None
+        ddp_rank = 0
+        ddp_world_size = 1
+        is_ddp_primary = True
+        node_id = global_rank
+        base_model = model
+
     # Create batched document streaming dataset
+    # For DDP, ensure each rank gets different data
+    if args.ddp:
+        # Each rank should see different data
+        dataset_seed = SEED + global_rank * 1000
+    else:
+        dataset_seed = SEED + global_rank * 1000
+    
     train_dataset = DocumentStreamWrapper(
         args.data, 
         chunk_size=chunk_size,
         batch_size=batch_size,
-        seed=SEED,
+        seed=dataset_seed,
         global_rank=global_rank
     )
 
@@ -1122,12 +1216,38 @@ def main():
 
     save_callback = create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config)
 
+    # Configure gossip for DDP mode
+    if args.ddp:
+        # Only primary ranks participate in gossip
+        if is_ddp_primary:
+            # Calculate effective world size for gossip (number of nodes)
+            num_nodes = world_size // ddp_world_size
+            # Adjust node ID for gossip protocol
+            gossip_rank = node_id
+            gossip_world_size = num_nodes
+        else:
+            # Non-primary ranks don't participate in gossip
+            gossip_rank = -1
+            gossip_world_size = 0
+    else:
+        gossip_rank = global_rank
+        gossip_world_size = world_size
+        
     evolutionary_node = EvolutionaryTrainingNode(
-        node_id=f"node_{global_rank}", model=model, optimizer=optimizer, global_rank=global_rank,
-        local_rank=local_rank, world_size=world_size, data_parallel_rank=global_rank,
-        tp_size=1, mixing_probability=args.gossip_mixing_rate, output_dir=checkpoint_dir,
-        merge_method=args.gossip_merge_method, recombination_alpha=args.gossip_recombination_alpha,
-        optimizer_recombination=args.gossip_optimizer_recombination, gossip_temp_dir=args.gossip_temp_dir,
+        node_id=f"node_{global_rank}", 
+        model=base_model if args.ddp else model,  # Use base_model for DDP, model otherwise
+        optimizer=optimizer, 
+        global_rank=gossip_rank if is_ddp_primary else -1,  # -1 disables gossip for non-primary
+        local_rank=local_rank, 
+        world_size=gossip_world_size, 
+        data_parallel_rank=ddp_rank if args.ddp else global_rank,
+        tp_size=1, 
+        mixing_probability=args.gossip_mixing_rate if is_ddp_primary else 0.0,
+        output_dir=checkpoint_dir,
+        merge_method=args.gossip_merge_method, 
+        recombination_alpha=args.gossip_recombination_alpha,
+        optimizer_recombination=args.gossip_optimizer_recombination, 
+        gossip_temp_dir=args.gossip_temp_dir,
         fitness_window_size=args.gossip_fitness_window,
         use_node_local_lock=args.use_gossip_lock,
         use_filesystem_coordinator=args.filesystem_coordinator,
@@ -1140,7 +1260,10 @@ def main():
         validation_batches=args.validation_batches,
         gossip_lock_timeout=args.gossip_lock_timeout
     )
-    evolutionary_node.start_gossip_protocol()
+    
+    # Only start gossip for primary ranks
+    if is_ddp_primary:
+        evolutionary_node.start_gossip_protocol()
     if global_rank == 0:
         proto_type = "Filesystem-Augmented" if args.filesystem_coordinator else "Pure TCP"
         print(f"\n{proto_type} Gossip protocol initialized and running.\n")
@@ -1324,6 +1447,14 @@ def main():
             if was_updated:
                 if global_rank == 0:
                     print(f"Rank {global_rank} received model update at step {step}")
+                
+                # DDP: Broadcast updated weights to other ranks in DDP group
+                if args.ddp and is_ddp_primary:
+                    for param in model.parameters():
+                        dist.broadcast(param.data, src=ddp_rank, group=ddp_group)
+                    if global_rank == 0:
+                        print(f"Node {node_id}: Broadcasted gossip update to DDP group")
+                
                 # Try to restore cached hidden states if available
                 cached_hidden, cached_conv = evolutionary_node.get_cached_hidden_states()
                 if cached_hidden is not None:
@@ -1341,6 +1472,10 @@ def main():
                         print(f"Rank {global_rank} resetting optimizer at step {step}")
                     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
                     if args.schedulefree: optimizer.train()
+                
+                # DDP: Synchronize after updates
+                if args.ddp:
+                    dist.barrier(group=ddp_group)
                     evolutionary_node.optimizer = optimizer
                     total_actual_tokens = 0  # Reset token counter
             
