@@ -51,9 +51,9 @@ echo "Using GLOO backend for initial process group."
 NUM_GPUS=8
 
 # --- Launch Training ---
-echo "Starting 1B parameter pure RNN run with document-aware validation on 8 GPUs."
+echo "Starting 1B parameter pure RNN run with DDP (single-node) on 8 GPUs."
 
-# Training configuration with exposed parameters for easy tweaking
+# Training configuration with DDP enabled for single-node training
 torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
@@ -92,6 +92,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --filesystem-coordinator \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \
+  --ddp \
   --cuda \
   --compile \
   --hybrid_gru
