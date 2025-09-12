@@ -93,6 +93,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --fitness-weighted-checkpointing \
   --elite-checkpoint-multiplier 20.0 \
   --ddp \
+  --ddp-find-unused \
   --cuda \
   --compile \
   --hybrid_gru
