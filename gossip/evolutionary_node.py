@@ -221,10 +221,12 @@ class EvolutionaryTrainingNode:
                     # Mark we're in forward pass to prevent weight updates
                     self.enter_forward_pass()  # Use reference counting
                     try:
+                        # Use max(0, global_rank) to avoid negative seeds for DDP non-primary ranks
+                        validation_seed = max(0, self.global_rank) * 1000
                         fitness = self.validation_tracker.run_validation(
                             self.model, 
                             step, 
-                            seed=self.global_rank * 1000
+                            seed=validation_seed
                         )
                     finally:
                         self.exit_forward_pass()  # Use reference counting
