@@ -337,9 +337,16 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
     model = minLM(**model_params)
     
     state_dict = checkpoint.get('model_state_dict', checkpoint)
-    if any(key.startswith('_orig_mod.') for key in state_dict.keys()):
+    # Handle DDP (module.) and compiled (_orig_mod.) prefixes
+    if any(key.startswith('module._orig_mod.') for key in state_dict.keys()):
+        state_dict = {k.replace('module._orig_mod.', ''): v for k, v in state_dict.items()}
+        print("INFO: Adapted weights from a DDP+compiled model checkpoint.")
+    elif any(key.startswith('_orig_mod.') for key in state_dict.keys()):
         state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
         print("INFO: Adapted weights from a compiled model checkpoint.")
+    elif any(key.startswith('module.') for key in state_dict.keys()):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        print("INFO: Adapted weights from a DDP model checkpoint.")
 
     model.load_state_dict(state_dict)
     
