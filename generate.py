@@ -17,14 +17,30 @@ torch.set_float32_matmul_precision('high')
 
 # Import the minLM model
 from mingru.minLM import minLM
+from mingru.tokenizers import ByteTokenizer
+
+# Global tokenizer (set during model loading based on vocab size)
+_tokenizer = None
 
 # Token decoding function
 def decode_token(token):
-    # The model works with raw bytes (0-255). We display printable ASCII.
-    return chr(token) if 32 <= token <= 126 else f'\\x{token:02x}'
+    """Decode a single token using the current tokenizer."""
+    if _tokenizer is None or isinstance(_tokenizer, ByteTokenizer):
+        # Fallback to byte-level decoding
+        return chr(token) if 32 <= token <= 126 else f'\\x{token:02x}'
+    # For subword tokenizers, decode individual tokens (may be partial words)
+    try:
+        return _tokenizer.decode([token])
+    except:
+        return f'[UNK:{token}]'
 
 def decode_tokens(tokens):
-    return "".join(map(decode_token, tokens))
+    """Decode a list of tokens using the current tokenizer."""
+    if _tokenizer is None or isinstance(_tokenizer, ByteTokenizer):
+        # Byte-level decoding for backwards compatibility
+        return "".join(map(decode_token, tokens))
+    # Use tokenizer's decode method for proper subword handling
+    return _tokenizer.decode(tokens)
 
 # --- 1. UNIFIED AND EFFICIENT SAMPLING FUNCTION ---
 def sample(logits, temperature=1.0, top_k=0, top_p=0.0):
@@ -289,12 +305,14 @@ def typical_sampling_log_space(logits, temperature=1.0, typical_p=0.9):
 
 def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False, device=None):
     """
-    Load a trained minLM model from checkpoint. (Largely unchanged, but still good)
+    Load a trained minLM model from checkpoint and initialize tokenizer.
     """
+    global _tokenizer
+
     # Set device
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
+
     if os.path.isdir(checkpoint_path):
         latest_path = os.path.join(checkpoint_path, "latest.pt")
         if os.path.exists(latest_path) and os.path.islink(latest_path):
@@ -306,9 +324,9 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
              checkpoint_path = latest_path
         else:
             raise ValueError(f"No 'latest.pt' symlink or file found in directory: {checkpoint_path}")
-    
+
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    
+
     if 'model_config' in checkpoint:
         config = checkpoint['model_config']
         print("INFO: Using model configuration from checkpoint.")
@@ -319,6 +337,35 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
             print(f"INFO: Using model configuration from {auto_config_path}")
         else:
             raise ValueError(f"Could not find config.json in checkpoint directory: {os.path.dirname(checkpoint_path)}")
+
+    # Initialize tokenizer based on vocab size
+    vocab_size = config.get("num_tokens", 256)
+    if vocab_size == 256:
+        # Byte-level tokenizer
+        from mingru.tokenizers import ByteTokenizer
+        _tokenizer = ByteTokenizer()
+        print(f"INFO: Using byte-level tokenizer (vocab_size={vocab_size})")
+    elif vocab_size == 100256 or vocab_size == 100277:
+        # TikToken cl100k_base
+        from mingru.tokenizers import TikTokenTokenizer
+        _tokenizer = TikTokenTokenizer(encoding_name='cl100k_base')
+        print(f"INFO: Using TikToken tokenizer (vocab_size={vocab_size})")
+    elif vocab_size == 50256 or vocab_size == 50257 or vocab_size == 50280 or vocab_size == 50281:
+        # TikToken p50k_base or r50k_base
+        from mingru.tokenizers import TikTokenTokenizer
+        _tokenizer = TikTokenTokenizer(encoding_name='p50k_base')
+        print(f"INFO: Using TikToken tokenizer (vocab_size={vocab_size})")
+    elif vocab_size == 200000 or vocab_size == 200019:
+        # TikToken o200k_base
+        from mingru.tokenizers import TikTokenTokenizer
+        _tokenizer = TikTokenizer(encoding_name='o200k_base')
+        print(f"INFO: Using TikToken tokenizer (vocab_size={vocab_size})")
+    else:
+        # Unknown vocabulary size - default to byte-level with warning
+        from mingru.tokenizers import ByteTokenizer
+        _tokenizer = ByteTokenizer()
+        print(f"WARNING: Unknown vocab_size={vocab_size}, defaulting to byte-level tokenizer")
+        print(f"WARNING: Generation may produce incorrect output!")
     
     # Make model loading robust to older configs that might be missing keys
     model_params = {
@@ -478,28 +525,34 @@ def generate(
     return torch.tensor(generated_tokens, device=device).unsqueeze(0)
 
 def load_primer_text(primer_file=None, primer_length=None, primer_text=None, explicit_length=False):
+    """Load and tokenize primer text using the global tokenizer."""
+    global _tokenizer
+
+    # Use tokenizer for encoding (fallback to byte-level if not initialized)
+    if _tokenizer is None or isinstance(_tokenizer, ByteTokenizer):
+        # Byte-level encoding (backwards compatibility)
+        encode_fn = lambda text: list(text.encode('utf-8'))
+    else:
+        # Subword tokenizer
+        encode_fn = lambda text: _tokenizer.encode(text)
+
     if primer_text:
-        # Convert text to bytes using UTF-8 encoding
-        byte_data = primer_text.encode('utf-8')
-        tokens = list(byte_data)  # This gives us values 0-255
+        tokens = encode_fn(primer_text)
         if explicit_length and primer_length and len(tokens) > primer_length:
             print(f"WARNING: Primer text truncated from {len(tokens)} to {primer_length} tokens.")
             tokens = tokens[:primer_length]
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
-    
+
     elif primer_file:
         with open(primer_file, 'r', encoding='utf-8') as f: text = f.read()
-        # Convert text to bytes using UTF-8 encoding
-        byte_data = text.encode('utf-8')
-        tokens = list(byte_data)  # This gives us values 0-255
+        tokens = encode_fn(text)
         if primer_length and len(tokens) > primer_length:
-            print(f"INFO: Primer file truncated from {len(tokens)} to {primer_length} bytes (use --primer_length to change).")
+            print(f"INFO: Primer file truncated from {len(tokens)} to {primer_length} tokens (use --primer_length to change).")
             tokens = tokens[:primer_length]
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
     else:
         # Default prompt
-        byte_data = "The ".encode('utf-8')
-        tokens = list(byte_data)
+        tokens = encode_fn("The ")
         return torch.tensor(tokens, dtype=torch.long)[None, ...]
 
 def parse_size_with_suffix(size_str):

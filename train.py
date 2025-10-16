@@ -677,25 +677,26 @@ class DocumentStreamWrapper(IterableDataset):
     Wrapper to make DocumentStreamDataset work with PyTorch DataLoader
     --- MODIFIED FOR BATCHING WITH SHARED MEMORY MAP ---
     """
-    def __init__(self, filepath, chunk_size, batch_size, seed=42, global_rank=0):
+    def __init__(self, filepath, chunk_size, batch_size, seed=42, global_rank=0, tokenizer=None):
         self.filepath = filepath
         self.chunk_size = chunk_size
         self.batch_size = batch_size
-        
+
         # Create a single shared memory map for this rank
         import mmap
         self.data_file = open(filepath, 'rb')
         self.shared_mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
-        
+
         # Each GPU manages its own set of parallel streams, sharing the same mmap
         self.streams = [
             DocumentStreamDataset(
-                filepath, 
-                chunk_size, 
+                filepath,
+                chunk_size,
                 rank=global_rank,
                 world_size=1,  # Not used in the dataset
                 seed=seed + (global_rank * batch_size) + i,
-                shared_mmap=self.shared_mmap
+                shared_mmap=self.shared_mmap,
+                tokenizer=tokenizer
             ) for i in range(self.batch_size)
         ]
         
@@ -824,7 +825,36 @@ def get_args():
                         help='Use fused GRU implementation (HybridFusedGRU) instead of minGRU')
     parser.add_argument('--use_test_gru', action='store_true',
                         help='Use simple test GRU implementation for debugging')
-    
+
+    # --- Tokenization Options ---
+    tokenizer_group = parser.add_argument_group('Tokenization')
+    tokenizer_group.add_argument(
+        '--tokenizer',
+        type=str,
+        default='byte',
+        choices=['byte', 'tiktoken', 'sentencepiece', 'huggingface'],
+        help='Tokenizer type (default: byte for backwards compatibility)'
+    )
+    tokenizer_group.add_argument(
+        '--tiktoken_encoding',
+        type=str,
+        default='cl100k_base',
+        choices=['cl100k_base', 'p50k_base', 'r50k_base', 'o200k_base'],
+        help='TikToken encoding name (default: cl100k_base, GPT-3.5/4 tokenizer with 100K vocab)'
+    )
+    tokenizer_group.add_argument(
+        '--sentencepiece_model',
+        type=str,
+        default=None,
+        help='Path to SentencePiece .model file (required if --tokenizer=sentencepiece)'
+    )
+    tokenizer_group.add_argument(
+        '--huggingface_tokenizer',
+        type=str,
+        default=None,
+        help='HuggingFace tokenizer name (e.g., "meta-llama/Llama-2-7b-hf", required if --tokenizer=huggingface)'
+    )
+
     backend_group = parser.add_mutually_exclusive_group(required=True)
     backend_group.add_argument('--cuda', action='store_true')
     backend_group.add_argument('--rocm', action='store_true')
@@ -1063,18 +1093,43 @@ def main():
             dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
             
         model_config = {
-            "num_tokens": 256, 
-            "dim": dim, 
-            "depth": depth, 
-            "ff_mult": args.ff_mult, 
-            "expansion": args.expansion_factor, 
-            "conv_kernel_size": args.conv_kernel_size, 
-            "dropout": args.dropout, 
-            "use_hybrid_gru": args.hybrid_gru, 
+            "num_tokens": 256,  # Will be updated by tokenizer
+            "dim": dim,
+            "depth": depth,
+            "ff_mult": args.ff_mult,
+            "expansion": args.expansion_factor,
+            "conv_kernel_size": args.conv_kernel_size,
+            "dropout": args.dropout,
+            "use_hybrid_gru": args.hybrid_gru,
             "use_test_gru": args.use_test_gru,
             "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
             "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init
         }
+
+    # Initialize tokenizer BEFORE creating model (vocab size needed for model config)
+    from mingru.tokenizers import get_tokenizer
+
+    if args.tokenizer == 'byte':
+        tokenizer = get_tokenizer('byte')
+    elif args.tokenizer == 'tiktoken':
+        tokenizer = get_tokenizer('tiktoken', encoding_name=args.tiktoken_encoding)
+    elif args.tokenizer == 'sentencepiece':
+        if not args.sentencepiece_model:
+            raise ValueError("--sentencepiece_model required when --tokenizer=sentencepiece")
+        tokenizer = get_tokenizer('sentencepiece', model_path=args.sentencepiece_model)
+    elif args.tokenizer == 'huggingface':
+        if not args.huggingface_tokenizer:
+            raise ValueError("--huggingface_tokenizer required when --tokenizer=huggingface")
+        tokenizer = get_tokenizer('huggingface', tokenizer_name=args.huggingface_tokenizer)
+
+    # Update model config with actual vocab size
+    model_config["num_tokens"] = tokenizer.vocab_size
+
+    if global_rank == 0:
+        print(f"\n=== Tokenization ===")
+        print(f"Tokenizer: {tokenizer}")
+        print(f"Vocabulary size: {tokenizer.vocab_size}")
+        print("====================\n")
 
     if global_rank == 0:
         print(f"Model size: {get_parameter_count_str(model_config)} parameters")
@@ -1151,13 +1206,14 @@ def main():
         dataset_seed = SEED + global_rank * 1000
     else:
         dataset_seed = SEED + global_rank * 1000
-    
+
     train_dataset = DocumentStreamWrapper(
-        args.data, 
+        args.data,
         chunk_size=chunk_size,
         batch_size=batch_size,
         seed=dataset_seed,
-        global_rank=global_rank
+        global_rank=global_rank,
+        tokenizer=tokenizer  # Pass tokenizer to dataset
     )
 
     # DataLoader for batched streaming
