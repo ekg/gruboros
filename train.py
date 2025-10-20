@@ -1321,14 +1321,14 @@ def main():
 
     # DataLoader for batched streaming
     # Use multiple workers to tokenize in parallel (hides CPU tokenization latency)
-    # More workers = more parallel tokenization (at cost of more CPU/RAM)
-    num_workers = 8 if tokenizer.__class__.__name__ != 'ByteTokenizer' else 0
+    # Conservative: 2 workers × 2 prefetch = 4 batches ahead (avoid OOM)
+    num_workers = 2 if tokenizer.__class__.__name__ != 'ByteTokenizer' else 0
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,  # Set to None as the wrapper handles batching
         num_workers=num_workers,  # Parallel tokenization workers
         pin_memory=True,
-        prefetch_factor=4 if num_workers > 0 else None  # Prefetch 4 batches per worker (8 workers × 4 = 32 batches ahead!)
+        prefetch_factor=2 if num_workers > 0 else None  # 2 workers × 2 prefetch = 4 batches ahead
     )
 
     if global_rank == 0 and num_workers > 0:

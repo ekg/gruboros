@@ -95,8 +95,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   \
   `# SEQUENCES (long context)` \
   --chunk_size 4096 \
-  --batch_size 8 \
-  --grad_accum 8 \
+  --batch_size 4 \
+  --grad_accum 16 \
   \
   `# TRAINING` \
   --train_steps 100000 \
