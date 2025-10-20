@@ -1499,6 +1499,8 @@ def main():
             token_mean = chunk_data.float().mean().item()
             print(f"[DEBUG STEP {step}] Token stats: min={token_min}, max={token_max}, mean={token_mean:.1f}", flush=True)
             print(f"[DEBUG STEP {step}] First 20 tokens: {chunk_data[0, :20].tolist()}", flush=True)
+            print(f"[DEBUG STEP {step}] Model training mode: {model.training}", flush=True)
+            print(f"[DEBUG STEP {step}] Grad accumulation: {accumulated_steps}/{args.grad_accum}", flush=True)
             sys.stdout.flush()
 
         chunk = chunk_data.to(device, non_blocking=True) # [B, SeqLen]

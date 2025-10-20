@@ -96,7 +96,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   `# SEQUENCES (long context)` \
   --chunk_size 4096 \
   --batch_size 8 \
-  --grad_accum 64 \
+  --grad_accum 8 \
   \
   `# TRAINING` \
   --train_steps 100000 \
@@ -130,7 +130,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   `# FLAGS` \
   --ddp \
   --ddp-find-unused \
-  --cuda
+  --cuda \
+  --compile
 
 echo "Training finished."
 
