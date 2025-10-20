@@ -618,6 +618,8 @@ class DocumentStreamDataset(Dataset):
         self.read_chunk_size = 8192  # Read 8KB at a time for tokenization
 
         print(f"Rank {effective_rank}: DocumentStreamDataset initialized at position {self.position}")
+        if self.tokenizer is not None:
+            print(f"Rank {effective_rank}: Using tokenizer: {self.tokenizer.__class__.__name__}")
         
     def _scan_to_next_document(self):
         """Scan forward to the start of the next document"""
@@ -677,6 +679,13 @@ class DocumentStreamDataset(Dataset):
 
     def _get_next_chunk_tokens(self):
         """Token-level streaming with proper tokenization."""
+        # DEBUG: First call only
+        if not hasattr(self, '_token_debug_done'):
+            import sys
+            print(f"[DEBUG] _get_next_chunk_tokens called! Tokenizer: {self.tokenizer.__class__.__name__}", flush=True)
+            sys.stdout.flush()
+            self._token_debug_done = True
+
         # Refill token buffer if running low
         while len(self.token_buffer) < self.chunk_size:
             # Read a chunk of bytes
@@ -1294,6 +1303,10 @@ def main():
     else:
         dataset_seed = SEED + global_rank * 1000
 
+    # DEBUG: Verify tokenizer before passing
+    print(f"[RANK {global_rank}] Creating dataset with tokenizer: {tokenizer}")
+    print(f"[RANK {global_rank}] Tokenizer class: {tokenizer.__class__.__name__}")
+
     train_dataset = DocumentStreamWrapper(
         args.data,
         chunk_size=chunk_size,
@@ -1302,6 +1315,9 @@ def main():
         global_rank=global_rank,
         tokenizer=tokenizer  # Pass tokenizer to dataset
     )
+
+    print(f"[RANK {global_rank}] Dataset created, checking first stream tokenizer...")
+    print(f"[RANK {global_rank}] First stream tokenizer: {train_dataset.streams[0].tokenizer}")
 
     # DataLoader for batched streaming
     train_loader = DataLoader(
@@ -1474,6 +1490,17 @@ def main():
 
         # Get a full batch of data
         chunk_data, is_doc_end, actual_lengths = next(data_iterator)
+
+        # DEBUG: Check token range for first few steps
+        if step < 5 and global_rank == 0:
+            import sys
+            token_min = chunk_data.min().item()
+            token_max = chunk_data.max().item()
+            token_mean = chunk_data.float().mean().item()
+            print(f"[DEBUG STEP {step}] Token stats: min={token_min}, max={token_max}, mean={token_mean:.1f}", flush=True)
+            print(f"[DEBUG STEP {step}] First 20 tokens: {chunk_data[0, :20].tolist()}", flush=True)
+            sys.stdout.flush()
+
         chunk = chunk_data.to(device, non_blocking=True) # [B, SeqLen]
         is_doc_end = is_doc_end.to(device, non_blocking=True) # [B]
         # Move actual_lengths to GPU to prevent device mismatch
