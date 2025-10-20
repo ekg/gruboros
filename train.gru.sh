@@ -130,8 +130,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   `# FLAGS` \
   --ddp \
   --ddp-find-unused \
-  --cuda \
-  --compile
+  --cuda
 
 echo "Training finished."
 

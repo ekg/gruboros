@@ -1320,12 +1320,19 @@ def main():
     print(f"[RANK {global_rank}] First stream tokenizer: {train_dataset.streams[0].tokenizer}")
 
     # DataLoader for batched streaming
+    # Use multiple workers to tokenize in parallel (hides CPU tokenization latency)
+    # More workers = more parallel tokenization (at cost of more CPU/RAM)
+    num_workers = 8 if tokenizer.__class__.__name__ != 'ByteTokenizer' else 0
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,  # Set to None as the wrapper handles batching
-        num_workers=0,
-        pin_memory=True
+        num_workers=num_workers,  # Parallel tokenization workers
+        pin_memory=True,
+        prefetch_factor=4 if num_workers > 0 else None  # Prefetch 4 batches per worker (8 workers × 4 = 32 batches ahead!)
     )
+
+    if global_rank == 0 and num_workers > 0:
+        print(f"Using {num_workers} DataLoader workers for parallel tokenization")
 
     # --- 3. GOSSIP AND METRICS SETUP ---
     metrics_dir = os.path.join(checkpoint_dir, "metrics")
