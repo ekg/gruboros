@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e -x
 
-# --- Mamba-Style HybridGRU Training Script ---
-# This mirrors Mamba architecture: no FFN, embedding-heavy, long sequences
+# --- HybridGRU Training Script ---
+# No FFN layers, embedding-heavy, long sequences
 # Key differences from byte-level training:
 # - TikToken tokenization (100K vocab) vs bytes (256 vocab)
 # - No FFN layers (ff_mult=0.0) - forces learning through recurrence
 # - Longer sequences (2048 tokens vs 256 bytes)
-# - Mamba hyperparameters: lr=0.003, weight_decay=0.033, grad_clip=1.0
+# - Hyperparameters: lr=0.003, weight_decay=0.033, grad_clip=1.0
 
 # --- Increase File Descriptor Limit ---
 ulimit -n 65536
@@ -15,7 +15,7 @@ ulimit -n 65536
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 PARAMS="500m"
-NAME="${PARAMS}_mamba_style"
+NAME="${PARAMS}_gru"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -57,8 +57,15 @@ export TORCH_DISTRIBUTED_BACKEND="gloo"
 echo "Using GLOO backend for initial process group."
 NUM_GPUS=8
 
-# --- Launch Training with Mamba-Style Architecture ---
-echo "Starting 500M parameter Mamba-style HybridGRU training on 8 GPUs."
+# --- torch.compile Caching ---
+# Cache compiled kernels to speed up subsequent runs
+export TORCHINDUCTOR_CACHE_DIR="${OUTPUT_DIR}/.inductor_cache"
+export TORCHINDUCTOR_FX_GRAPH_CACHE=1
+mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
+echo "torch.compile cache: $TORCHINDUCTOR_CACHE_DIR"
+
+# --- Launch Training with HybridGRU Architecture ---
+echo "Starting 500M parameter HybridGRU training on 8 GPUs."
 echo "Architecture: NO FFN, TikToken (100K vocab), 2048 token sequences"
 
 torchrun --nproc_per_node=$NUM_GPUS \
@@ -73,7 +80,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --tokenizer tiktoken \
   --tiktoken_encoding cl100k_base \
   \
-  `# ARCHITECTURE (Mamba-mirrored: NO FFN!)` \
+  `# ARCHITECTURE (NO FFN!)` \
   --dim 1536 \
   --depth 12 \
   --expansion_factor 1.0 \
@@ -86,19 +93,18 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --z_bias_hidden -2.0 \
   --hybrid_gru \
   \
-  `# SEQUENCES (Mamba-style: long context)` \
-  --chunk_size 2048 \
-  --batch_size 16 \
-  --grad_accum 32 \
+  `# SEQUENCES (long context)` \
+  --chunk_size 4096 \
+  --batch_size 8 \
+  --grad_accum 64 \
   \
-  `# TRAINING (Mamba hyperparameters)` \
+  `# TRAINING` \
   --train_steps 100000 \
   --lr 0.003 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.033 \
   --grad_clip 1.0 \
-  --schedulefree \
   \
   `# CHECKPOINTING` \
   --save_every 500 \

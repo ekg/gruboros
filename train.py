@@ -581,15 +581,24 @@ class DocumentStreamDataset(Dataset):
     - Tracks per-GPU statistics (not global)
     - Enables dynamic optimization at document ends
     """
-    def __init__(self, filepath, chunk_size, seed=42, global_rank=0):
+    def __init__(self, filepath, chunk_size, seed=42, rank=None, global_rank=0, world_size=None, shared_mmap=None, tokenizer=None):
         super().__init__()
         self.filepath = filepath
         self.chunk_size = chunk_size
-        self.mmap = np.memmap(filepath, dtype=np.uint8, mode='r')
+        self.tokenizer = tokenizer
+
+        # Use shared_mmap if provided, otherwise create new memmap
+        if shared_mmap is not None:
+            self.mmap = shared_mmap
+        else:
+            self.mmap = np.memmap(filepath, dtype=np.uint8, mode='r')
         self.file_size = len(self.mmap)
-        
-        # Each GPU gets a different random starting position
-        rng = random.Random(seed + global_rank * 1000)
+
+        # Use rank if provided, otherwise use global_rank
+        effective_rank = rank if rank is not None else global_rank
+
+        # Each stream gets a unique starting position (seed already includes rank+stream offset from wrapper)
+        rng = random.Random(seed)
         self.position = rng.randint(0, self.file_size - 1)
         
         # Per-GPU statistics (initialize before calling _scan_to_next_document)
@@ -599,11 +608,16 @@ class DocumentStreamDataset(Dataset):
         
         # Scan forward to next document boundary to start clean
         self._scan_to_next_document()
-        
-        # Buffer for accumulating bytes until we have a full chunk
+
+        # Buffer for accumulating tokens/bytes until we have a full chunk
         self.byte_buffer = []
-        
-        print(f"Rank {global_rank}: DocumentStreamDataset initialized at position {self.position}")
+        self.token_buffer = []  # For tokenized data
+
+        # For tokenization: buffer text before tokenizing
+        self.text_buffer = b''
+        self.read_chunk_size = 8192  # Read 8KB at a time for tokenization
+
+        print(f"Rank {effective_rank}: DocumentStreamDataset initialized at position {self.position}")
         
     def _scan_to_next_document(self):
         """Scan forward to the start of the next document"""
@@ -622,45 +636,113 @@ class DocumentStreamDataset(Dataset):
     def get_next_chunk(self):
         """
         Returns: (chunk_tensor, is_final_chunk_in_doc, actual_chunk_length)
-        
+
         IMPORTANT: Always returns fixed-size tensors for CUDA graph compatibility.
         Partial chunks are padded with zeros, and actual_length indicates valid data.
         """
+        # Use byte-level logic if no tokenizer or byte tokenizer
+        if self.tokenizer is None or self.tokenizer.__class__.__name__ == 'ByteTokenizer':
+            return self._get_next_chunk_bytes()
+        else:
+            return self._get_next_chunk_tokens()
+
+    def _get_next_chunk_bytes(self):
+        """Original byte-level streaming logic."""
         while len(self.byte_buffer) < self.chunk_size:
-            # Check if we need to wrap
             if self.position >= self.file_size:
                 self.position = 0
                 self.wraps += 1
-            
-            # Read one byte
+
             byte_val = int(self.mmap[self.position])
             self.position += 1
             self.bytes_processed += 1
-            
-            # Check for document boundary
+
             if byte_val == 0x1e:
                 self.documents_processed += 1
-                
+
                 if len(self.byte_buffer) > 0:
-                    # Partial chunk at document boundary - PAD to maintain fixed size
                     actual_length = len(self.byte_buffer)
-                    
-                    # Create full-sized chunk with padding
                     chunk = torch.zeros(self.chunk_size, dtype=torch.long)
                     chunk[:actual_length] = torch.tensor(self.byte_buffer, dtype=torch.long)
                     self.byte_buffer = []
-                    
                     return chunk, True, actual_length
                 else:
-                    # Empty buffer at boundary, continue to next document
                     continue
             else:
                 self.byte_buffer.append(byte_val)
-        
-        # We have a full chunk
+
         chunk = torch.tensor(self.byte_buffer[:self.chunk_size], dtype=torch.long)
-        self.byte_buffer = self.byte_buffer[self.chunk_size:]  # Keep remainder
-        
+        self.byte_buffer = self.byte_buffer[self.chunk_size:]
+        return chunk, False, self.chunk_size
+
+    def _get_next_chunk_tokens(self):
+        """Token-level streaming with proper tokenization."""
+        # Refill token buffer if running low
+        while len(self.token_buffer) < self.chunk_size:
+            # Read a chunk of bytes
+            bytes_to_read = min(self.read_chunk_size, self.file_size - self.position)
+            if bytes_to_read == 0:
+                # Wrap around
+                self.position = 0
+                self.wraps += 1
+                bytes_to_read = min(self.read_chunk_size, self.file_size)
+
+            byte_chunk = bytes(self.mmap[self.position:self.position + bytes_to_read])
+            self.position += bytes_to_read
+            self.bytes_processed += bytes_to_read
+
+            # Check for document boundary (0x1e)
+            doc_boundary_idx = byte_chunk.find(b'\x1e')
+
+            if doc_boundary_idx != -1:
+                # Found document boundary
+                self.text_buffer += byte_chunk[:doc_boundary_idx]
+
+                # Tokenize accumulated text if any
+                if len(self.text_buffer) > 0:
+                    try:
+                        text = self.text_buffer.decode('utf-8', errors='ignore')
+                        tokens = self.tokenizer.encode(text)
+                        self.token_buffer.extend(tokens)
+                        self.text_buffer = b''
+                    except Exception as e:
+                        print(f"Warning: tokenization error: {e}")
+                        self.text_buffer = b''
+
+                self.documents_processed += 1
+
+                # Skip past delimiter and continue
+                self.position = self.position - len(byte_chunk) + doc_boundary_idx + 1
+                if self.position >= self.file_size:
+                    self.position = 0
+                    self.wraps += 1
+
+                # Return partial chunk if we have tokens
+                if len(self.token_buffer) > 0:
+                    actual_length = min(len(self.token_buffer), self.chunk_size)
+                    chunk = torch.zeros(self.chunk_size, dtype=torch.long)
+                    chunk[:actual_length] = torch.tensor(self.token_buffer[:actual_length], dtype=torch.long)
+                    self.token_buffer = self.token_buffer[actual_length:]
+                    return chunk, True, actual_length
+                # Otherwise continue to next document
+            else:
+                # No boundary, accumulate text
+                self.text_buffer += byte_chunk
+
+                # Periodically tokenize to avoid huge text buffer
+                if len(self.text_buffer) >= self.read_chunk_size * 4:
+                    try:
+                        text = self.text_buffer.decode('utf-8', errors='ignore')
+                        tokens = self.tokenizer.encode(text)
+                        self.token_buffer.extend(tokens)
+                        self.text_buffer = b''
+                    except Exception as e:
+                        print(f"Warning: tokenization error: {e}")
+                        self.text_buffer = b''
+
+        # Return full chunk
+        chunk = torch.tensor(self.token_buffer[:self.chunk_size], dtype=torch.long)
+        self.token_buffer = self.token_buffer[self.chunk_size:]
         return chunk, False, self.chunk_size
     
     def get_stats(self):
@@ -1151,7 +1233,12 @@ def main():
     model = get_model(model_config).to(device)
     # Compile the model for better performance
     if args.compile:
-        model = torch.compile(model)
+        if global_rank == 0:
+            print("\n=== Compiling model with torch.compile ===")
+            print("This may take several minutes on first run, but is cached for subsequent runs.")
+        # Use reduce-overhead mode for better performance, fullgraph=False for compatibility
+        # Cache is automatically enabled via TORCHINDUCTOR_CACHE_DIR (set in shell)
+        model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
     optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     # Initialize GradScaler for mixed precision training

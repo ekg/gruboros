@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verify parameter count for Mamba-style HybridGRU architecture."""
+"""Verify parameter count for HybridGRU architecture."""
 
 def calculate_params(dim, depth, vocab_size, expansion=1.0, ff_mult=0.0, conv_kernel=4):
     """
@@ -96,10 +96,10 @@ def calculate_params(dim, depth, vocab_size, expansion=1.0, ff_mult=0.0, conv_ke
     print(f"  Embeddings: {total_embedding:>12,} params ({emb_pct:>5.1f}%)")
     print(f"  Layers:     {total_layers:>12,} params ({layer_pct:>5.1f}%)")
 
-    # Compare to Mamba's distribution
-    print(f"\nMamba comparison:")
-    print(f"  Mamba has ~53% in embeddings, ~47% in layers")
-    print(f"  Yours has {emb_pct:.1f}% in embeddings, {layer_pct:.1f}% in layers")
+    # Parameter distribution
+    print(f"\nParameter distribution:")
+    print(f"  Embeddings: {emb_pct:.1f}%")
+    print(f"  Layers: {layer_pct:.1f}%")
 
     return total_params
 
@@ -158,9 +158,9 @@ def calculate_layer_params(dim, expansion, ff_mult, conv_kernel):
 
 
 if __name__ == "__main__":
-    # Mamba-style configuration
+    # HybridGRU configuration
     print("\n" + "="*80)
-    print("MAMBA-STYLE CONFIGURATION (from train.mamba_style.sh)")
+    print("HYBRIDGRU CONFIGURATION (from train.gru.sh)")
     print("="*80)
 
     dim = 1536
