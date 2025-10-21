@@ -1514,7 +1514,6 @@ def main():
         # Simple profiling every 50 steps
         profile_this_step = (step % 50 == 0 and step > 0 and global_rank == 0)
         if profile_this_step:
-            import time
             t0 = time.time()
 
         chunk = chunk_data.to(device, non_blocking=True) # [B, SeqLen]
