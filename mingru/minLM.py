@@ -233,11 +233,18 @@ class minLM(Module):
 
             prev_hidden = next(prev_hiddens, None)
 
-            min_gru_out, next_prev_hidden = mingru(
+            # Handle both 2-value and 3-value returns (conv_buffers optional)
+            mingru_result = mingru(
                 norm(x),
                 prev_hidden,
                 return_next_prev_hidden = True
             )
+
+            # Unpack result (handles 2 or 3 return values)
+            if isinstance(mingru_result, tuple) and len(mingru_result) == 3:
+                min_gru_out, next_prev_hidden, _ = mingru_result  # Ignore conv_buffers from StandardGRU
+            else:
+                min_gru_out, next_prev_hidden = mingru_result
 
             x = min_gru_out + x
             next_prev_hiddens.append(next_prev_hidden)
