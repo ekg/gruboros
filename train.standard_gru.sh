@@ -65,8 +65,8 @@ mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
 echo "torch.compile cache: $TORCHINDUCTOR_CACHE_DIR"
 
 # --- Launch Training with HybridGRU Architecture ---
-echo "Starting 500M parameter HybridGRU training on 8 GPUs."
-echo "Architecture: NO FFN, TikToken (100K vocab), 2048 token sequences"
+echo "Starting 500M parameter StandardGRU training on 8 GPUs."
+echo "Architecture: NO FFN, TikToken (100K vocab), 2048 token sequences (cuDNN backend)"
 
 torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -91,8 +91,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   `# GRU CONFIGURATION (standard GRU with cuDNN)` \
   --use_standard_gru \
   \
-  `# SEQUENCES (long context)` \
-  --chunk_size 4096 \
+  `# SEQUENCES (reduced for StandardGRU memory requirements)` \
+  --chunk_size 2048 \
   --batch_size 4 \
   --grad_accum 16 \
   \
@@ -127,7 +127,6 @@ torchrun --nproc_per_node=$NUM_GPUS \
   \
   `# FLAGS` \
   --ddp \
-  --ddp-find-unused \
   --cuda
 
 echo "Training finished."

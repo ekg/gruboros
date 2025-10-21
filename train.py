@@ -603,7 +603,8 @@ class DocumentStreamDataset(Dataset):
         
         # Per-GPU statistics (initialize before calling _scan_to_next_document)
         self.documents_processed = 0
-        self.bytes_processed = 0  # This is per-GPU!
+        self.bytes_processed = 0  # File bytes read
+        self.tokens_processed = 0  # Actual tokens generated (for TikToken, etc.)
         self.wraps = 0
         
         # Scan forward to next document boundary to start clean
@@ -667,6 +668,7 @@ class DocumentStreamDataset(Dataset):
                     chunk = torch.zeros(self.chunk_size, dtype=torch.long)
                     chunk[:actual_length] = torch.tensor(self.byte_buffer, dtype=torch.long)
                     self.byte_buffer = []
+                    self.tokens_processed += actual_length  # For bytes: 1 byte = 1 token
                     return chunk, True, actual_length
                 else:
                     continue
@@ -675,6 +677,7 @@ class DocumentStreamDataset(Dataset):
 
         chunk = torch.tensor(self.byte_buffer[:self.chunk_size], dtype=torch.long)
         self.byte_buffer = self.byte_buffer[self.chunk_size:]
+        self.tokens_processed += self.chunk_size  # For bytes: 1 byte = 1 token
         return chunk, False, self.chunk_size
 
     def _get_next_chunk_tokens(self):
@@ -732,6 +735,7 @@ class DocumentStreamDataset(Dataset):
                     chunk = torch.zeros(self.chunk_size, dtype=torch.long)
                     chunk[:actual_length] = torch.tensor(self.token_buffer[:actual_length], dtype=torch.long)
                     self.token_buffer = self.token_buffer[actual_length:]
+                    self.tokens_processed += actual_length  # Track tokens returned
                     return chunk, True, actual_length
                 # Otherwise continue to next document
             else:
@@ -752,12 +756,14 @@ class DocumentStreamDataset(Dataset):
         # Return full chunk
         chunk = torch.tensor(self.token_buffer[:self.chunk_size], dtype=torch.long)
         self.token_buffer = self.token_buffer[self.chunk_size:]
+        self.tokens_processed += self.chunk_size  # Track tokens returned
         return chunk, False, self.chunk_size
     
     def get_stats(self):
         return {
             'documents_processed': self.documents_processed,
             'bytes_processed': self.bytes_processed,
+            'tokens_processed': self.tokens_processed,  # Actual tokens generated
             'file_wraps': self.wraps,
             'current_position': self.position
         }
@@ -1690,6 +1696,7 @@ def main():
         doc_stats = {
             'documents_processed': sum(s['documents_processed'] for s in all_stats),
             'bytes_processed': sum(s['bytes_processed'] for s in all_stats),
+            'tokens_processed': sum(s['tokens_processed'] for s in all_stats),
             'file_wraps': sum(s['file_wraps'] for s in all_stats),
             'current_position': 0  # Not meaningful with multiple streams
         }
@@ -1698,7 +1705,7 @@ def main():
         if step == 2 and not warmup_complete:
             start_time = time.time()
             last_step_time = start_time
-            bytes_at_reset = doc_stats['bytes_processed']  # Remember bytes at reset
+            tokens_at_reset = doc_stats['tokens_processed']  # Remember tokens at reset
             warmup_complete = True
             if global_rank == 0:
                 print("\n=== Timing reset after torch.compile warmup ===")
@@ -1714,8 +1721,8 @@ def main():
         
         # Calculate tok/s (only meaningful after warmup)
         if warmup_complete:
-            # Calculate tokens processed since reset
-            tokens_since_reset = doc_stats['bytes_processed'] - bytes_at_reset
+            # Calculate tokens processed since reset (now using actual token count!)
+            tokens_since_reset = doc_stats['tokens_processed'] - tokens_at_reset
             tokens_per_sec = tokens_since_reset / elapsed if elapsed > 0 else 0
         else:
             tokens_per_sec = 0  # Don't show during warmup
