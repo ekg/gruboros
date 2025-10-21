@@ -1511,6 +1511,12 @@ def main():
             print(f"[DEBUG STEP {step}] Grad accumulation: {accumulated_steps}/{args.grad_accum}", flush=True)
             sys.stdout.flush()
 
+        # Simple profiling every 50 steps
+        profile_this_step = (step % 50 == 0 and step > 0 and global_rank == 0)
+        if profile_this_step:
+            import time
+            t0 = time.time()
+
         chunk = chunk_data.to(device, non_blocking=True) # [B, SeqLen]
         is_doc_end = is_doc_end.to(device, non_blocking=True) # [B]
         # Move actual_lengths to GPU to prevent device mismatch
@@ -1560,6 +1566,12 @@ def main():
             
             # Mark that we've exited forward pass - safe for weight updates
             evolutionary_node.exit_forward_pass()
+
+        # Profile timing breakdown
+        if profile_this_step:
+            torch.cuda.synchronize()
+            t_fwd_bwd = time.time() - t0
+            print(f"[PROFILE STEP {step}] Forward+Backward: {t_fwd_bwd*1000:.1f}ms", flush=True)
         
         # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET (OPTIMIZED) ---
         # Create broadcastable masks for branchless execution
