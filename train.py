@@ -798,9 +798,22 @@ class DocumentStreamWrapper(IterableDataset):
         ]
         
     def __iter__(self):
+        # Worker-aware iteration: each worker should skip ahead to avoid seeing same data
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is not None:
+            # We're in a worker process - skip ahead to unique position
+            # Each worker should see different data
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+
+            # Skip ahead: read and discard (worker_id) batches to get to unique position
+            for _ in range(worker_id):
+                for stream in self.streams:
+                    stream.get_next_chunk()
+
         while True:
             batch_chunks, batch_is_doc_end, batch_actual_len = [], [], []
-            
+
             for stream in self.streams:
                 chunk, is_end, length = stream.get_next_chunk()
                 batch_chunks.append(chunk)
@@ -809,8 +822,8 @@ class DocumentStreamWrapper(IterableDataset):
 
             # Stack individual tensors into a single batch tensor
             yield (
-                torch.stack(batch_chunks), 
-                torch.tensor(batch_is_doc_end, dtype=torch.bool), 
+                torch.stack(batch_chunks),
+                torch.tensor(batch_is_doc_end, dtype=torch.bool),
                 torch.tensor(batch_actual_len, dtype=torch.long)
             )
     
