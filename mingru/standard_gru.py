@@ -39,7 +39,7 @@ class StandardGRU(nn.Module):
         # Output projection: dim_inner -> dim
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
 
-    def forward(self, x, prev_hiddens=None, prev_conv_buffers=None, return_hiddens=True, actual_length=None):
+    def forward(self, x, prev_hiddens=None, prev_conv_buffers=None, return_hiddens=True, return_next_prev_hidden=True, actual_length=None):
         """
         Args:
             x: (batch, seq_len, dim)
