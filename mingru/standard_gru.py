@@ -39,17 +39,19 @@ class StandardGRU(nn.Module):
         # Output projection: dim_inner -> dim
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
 
-    def forward(self, x, prev_hiddens=None, return_hiddens=True, actual_length=None):
+    def forward(self, x, prev_hiddens=None, prev_conv_buffers=None, return_hiddens=True, actual_length=None):
         """
         Args:
             x: (batch, seq_len, dim)
             prev_hiddens: Previous hidden state (batch, dim_inner) or None
+            prev_conv_buffers: Unused (kept for API compatibility with conv layers)
             return_hiddens: Whether to return hidden states
             actual_length: Unused (kept for API compatibility)
 
         Returns:
             output: (batch, seq_len, dim)
             next_hiddens: (batch, dim_inner) if return_hiddens else None
+            next_conv_buffers: None (no conv in standard GRU)
         """
         batch, seq_len, _ = x.shape
 
@@ -72,9 +74,9 @@ class StandardGRU(nn.Module):
         output = self.output_proj(gru_out)  # (batch, seq_len, dim)
 
         if return_hiddens:
-            # Return hidden state as (batch, dim_inner)
+            # Return hidden state as (batch, dim_inner) and None for conv buffers
             next_hiddens = hn.squeeze(0)  # (batch, dim_inner)
-            return output, next_hiddens
+            return output, next_hiddens, None  # (output, hiddens, conv_buffers)
         else:
             return output
 
