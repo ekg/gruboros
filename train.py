@@ -916,6 +916,8 @@ def get_args():
                         help='Use fused GRU implementation (HybridFusedGRU) instead of minGRU')
     parser.add_argument('--use_test_gru', action='store_true',
                         help='Use simple test GRU implementation for debugging')
+    parser.add_argument('--use_standard_gru', action='store_true',
+                        help='Use PyTorch nn.GRU (cuDNN-optimized, gold standard nonlinear GRU)')
 
     # --- Tokenization Options ---
     tokenizer_group = parser.add_argument_group('Tokenization')
@@ -1193,6 +1195,7 @@ def main():
             "dropout": args.dropout,
             "use_hybrid_gru": args.hybrid_gru,
             "use_test_gru": args.use_test_gru,
+            "use_standard_gru": args.use_standard_gru,
             "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
             "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init
         }

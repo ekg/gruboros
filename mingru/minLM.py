@@ -21,6 +21,14 @@ try:
 except ImportError:
     TestGRU = None
 
+# Import standard GRU (cuDNN-optimized)
+try:
+    from mingru.standard_gru import StandardGRU
+    print("StandardGRU available (cuDNN-optimized)")
+except ImportError as e:
+    print(f"Failed to import StandardGRU: {e}")
+    StandardGRU = None
+
 def exists(v):
     return v is not None
 
@@ -103,6 +111,7 @@ class minLM(Module):
         dropout = 0.,
         use_hybrid_gru = False,  # Use HybridFusedGRU with Triton kernel
         use_test_gru = False,  # Use simple test GRU
+        use_standard_gru = False,  # Use PyTorch nn.GRU (cuDNN, gold standard)
         z_bias_input = -2.0,  # Initial bias for z-gates on input projection
         z_bias_hidden = -2.0  # Initial bias for z-gates on hidden projection
     ):
@@ -125,11 +134,15 @@ class minLM(Module):
             min_rnn_klass = TestGRU
             print(f"Using Test GRU for depth={depth} model")
             rnn_kwargs = {'expansion_factor': expansion}
+        elif use_standard_gru:
+            min_rnn_klass = StandardGRU
+            print(f"Using StandardGRU (cuDNN-optimized, gold standard) for depth={depth} model")
+            rnn_kwargs = {'expansion_factor': expansion}
         elif use_hybrid_gru:
             min_rnn_klass = HybridFusedGRU
             # HybridFusedGRU uses PyTorch matmul + Triton fused cell
             print(f"Using HybridFusedGRU (Triton kernel) for depth={depth} model")
-            
+
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'use_hybrid_gru': use_hybrid_gru,
