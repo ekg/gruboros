@@ -1338,7 +1338,7 @@ def main():
         num_workers=num_workers,  # Many parallel tokenization workers
         pin_memory=True,
         prefetch_factor=1 if num_workers > 0 else None,  # Minimal prefetch to avoid memory bloat
-        persistent_workers=True if num_workers > 0 else False  # Keep workers alive (faster)
+        persistent_workers=False  # DISABLED: causes data repetition with IterableDataset
     )
 
     if global_rank == 0 and num_workers > 0:
