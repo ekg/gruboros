@@ -1447,6 +1447,7 @@ def main():
     start_time = time.time()
     # Initialize per-GPU token counter
     total_tokens_processed = 0  # Now per-GPU, not global!
+    total_tokens_since_reset = 0  # Track tokens for T/s calculation
     last_step_time = start_time  # Track time for it/s calculation
     warmup_complete = False  # Track if we've reset timers after torch.compile
     bytes_at_reset = 0  # Track bytes processed at time of reset
@@ -1696,7 +1697,7 @@ def main():
         doc_stats = {
             'documents_processed': sum(s['documents_processed'] for s in all_stats),
             'bytes_processed': sum(s['bytes_processed'] for s in all_stats),
-            'tokens_processed': sum(s['tokens_processed'] for s in all_stats),
+            'tokens_processed': sum(s.get('tokens_processed', 0) for s in all_stats),
             'file_wraps': sum(s['file_wraps'] for s in all_stats),
             'current_position': 0  # Not meaningful with multiple streams
         }
@@ -1719,11 +1720,13 @@ def main():
         # Calculate it/s (always show, it's useful even during warmup)
         iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
         
+        # Track tokens for this step (chunk_size * batch_size)
+        tokens_this_step = chunk_size * batch_size
+        total_tokens_since_reset += tokens_this_step
+
         # Calculate tok/s (only meaningful after warmup)
         if warmup_complete:
-            # Calculate tokens processed since reset (now using actual token count!)
-            tokens_since_reset = doc_stats['tokens_processed'] - tokens_at_reset
-            tokens_per_sec = tokens_since_reset / elapsed if elapsed > 0 else 0
+            tokens_per_sec = total_tokens_since_reset / elapsed if elapsed > 0 else 0
         else:
             tokens_per_sec = 0  # Don't show during warmup
         
