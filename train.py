@@ -1332,13 +1332,25 @@ def main():
     # Use multiple workers to tokenize in parallel (hides CPU tokenization latency)
     # High worker count (plenty of CPU cores), low prefetch (avoid OOM from buffering)
     num_workers = 8 if tokenizer.__class__.__name__ != 'ByteTokenizer' else 0
+
+    # Worker initialization function to reseed each worker's PRNG
+    # This ensures each worker reads from different file positions
+    def worker_init_fn(worker_id):
+        import numpy as np
+        import random
+        # Combine torch seed with worker_id for unique per-worker seed
+        worker_seed = torch.initial_seed() % 2**32 + worker_id
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,  # Set to None as the wrapper handles batching
         num_workers=num_workers,  # Many parallel tokenization workers
         pin_memory=True,
         prefetch_factor=1 if num_workers > 0 else None,  # Minimal prefetch to avoid memory bloat
-        persistent_workers=False  # DISABLED: causes data repetition with IterableDataset
+        persistent_workers=False,  # DISABLED: causes data repetition with IterableDataset
+        worker_init_fn=worker_init_fn if num_workers > 0 else None  # Reseed each worker
     )
 
     if global_rank == 0 and num_workers > 0:
