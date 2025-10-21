@@ -1706,7 +1706,7 @@ def main():
         if step == 2 and not warmup_complete:
             start_time = time.time()
             last_step_time = start_time
-            tokens_at_reset = doc_stats['tokens_processed']  # Remember tokens at reset
+            total_tokens_since_reset = 0  # Reset token counter
             warmup_complete = True
             if global_rank == 0:
                 print("\n=== Timing reset after torch.compile warmup ===")
