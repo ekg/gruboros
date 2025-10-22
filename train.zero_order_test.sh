@@ -94,6 +94,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   \
   `# GRU CONFIGURATION (standard GRU with cuDNN)` \
   --use_standard_gru \
+  --compile \
   \
   `# ZERO-ORDER OPTIMIZATION (CD-RGE)` \
   --zero_order \
