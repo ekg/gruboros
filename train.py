@@ -778,38 +778,39 @@ class DocumentStreamWrapper(IterableDataset):
         self.filepath = filepath
         self.chunk_size = chunk_size
         self.batch_size = batch_size
+        self.seed = seed
+        self.global_rank = global_rank
+        self.tokenizer = tokenizer
 
         # Create a single shared memory map for this rank
         import mmap
         self.data_file = open(filepath, 'rb')
         self.shared_mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
 
-        # Each GPU manages its own set of parallel streams, sharing the same mmap
-        self.streams = [
-            DocumentStreamDataset(
-                filepath,
-                chunk_size,
-                rank=global_rank,
-                world_size=1,  # Not used in the dataset
-                seed=seed + (global_rank * batch_size) + i,
-                shared_mmap=self.shared_mmap,
-                tokenizer=tokenizer
-            ) for i in range(self.batch_size)
-        ]
+        # Streams will be created lazily in __iter__ to incorporate worker_id
+        self.streams = None
         
     def __iter__(self):
-        # Worker-aware iteration: each worker should skip ahead to avoid seeing same data
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is not None:
-            # We're in a worker process - skip ahead to unique position
-            # Each worker should see different data
-            worker_id = worker_info.id
-            num_workers = worker_info.num_workers
+        # Lazily create streams to incorporate worker_id into seeding
+        if self.streams is None:
+            worker_info = torch.utils.data.get_worker_info()
+            worker_id = worker_info.id if worker_info is not None else 0
+            num_workers = worker_info.num_workers if worker_info is not None else 1
 
-            # Skip ahead: read and discard (worker_id) batches to get to unique position
-            for _ in range(worker_id):
-                for stream in self.streams:
-                    stream.get_next_chunk()
+            # Each worker gets unique seeds: incorporate worker_id and num_workers
+            base_seed = self.seed + (self.global_rank * 1000) + (worker_id * 100)
+
+            self.streams = [
+                DocumentStreamDataset(
+                    self.filepath,
+                    self.chunk_size,
+                    rank=self.global_rank,
+                    world_size=1,
+                    seed=base_seed + i,
+                    shared_mmap=self.shared_mmap,
+                    tokenizer=self.tokenizer
+                ) for i in range(self.batch_size)
+            ]
 
         while True:
             batch_chunks, batch_is_doc_end, batch_actual_len = [], [], []
