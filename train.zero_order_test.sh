@@ -101,9 +101,9 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --zo_probe_distribution rademacher \
   --zo_memory_chunk 256 \
   \
-  `# SEQUENCES (MASSIVE batch size enabled by fresh hidden states!)` \
+  `# SEQUENCES (Conservative batch size due to 192 forward passes)` \
   --chunk_size 2048 \
-  --batch_size 16 \
+  --batch_size 4 \
   --grad_accum 1 \
   \
   `# TRAINING (short test run)` \

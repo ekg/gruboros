@@ -1897,7 +1897,12 @@ def main():
         iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
         
         # Track tokens for this step (chunk_size * batch_size)
-        tokens_this_step = chunk_size * batch_size
+        # For zero-order: multiply by 2 * n_perturbations (antithetic sampling)
+        if args.zero_order:
+            forward_passes_per_step = 2 * args.zo_n_perturbations  # 192 for 96 perturbations
+            tokens_this_step = chunk_size * batch_size * forward_passes_per_step
+        else:
+            tokens_this_step = chunk_size * batch_size
         total_tokens_since_reset += tokens_this_step
 
         # Calculate tok/s (only meaningful after warmup)
