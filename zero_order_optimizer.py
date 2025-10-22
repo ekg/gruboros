@@ -52,6 +52,13 @@ class CD_RGE_Optimizer:
         # Pre-allocate gradient buffer
         self.grad_buffer = torch.zeros(self.param_count, device=next(model.parameters()).device)
 
+        # Pre-allocate noise buffers for each parameter (reused across perturbations)
+        # This avoids repeated allocations and speeds up perturbation application
+        self.noise_buffers = []
+        for param in model.parameters():
+            if param.requires_grad:
+                self.noise_buffers.append(torch.empty_like(param))
+
         # PyTorch optimizer interface compatibility
         self.param_groups = [{'lr': learning_rate, 'params': list(model.parameters())}]
 
@@ -63,6 +70,7 @@ class CD_RGE_Optimizer:
         print(f"  Gradient accumulation: {grad_accum} batches per perturbation")
         print(f"  Forward passes per step: {2 * n_perturbations * grad_accum}")
         print(f"  Memory-efficient chunk size: {chunk_size} tokens")
+        print(f"  Pre-allocated noise buffers: {len(self.noise_buffers)}")
 
     def zero_grad(self):
         """Reset gradient buffer (compatibility with PyTorch optimizer API)"""
@@ -71,6 +79,7 @@ class CD_RGE_Optimizer:
     def apply_probe(self, seed, scale=1.0):
         """
         Apply Rademacher probe to model parameters in-place.
+        Uses pre-allocated noise buffers to avoid repeated allocations.
 
         Args:
             seed: Random seed for reproducibility
@@ -78,11 +87,14 @@ class CD_RGE_Optimizer:
         """
         torch.manual_seed(seed)
         with torch.no_grad():
+            buffer_idx = 0
             for param in self.model.parameters():
                 if param.requires_grad:
-                    # Rademacher: {-1, +1} distribution
-                    noise = torch.randint(0, 2, param.shape, device=param.device, dtype=param.dtype) * 2 - 1
-                    param.add_(scale * noise)
+                    # Reuse pre-allocated buffer for Rademacher: {-1, +1} distribution
+                    noise = self.noise_buffers[buffer_idx]
+                    noise.random_(0, 2).mul_(2).add_(-1)  # {0,1} -> {0,2} -> {-1,+1}
+                    param.add_(noise, alpha=scale)
+                    buffer_idx += 1
 
     def restore_probe(self, seed, scale=1.0):
         """Remove probe from model parameters (reverse of apply_probe)"""
@@ -91,15 +103,20 @@ class CD_RGE_Optimizer:
     def reconstruct_probe_vector(self, seed):
         """
         Reconstruct full probe vector from seed.
+        Uses pre-allocated noise buffers to avoid repeated allocations.
         Returns flat probe vector matching param_count.
         """
         torch.manual_seed(seed)
         probe_parts = []
 
+        buffer_idx = 0
         for param in self.model.parameters():
             if param.requires_grad:
-                noise = torch.randint(0, 2, param.shape, device=param.device, dtype=param.dtype) * 2 - 1
+                # Reuse pre-allocated buffer for Rademacher: {-1, +1} distribution
+                noise = self.noise_buffers[buffer_idx]
+                noise.random_(0, 2).mul_(2).add_(-1)  # {0,1} -> {0,2} -> {-1,+1}
                 probe_parts.append(noise.flatten())
+                buffer_idx += 1
 
         return torch.cat(probe_parts)
 
