@@ -1339,8 +1339,7 @@ def main():
         tokenizer=tokenizer  # Pass tokenizer to dataset
     )
 
-    print(f"[RANK {global_rank}] Dataset created, checking first stream tokenizer...")
-    print(f"[RANK {global_rank}] First stream tokenizer: {train_dataset.streams[0].tokenizer}")
+    print(f"[RANK {global_rank}] Dataset created with tokenizer: {tokenizer}")
 
     # DataLoader for batched streaming
     # Use multiple workers to tokenize in parallel (hides CPU tokenization latency)
