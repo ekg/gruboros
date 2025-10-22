@@ -1325,7 +1325,8 @@ def main():
             n_perturbations=args.zo_n_perturbations,
             world_size=world_size,
             rank=global_rank,
-            chunk_size=args.zo_memory_chunk
+            chunk_size=args.zo_memory_chunk,
+            grad_accum=args.grad_accum
         )
 
         if global_rank == 0:
@@ -1844,7 +1845,9 @@ def main():
                             epsilon=epsilon,
                             n_perturbations=args.zo_n_perturbations,
                             world_size=world_size,
-                            rank=global_rank
+                            rank=global_rank,
+                            chunk_size=args.zo_memory_chunk,
+                            grad_accum=args.grad_accum
                         )
                     else:
                         optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)

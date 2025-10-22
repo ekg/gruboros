@@ -33,7 +33,7 @@ class CD_RGE_Optimizer:
     """
 
     def __init__(self, model, learning_rate=1e-4, epsilon=1e-4,
-                 n_perturbations=96, world_size=1, rank=0, chunk_size=512):
+                 n_perturbations=96, world_size=1, rank=0, chunk_size=512, grad_accum=1):
         self.model = model
         self.learning_rate = learning_rate
         self.epsilon = epsilon
@@ -41,6 +41,7 @@ class CD_RGE_Optimizer:
         self.world_size = world_size
         self.rank = rank
         self.chunk_size = chunk_size  # For memory-efficient sequential forward passes
+        self.grad_accum = grad_accum  # Number of batches to average per perturbation
 
         # Put model in eval mode (no batchnorm/dropout stochasticity)
         self.model.eval()
@@ -59,7 +60,8 @@ class CD_RGE_Optimizer:
         print(f"  Learning rate: {learning_rate}")
         print(f"  Epsilon: {epsilon}")
         print(f"  Perturbations: {n_perturbations}")
-        print(f"  Forward passes per step: {2 * n_perturbations}")
+        print(f"  Gradient accumulation: {grad_accum} batches per perturbation")
+        print(f"  Forward passes per step: {2 * n_perturbations * grad_accum}")
         print(f"  Memory-efficient chunk size: {chunk_size} tokens")
 
     def zero_grad(self):
@@ -101,15 +103,17 @@ class CD_RGE_Optimizer:
 
         return torch.cat(probe_parts)
 
-    def step(self, loss_fn, *args, **kwargs):
+    def step(self, loss_fn, batch_provider=None, *args, **kwargs):
         """
         Perform one optimization step using CD-RGE with batched perturbation evaluation.
 
         CRITICAL: All GPUs must receive the SAME data for perturbation evaluation.
-        The loss_fn should compute loss on fixed data that doesn't change between calls.
 
         Args:
-            loss_fn: Callable that computes loss given model output
+            loss_fn: Callable that computes loss. If batch_provider is None, this is a
+                     closure over fixed data. Otherwise, it should accept batch data.
+            batch_provider: Optional callable that returns new batch data for gradient
+                           accumulation. Called grad_accum times per perturbation.
             *args, **kwargs: Arguments passed to loss_fn
 
         Returns:
@@ -128,26 +132,48 @@ class CD_RGE_Optimizer:
 
         forward_start = time.time()
 
-        # BATCHED PERTURBATION EVALUATION
-        # Key insight: All perturbations evaluate on the SAME data
-        # This gives us meaningful gradient estimates
+        # BATCHED PERTURBATION EVALUATION WITH GRADIENT ACCUMULATION
+        # Key insight: Evaluate each perturbation on multiple batches for lower variance
         for i in range(pert_per_worker):
             seed = start_idx + i
             seeds.append(seed)
 
-            # Forward pass: θ + ε·p_i
-            self.apply_probe(seed, self.epsilon)
-            with torch.no_grad():
-                loss_plus = loss_fn(*args, **kwargs)
-            losses_plus.append(loss_plus.item())
-            self.restore_probe(seed, self.epsilon)
+            # Accumulate losses over multiple batches for this perturbation
+            accum_loss_plus = 0.0
+            accum_loss_minus = 0.0
 
-            # Forward pass: θ - ε·p_i (antithetic)
-            self.apply_probe(seed, -self.epsilon)
-            with torch.no_grad():
-                loss_minus = loss_fn(*args, **kwargs)
-            losses_minus.append(loss_minus.item())
-            self.restore_probe(seed, -self.epsilon)
+            for accum_step in range(self.grad_accum):
+                # Get batch data if using gradient accumulation
+                if batch_provider is not None:
+                    batch_data = batch_provider()
+                    # Unpack batch data (chunk, actual_lengths)
+                    # This will be broadcast-synced in train.py
+                else:
+                    batch_data = None
+
+                # Forward pass: θ + ε·p_i
+                self.apply_probe(seed, self.epsilon)
+                with torch.no_grad():
+                    if batch_data is not None:
+                        loss_plus = loss_fn(batch_data)
+                    else:
+                        loss_plus = loss_fn(*args, **kwargs)
+                accum_loss_plus += loss_plus.item()
+                self.restore_probe(seed, self.epsilon)
+
+                # Forward pass: θ - ε·p_i (antithetic)
+                self.apply_probe(seed, -self.epsilon)
+                with torch.no_grad():
+                    if batch_data is not None:
+                        loss_minus = loss_fn(batch_data)
+                    else:
+                        loss_minus = loss_fn(*args, **kwargs)
+                accum_loss_minus += loss_minus.item()
+                self.restore_probe(seed, -self.epsilon)
+
+            # Average over accumulation steps
+            losses_plus.append(accum_loss_plus / self.grad_accum)
+            losses_minus.append(accum_loss_minus / self.grad_accum)
 
         forward_time = time.time() - forward_start
 
@@ -210,7 +236,7 @@ class CD_RGE_Optimizer:
             'time_forward': forward_time,
             'time_backward': backward_time,
             'time_total': total_time,
-            'n_forward_passes': 2 * pert_per_worker
+            'n_forward_passes': 2 * pert_per_worker * self.grad_accum
         }
 
     def _compute_gradient_estimate(self, losses_plus, losses_minus):
