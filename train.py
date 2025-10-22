@@ -945,6 +945,39 @@ def get_args():
     parser.add_argument('--use_standard_gru', action='store_true',
                         help='Use PyTorch nn.GRU (cuDNN-optimized, gold standard nonlinear GRU)')
 
+    # --- Zero-Order Optimization (CD-RGE) ---
+    zo_group = parser.add_argument_group('Zero-Order Optimization')
+    zo_group.add_argument(
+        '--zero_order',
+        action='store_true',
+        help='Enable zero-order optimization (CD-RGE) for memory-efficient training'
+    )
+    zo_group.add_argument(
+        '--zo_n_perturbations',
+        type=int,
+        default=96,
+        help='Number of probe vectors for gradient estimation (default: 96, range: 48-512)'
+    )
+    zo_group.add_argument(
+        '--zo_epsilon',
+        type=float,
+        default=None,
+        help='Perturbation size for CD-RGE (default: equal to learning rate for stability)'
+    )
+    zo_group.add_argument(
+        '--zo_probe_distribution',
+        type=str,
+        default='rademacher',
+        choices=['rademacher', 'gaussian'],
+        help='Probe distribution (rademacher recommended for high dimensions)'
+    )
+    zo_group.add_argument(
+        '--zo_memory_chunk',
+        type=int,
+        default=512,
+        help='Chunk size for memory-efficient forward passes (default: 512 tokens)'
+    )
+
     # --- Tokenization Options ---
     tokenizer_group = parser.add_argument_group('Tokenization')
     tokenizer_group.add_argument(
@@ -1277,7 +1310,34 @@ def main():
         # Use reduce-overhead mode for better performance, fullgraph=False for compatibility
         # Cache is automatically enabled via TORCHINDUCTOR_CACHE_DIR (set in shell)
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
-    optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+
+    # Initialize optimizer based on training mode
+    if args.zero_order:
+        from zero_order_optimizer import CD_RGE_Optimizer, ZeroOrderLossWrapper
+
+        # Set epsilon = lr if not explicitly specified (paper recommendation)
+        epsilon = args.zo_epsilon if args.zo_epsilon is not None else args.lr
+
+        optimizer = CD_RGE_Optimizer(
+            model=model,
+            learning_rate=args.lr,
+            epsilon=epsilon,
+            n_perturbations=args.zo_n_perturbations,
+            world_size=world_size,
+            rank=global_rank,
+            chunk_size=args.zo_memory_chunk
+        )
+
+        if global_rank == 0:
+            print("\n=== Zero-Order Optimization (CD-RGE) ===")
+            print(f"Learning rate: {args.lr}")
+            print(f"Epsilon: {epsilon}")
+            print(f"Perturbations: {args.zo_n_perturbations}")
+            print(f"Forward passes per step: {2 * args.zo_n_perturbations}")
+            print(f"Probe distribution: {args.zo_probe_distribution}")
+            print("=========================================\n")
+    else:
+        optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
     
     # Initialize GradScaler for mixed precision training
     scaler = torch.amp.GradScaler('cuda') if args.bf16 else None
@@ -1288,8 +1348,8 @@ def main():
         if scaler is not None and 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict'] is not None:
             scaler.load_state_dict(checkpoint['scaler_state_dict'])
         if global_rank == 0: print(f"Resumed model and optimizer from step {resume_step}")
-    
-    if args.schedulefree: optimizer.train()
+
+    if args.schedulefree and not args.zero_order: optimizer.train()
 
     # Setup DDP if enabled
     if args.ddp:
@@ -1570,40 +1630,91 @@ def main():
         with evolutionary_node.model_mutex:
             # Mark that we're entering forward pass - no weight updates allowed
             evolutionary_node.enter_forward_pass(hidden_state, conv_buffers)
-            
-            # Forward pass with both RNN hidden states and conv buffers
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
-                result = model(
-                    chunk,
-                    return_loss=True,
-                    return_prev_hiddens=True,
-                    prev_hiddens=hidden_state,
-                    prev_conv_buffers=conv_buffers,
-                    actual_length=actual_lengths
-                )
-            
-            # Unpack the result - could be just loss or loss + (hiddens, buffers)
-            if isinstance(result, tuple) and len(result) == 2:
-                loss, (next_hidden_state, next_conv_buffers) = result
+
+            if args.zero_order:
+                # Zero-order optimization: Use CD-RGE optimizer
+                # Define loss function that model will use for forward passes
+                def compute_loss_with_hidden_states():
+                    """Closure that computes loss and updates hidden states"""
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                        result = model(
+                            chunk,
+                            return_loss=True,
+                            return_prev_hiddens=True,
+                            prev_hiddens=hidden_state,
+                            prev_conv_buffers=conv_buffers,
+                            actual_length=actual_lengths
+                        )
+
+                    # Unpack result
+                    if isinstance(result, tuple) and len(result) == 2:
+                        loss, _ = result  # Ignore hidden states in loss computation
+                    else:
+                        loss = result
+
+                    return loss
+
+                # Call optimizer step (handles all perturbations internally)
+                zo_result = optimizer.step(compute_loss_with_hidden_states)
+                chunk_loss = zo_result['loss']
+
+                # Get hidden states from a single forward pass after optimization
+                # Use return_loss=True for consistent return format
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                    result = model(
+                        chunk,
+                        return_loss=True,
+                        return_prev_hiddens=True,
+                        prev_hiddens=hidden_state,
+                        prev_conv_buffers=conv_buffers,
+                        actual_length=actual_lengths
+                    )
+
+                # Unpack the same way as standard path
+                if isinstance(result, tuple) and len(result) == 2:
+                    _, (next_hidden_state, next_conv_buffers) = result
+                else:
+                    # Backward compatibility
+                    next_hidden_state = None
+                    next_conv_buffers = None
+
+                # Zero-order doesn't accumulate gradients
+                accumulated_steps = args.grad_accum  # Always optimize
             else:
-                # Backward compatibility - model without conv buffers
-                loss = result
-                next_hidden_state = None
-                next_conv_buffers = None
-            
-            # Scale loss for gradient accumulation
-            scaled_loss = loss / args.grad_accum
-            chunk_loss = loss.detach().item()
-            
-            # Track accumulation progress
-            accumulated_steps += 1
-            
-            # Backward pass - still under mutex protection
-            if scaler is not None:
-                scaler.scale(scaled_loss).backward()
-            else:
-                scaled_loss.backward()
-            
+                # Standard backpropagation
+                # Forward pass with both RNN hidden states and conv buffers
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                    result = model(
+                        chunk,
+                        return_loss=True,
+                        return_prev_hiddens=True,
+                        prev_hiddens=hidden_state,
+                        prev_conv_buffers=conv_buffers,
+                        actual_length=actual_lengths
+                    )
+
+                # Unpack the result - could be just loss or loss + (hiddens, buffers)
+                if isinstance(result, tuple) and len(result) == 2:
+                    loss, (next_hidden_state, next_conv_buffers) = result
+                else:
+                    # Backward compatibility - model without conv buffers
+                    loss = result
+                    next_hidden_state = None
+                    next_conv_buffers = None
+
+                # Scale loss for gradient accumulation
+                scaled_loss = loss / args.grad_accum
+                chunk_loss = loss.detach().item()
+
+                # Track accumulation progress
+                accumulated_steps += 1
+
+                # Backward pass - still under mutex protection
+                if scaler is not None:
+                    scaler.scale(scaled_loss).backward()
+                else:
+                    scaled_loss.backward()
+
             # Mark that we've exited forward pass - safe for weight updates
             evolutionary_node.exit_forward_pass()
 
@@ -1619,46 +1730,53 @@ def main():
         conv_reset_mask = is_doc_end.view(-1, 1, 1)
 
         # Use torch.where for branchless execution - more efficient than multiplication
-        hidden_state = [torch.where(reset_mask, torch.zeros_like(h), h.detach()) 
+        hidden_state = [torch.where(reset_mask, torch.zeros_like(h), h.detach())
                        for h in next_hidden_state]
-        if next_conv_buffers and next_conv_buffers[0] is not None:
-            conv_buffers = [torch.where(conv_reset_mask, torch.zeros_like(b), b.detach()) 
+        # Check if conv buffers exist and contain actual tensors
+        if next_conv_buffers and len(next_conv_buffers) > 0 and isinstance(next_conv_buffers[0], torch.Tensor):
+            conv_buffers = [torch.where(conv_reset_mask, torch.zeros_like(b), b.detach())
                            for b in next_conv_buffers]
         else:
             conv_buffers = [] # Ensure it's an empty list if no conv
         
         # Use a fixed, synchronous optimization schedule
         should_optimize = accumulated_steps >= args.grad_accum
-        
+
         # Calculate gradient norm before optimization (for logging)
         grad_norm = None
         if should_optimize:
-            # Unscale gradients first if using scaler
-            if scaler is not None:
-                scaler.unscale_(optimizer)
-            
-            # Calculate gradient norm for logging
-            total_norm = 0.0
-            for param in model.parameters():
-                if param.grad is not None:
-                    param_norm = param.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            grad_norm = total_norm ** 0.5
-            
-            # Conditionally perform gradient clipping if args.grad_clip is set > 0
-            if args.grad_clip > 0.0:
-                # Clip the gradients using the value from the command line
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-
-            # 3. The optimizer step proceeds as usual, operating on the (now clipped) gradients
-            if scaler is not None:
-                scaler.step(optimizer)
-                scaler.update()
+            if args.zero_order:
+                # Zero-order: No gradients to clip or scale
+                # Optimizer step already happened in the forward pass
+                accumulated_steps = 0
             else:
-                optimizer.step()
-            
-            optimizer.zero_grad()
-            accumulated_steps = 0
+                # Standard backpropagation: handle gradients
+                # Unscale gradients first if using scaler
+                if scaler is not None:
+                    scaler.unscale_(optimizer)
+
+                # Calculate gradient norm for logging
+                total_norm = 0.0
+                for param in model.parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                grad_norm = total_norm ** 0.5
+
+                # Conditionally perform gradient clipping if args.grad_clip is set > 0
+                if args.grad_clip > 0.0:
+                    # Clip the gradients using the value from the command line
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+
+                # The optimizer step proceeds as usual, operating on the (now clipped) gradients
+                if scaler is not None:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+
+                optimizer.zero_grad()
+                accumulated_steps = 0
             
             # Log z-gate statistics on rank 0 after every gradient update
             # DISABLED: Z-gates are healthy, no need for monitoring
@@ -1702,8 +1820,22 @@ def main():
                 if needs_optimizer_reset:
                     if global_rank == 0:
                         print(f"Rank {global_rank} resetting optimizer at step {step}")
-                    optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
-                    if args.schedulefree: optimizer.train()
+
+                    # Recreate optimizer based on training mode
+                    if args.zero_order:
+                        from zero_order_optimizer import CD_RGE_Optimizer
+                        epsilon = args.zo_epsilon if args.zo_epsilon is not None else args.lr
+                        optimizer = CD_RGE_Optimizer(
+                            model=model,
+                            learning_rate=args.lr,
+                            epsilon=epsilon,
+                            n_perturbations=args.zo_n_perturbations,
+                            world_size=world_size,
+                            rank=global_rank
+                        )
+                    else:
+                        optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+                        if args.schedulefree: optimizer.train()
                 
                 # DDP: Synchronize after updates
                 if args.ddp:
