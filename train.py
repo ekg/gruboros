@@ -1633,22 +1633,35 @@ def main():
 
             if args.zero_order:
                 # Zero-order optimization: Use CD-RGE optimizer
-                # Define loss function that model will use for forward passes
+                # CRITICAL: All GPUs must see the SAME data for perturbation evaluation
+                if args.ddp:
+                    # Broadcast chunk from rank 0 to all workers
+                    # This ensures all perturbations evaluate on identical data
+                    dist.broadcast(chunk, src=0)
+
+                # CRITICAL: Use FRESH hidden states for each perturbation evaluation
+                # This eliminates memory waste and enables massive batch sizes
                 def compute_loss_with_hidden_states():
-                    """Closure that computes loss and updates hidden states"""
+                    """
+                    Closure for perturbation evaluation with FRESH hidden states.
+
+                    Key insight: We don't maintain hidden states across perturbations.
+                    Each perturbation evaluates the chunk independently starting from zeros.
+                    This frees memory for 192-384+ sequences per perturbation.
+                    """
                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
                         result = model(
                             chunk,
                             return_loss=True,
-                            return_prev_hiddens=True,
-                            prev_hiddens=hidden_state,
-                            prev_conv_buffers=conv_buffers,
+                            return_prev_hiddens=False,  # FRESH hidden states (zeros)
+                            prev_hiddens=None,           # No carryover across perturbations
+                            prev_conv_buffers=None,      # No carryover across perturbations
                             actual_length=actual_lengths
                         )
 
-                    # Unpack result
+                    # Unpack result - should just be loss now
                     if isinstance(result, tuple) and len(result) == 2:
-                        loss, _ = result  # Ignore hidden states in loss computation
+                        loss, _ = result  # Ignore hidden states
                     else:
                         loss = result
 

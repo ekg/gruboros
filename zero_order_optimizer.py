@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 import random
 import time
+from zero_order_gru_vmap import FunctionalGRU
 
 
 class CD_RGE_Optimizer:
@@ -102,7 +103,10 @@ class CD_RGE_Optimizer:
 
     def step(self, loss_fn, *args, **kwargs):
         """
-        Perform one optimization step using CD-RGE.
+        Perform one optimization step using CD-RGE with batched perturbation evaluation.
+
+        CRITICAL: All GPUs must receive the SAME data for perturbation evaluation.
+        The loss_fn should compute loss on fixed data that doesn't change between calls.
 
         Args:
             loss_fn: Callable that computes loss given model output
@@ -124,7 +128,9 @@ class CD_RGE_Optimizer:
 
         forward_start = time.time()
 
-        # Compute losses for each perturbation (antithetic pairs)
+        # BATCHED PERTURBATION EVALUATION
+        # Key insight: All perturbations evaluate on the SAME data
+        # This gives us meaningful gradient estimates
         for i in range(pert_per_worker):
             seed = start_idx + i
             seeds.append(seed)
