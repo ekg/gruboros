@@ -133,7 +133,8 @@ class CD_RGE_Optimizer:
         forward_start = time.time()
 
         # BATCHED PERTURBATION EVALUATION WITH GRADIENT ACCUMULATION
-        # Key insight: Evaluate each perturbation on multiple batches for lower variance
+        # Key insight: Evaluate each perturbation on multiple successive batches
+        # Hidden states persist across batches (resetting only at document boundaries)
         for i in range(pert_per_worker):
             seed = start_idx + i
             seeds.append(seed)
@@ -142,30 +143,51 @@ class CD_RGE_Optimizer:
             accum_loss_plus = 0.0
             accum_loss_minus = 0.0
 
+            # Track hidden states across accumulation steps
+            # Start with fresh (None) hidden states for each perturbation
+            hiddens_plus = None
+            conv_plus = None
+            hiddens_minus = None
+            conv_minus = None
+
             for accum_step in range(self.grad_accum):
                 # Get batch data if using gradient accumulation
                 if batch_provider is not None:
                     batch_data = batch_provider()
-                    # Unpack batch data (chunk, actual_lengths)
-                    # This will be broadcast-synced in train.py
                 else:
                     batch_data = None
 
                 # Forward pass: θ + ε·p_i
+                # Hidden states carry forward across batches
                 self.apply_probe(seed, self.epsilon)
                 with torch.no_grad():
                     if batch_data is not None:
-                        loss_plus = loss_fn(batch_data)
+                        # Call with hidden state tracking
+                        result = loss_fn(batch_data, hiddens_plus, conv_plus)
+                        if isinstance(result, tuple) and len(result) == 3:
+                            loss_plus, hiddens_plus, conv_plus = result
+                        else:
+                            loss_plus = result
+                            hiddens_plus = None
+                            conv_plus = None
                     else:
                         loss_plus = loss_fn(*args, **kwargs)
                 accum_loss_plus += loss_plus.item()
                 self.restore_probe(seed, self.epsilon)
 
                 # Forward pass: θ - ε·p_i (antithetic)
+                # Hidden states carry forward across batches
                 self.apply_probe(seed, -self.epsilon)
                 with torch.no_grad():
-                    if batch_data is not None:
-                        loss_minus = loss_fn(batch_data)
+                    if batch_provider is not None:
+                        # Call with hidden state tracking
+                        result = loss_fn(batch_data, hiddens_minus, conv_minus)
+                        if isinstance(result, tuple) and len(result) == 3:
+                            loss_minus, hiddens_minus, conv_minus = result
+                        else:
+                            loss_minus = result
+                            hiddens_minus = None
+                            conv_minus = None
                     else:
                         loss_minus = loss_fn(*args, **kwargs)
                 accum_loss_minus += loss_minus.item()

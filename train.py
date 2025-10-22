@@ -1633,43 +1633,102 @@ def main():
             evolutionary_node.enter_forward_pass(hidden_state, conv_buffers)
 
             if args.zero_order:
-                # Zero-order optimization: Use CD-RGE optimizer
-                # CRITICAL: All GPUs must see the SAME data for perturbation evaluation
-                if args.ddp:
-                    # Broadcast chunk from rank 0 to all workers
-                    # This ensures all perturbations evaluate on identical data
-                    dist.broadcast(chunk, src=0)
+                # Zero-order optimization: Use CD-RGE optimizer with sequential batch scanning
 
-                # CRITICAL: Use FRESH hidden states for each perturbation evaluation
-                # This eliminates memory waste and enables massive batch sizes
-                def compute_loss_with_hidden_states():
+                # Create batch provider for gradient accumulation
+                # Each perturbation evaluates on grad_accum successive batches
+                def batch_provider():
                     """
-                    Closure for perturbation evaluation with FRESH hidden states.
+                    Fetch next batch from data stream and synchronize across GPUs.
+                    Returns (chunk, actual_lengths, is_doc_end) tuple.
+                    """
+                    chunk_data, batch_is_doc_end, batch_actual_lengths = next(data_iterator)
+                    batch_chunk = chunk_data.to(device, non_blocking=True)
+                    batch_actual_lengths = batch_actual_lengths.to(device, non_blocking=True)
+                    batch_is_doc_end = batch_is_doc_end.to(device, non_blocking=True)
 
-                    Key insight: We don't maintain hidden states across perturbations.
-                    Each perturbation evaluates the chunk independently starting from zeros.
-                    This frees memory for 192-384+ sequences per perturbation.
+                    if device.type == 'cuda':
+                        torch.cuda.synchronize()
+
+                    # CRITICAL: Broadcast to all GPUs so they see identical data
+                    if args.ddp:
+                        dist.broadcast(batch_chunk, src=0)
+                        dist.broadcast(batch_actual_lengths, src=0)
+                        dist.broadcast(batch_is_doc_end, src=0)
+
+                    return (batch_chunk, batch_actual_lengths, batch_is_doc_end)
+
+                # Loss function for perturbation evaluation
+                # Maintains hidden states across batches, resets at document boundaries
+                def compute_loss_on_batch(batch_data, prev_hiddens=None, prev_conv=None):
                     """
+                    Evaluate loss on a batch with hidden state tracking.
+
+                    Args:
+                        batch_data: (chunk, actual_lengths, is_doc_end) tuple
+                        prev_hiddens: Hidden states from previous batch (or None for fresh start)
+                        prev_conv: Conv buffers from previous batch (or None)
+
+                    Returns:
+                        (loss, next_hiddens, next_conv) tuple
+                    """
+                    batch_chunk, batch_actual_lengths, batch_is_doc_end = batch_data
+
                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
                         result = model(
-                            chunk,
+                            batch_chunk,
                             return_loss=True,
-                            return_prev_hiddens=False,  # FRESH hidden states (zeros)
-                            prev_hiddens=None,           # No carryover across perturbations
-                            prev_conv_buffers=None,      # No carryover across perturbations
-                            actual_length=actual_lengths
+                            return_prev_hiddens=True,  # Need hidden states for next batch
+                            prev_hiddens=prev_hiddens,
+                            prev_conv_buffers=prev_conv,
+                            actual_length=batch_actual_lengths
                         )
 
-                    # Unpack result - should just be loss now
+                    # Unpack result
                     if isinstance(result, tuple) and len(result) == 2:
-                        loss, _ = result  # Ignore hidden states
+                        loss, (next_hiddens, next_conv) = result
                     else:
                         loss = result
+                        next_hiddens = None
+                        next_conv = None
 
-                    return loss
+                    # Reset hidden states at document boundaries
+                    if next_hiddens is not None and batch_is_doc_end is not None:
+                        if isinstance(next_hiddens, list):
+                            # Multi-layer: reset each layer
+                            reset_mask = batch_is_doc_end.view(-1, 1)
+                            next_hiddens = [h * (~reset_mask) for h in next_hiddens]
+                        else:
+                            # Single layer
+                            if next_hiddens.dim() == 2:
+                                reset_mask = batch_is_doc_end.view(-1, 1)
+                            else:
+                                reset_mask = batch_is_doc_end.view(-1, 1, 1)
+                            next_hiddens = next_hiddens * (~reset_mask)
 
-                # Call optimizer step (handles all perturbations internally)
-                zo_result = optimizer.step(compute_loss_with_hidden_states)
+                    if next_conv is not None and batch_is_doc_end is not None:
+                        conv_reset_mask = batch_is_doc_end.view(-1, 1, 1, 1)
+                        next_conv = [b * (~conv_reset_mask) for b in next_conv]
+
+                    return loss, next_hiddens, next_conv
+
+                # Prepare first batch for evaluation
+                first_batch = (chunk, actual_lengths, is_doc_end)
+
+                # Create batch provider that yields first batch then subsequent batches
+                batch_count = [0]  # Mutable counter for closure
+                def batch_provider_with_first():
+                    if batch_count[0] == 0:
+                        batch_count[0] += 1
+                        return first_batch
+                    else:
+                        return batch_provider()
+
+                # Call optimizer step with batch provider
+                zo_result = optimizer.step(
+                    loss_fn=compute_loss_on_batch,
+                    batch_provider=batch_provider_with_first
+                )
                 chunk_loss = zo_result['loss']
 
                 # Get hidden states from a single forward pass after optimization
@@ -1900,9 +1959,11 @@ def main():
         iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
         
         # Track tokens for this step (chunk_size * batch_size)
-        # For zero-order: multiply by 2 * n_perturbations (antithetic sampling)
+        # For zero-order: multiply by 2 * n_perturbations * grad_accum
         if args.zero_order:
-            forward_passes_per_step = 2 * args.zo_n_perturbations  # 192 for 96 perturbations
+            # Each perturbation does 2 forward passes (antithetic sampling)
+            # Each perturbation evaluates on grad_accum batches
+            forward_passes_per_step = 2 * args.zo_n_perturbations * args.grad_accum
             tokens_this_step = chunk_size * batch_size * forward_passes_per_step
         else:
             tokens_this_step = chunk_size * batch_size
