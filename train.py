@@ -828,6 +828,12 @@ class DocumentStreamWrapper(IterableDataset):
                 torch.tensor(batch_actual_len, dtype=torch.long)
             )
     
+    def get_all_stats(self):
+        """Get stats from all streams (returns empty list if streams not created yet)"""
+        if self.streams is None:
+            return []
+        return [stream.get_stats() for stream in self.streams]
+
     def __del__(self):
         """Clean up the shared memory map and file handle"""
         if hasattr(self, 'shared_mmap'):
@@ -1718,7 +1724,7 @@ def main():
         # Get status and log with document stats
         status = evolutionary_node.get_status()
         # Aggregate stats across all streams for accurate reporting
-        all_stats = [stream.get_stats() for stream in train_dataset.streams]
+        all_stats = train_dataset.get_all_stats()
         doc_stats = {
             'documents_processed': sum(s['documents_processed'] for s in all_stats),
             'bytes_processed': sum(s['bytes_processed'] for s in all_stats),
