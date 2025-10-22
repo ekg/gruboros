@@ -113,12 +113,20 @@ if is_doc_end[seq_idx]:
 
 ## Performance
 
-**500M Parameter Model (8× A100 80GB):**
-- Batch size: 4 per GPU = 32 total
+**500M Parameter Model (8× 48GB GPUs):**
+- Default: 4 seq/GPU × 2048 tok = 8,192 tokens/step
+- Alternate: 8 seq/GPU × 1024 tok = 8,192 tokens/step (same throughput!)
 - Perturbations: 96 (192 forward passes)
-- Memory: ~30GB per GPU (vs 60GB+ for BPTT)
+- Memory: ~30-35GB per GPU (vs 60GB+ for BPTT)
 - Speed: ~25 seconds per step (with grad_accum=1)
 - Throughput: ~503K tokens/second actual work
+
+**Memory Bottleneck: 100K Vocabulary!**
+- Logits: batch × seq_len × 100K vocab × 2 bytes (bf16)
+- 4 × 2048 × 100K × 2 = 1.6GB logits
+- 8 × 2048 × 100K × 2 = 3.2GB logits (OOM on 48GB with torch.compile)
+- 8 × 1024 × 100K × 2 = 1.6GB logits (WORKS!)
+- **Solution**: Scale batch_size × chunk_size, not individually
 
 **Learning Efficiency:**
 - **Before fixes**: 0.019 loss improvement in 500 steps (BROKEN)

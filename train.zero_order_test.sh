@@ -67,7 +67,7 @@ echo "torch.compile cache: $TORCHINDUCTOR_CACHE_DIR"
 # --- Launch Training with Zero-Order Optimization ---
 echo "Starting 500M parameter Zero-Order (CD-RGE) test on 8 GPUs."
 echo "Architecture: StandardGRU, NO FFN, TikToken (100K vocab), 2048 tokens"
-echo "Batch size: 16 per GPU = 128 total (MASSIVE due to fresh hidden states!)"
+echo "Batch size: per GPU (testing scaling with optimizations)"
 echo "Perturbations: 96 (192 forward passes per step)"
 echo "CRITICAL FIXES: Fresh hidden states + data synchronization across GPUs"
 echo "Test duration: 1000 steps"
@@ -102,7 +102,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --zo_probe_distribution rademacher \
   --zo_memory_chunk 256 \
   \
-  `# SEQUENCES (Conservative batch size due to 192 forward passes)` \
+  `# SEQUENCES (Conservative: works on 48GB GPUs. For more, see ZERO_ORDER_README.md)` \
   --chunk_size 2048 \
   --batch_size 4 \
   --grad_accum 1 \
