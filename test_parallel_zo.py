@@ -12,6 +12,12 @@ from zero_order_optimizer import CD_RGE_Optimizer
 from zero_order_vmap import VmapZeroOrderOptimizer
 from zero_order_batched import BatchedPerturbationOptimizer
 
+try:
+    from zero_order_triton import TritonZeroOrderOptimizer, TRITON_AVAILABLE
+except ImportError:
+    TRITON_AVAILABLE = False
+    print("WARNING: Triton optimizer not available")
+
 # Simple test model
 class TinyLM(nn.Module):
     def __init__(self, vocab_size=256, dim=128, depth=2):
@@ -275,6 +281,60 @@ def test_batched_optimizer():
     print("="*80)
 
 
+def test_triton_optimizer():
+    """Test Triton-based optimizer"""
+    if not TRITON_AVAILABLE:
+        print("\n" + "="*80)
+        print("Triton Zero-Order Optimizer - SKIPPED (Triton not available)")
+        print("Install with: pip install triton")
+        print("="*80)
+        return
+
+    print("\n" + "="*80)
+    print("Testing Triton Zero-Order Optimizer (Option 3.0)")
+    print("="*80)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Create model
+    model = TinyLM(vocab_size=256, dim=64, depth=2).to(device)
+
+    # Test batch
+    batch_size = 8
+    seq_len = 64
+    batch_data = torch.randint(0, 256, (batch_size, seq_len), device=device)
+
+    n_pert = 16
+
+    print(f"\nConfiguration:")
+    print(f"  Model params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"  Batch: {batch_size} x {seq_len}")
+    print(f"  Perturbations: {n_pert}")
+
+    opt_triton = TritonZeroOrderOptimizer(
+        model,
+        learning_rate=1e-4,
+        epsilon=1e-4,
+        n_perturbations=n_pert,
+        pert_batch_size=8
+    )
+
+    print("\nRunning 3 steps...")
+    for step in range(3):
+        start = time.time()
+        result = opt_triton.step(loss_fn=None, batch_data=batch_data)
+        elapsed = time.time() - start
+
+        print(f"Step {step+1}:")
+        print(f"  Loss: {result['loss']:.4f}")
+        print(f"  Time: {elapsed:.3f}s")
+        print(f"  Throughput: {batch_size * seq_len / elapsed:.0f} tokens/sec")
+
+    print("\n" + "="*80)
+    print("Triton optimizer test completed successfully!")
+    print("="*80)
+
+
 def compare_all_methods():
     """Compare all zero-order optimization methods"""
     print("\n" + "="*80)
@@ -346,6 +406,16 @@ def compare_all_methods():
     time4 = time.time() - start
     results['Batched'] = time4
 
+    # Method 5: Triton (if available)
+    if TRITON_AVAILABLE:
+        model5 = TinyLM(vocab_size=256, dim=64, depth=2).to(device)
+        opt5 = TritonZeroOrderOptimizer(model5, learning_rate=1e-4, epsilon=1e-4,
+                                       n_perturbations=n_pert, pert_batch_size=8)
+        start = time.time()
+        result5 = opt5.step(loss_fn=None, batch_data=batch_data)
+        time5 = time.time() - start
+        results['Triton'] = time5
+
     # Print comparison
     print("\n" + "="*80)
     print("PERFORMANCE COMPARISON")
@@ -371,6 +441,9 @@ if __name__ == '__main__':
 
     # Test batched optimizer
     test_batched_optimizer()
+
+    # Test Triton optimizer
+    test_triton_optimizer()
 
     # Compare against sequential
     print("\n")
