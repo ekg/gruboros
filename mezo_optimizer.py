@@ -200,6 +200,13 @@ class MeZOOptimizer:
         # Average the accumulated gradient coefficient
         avg_grad_coef = accumulated_grad_coef / self.num_perturbations
 
+        # Synchronize gradient coefficients across all ranks (DDP)
+        if self.world_size > 1:
+            import torch.distributed as dist
+            grad_tensor = torch.tensor([avg_grad_coef], device='cuda')
+            dist.all_reduce(grad_tensor, op=dist.ReduceOp.AVG)
+            avg_grad_coef = grad_tensor.item()
+
         # Apply averaged update: θ = θ - lr * avg(g)
         # We need to regenerate ALL perturbations and apply weighted update
         with torch.no_grad():

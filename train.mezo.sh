@@ -1,16 +1,9 @@
 #!/bin/bash
 set -e -x
 
-# --- MeZO (Memory-Efficient Zeroth-Order) Training Script ---
-# Based on NeurIPS 2023 paper: "Fine-Tuning Language Models with Just Forward Passes"
-#
-# Key features:
-# - Same memory as inference (no gradients, no backward pass!)
-# - Only 2 forward passes per step
-# - Scales linearly to thousands of GPUs (no gradient sync)
-# - Perfect for unbounded context training
-#
-# Test configuration: 500M parameters, 8 GPUs, 100 steps
+# --- MeZO (Memory-Efficient Zeroth-Order) Training ---
+# Based on train.standard_gru.sh but using zero-order optimization
+# Forward-only training with same memory as inference!
 
 # --- Increase File Descriptor Limit ---
 ulimit -n 65536
@@ -38,15 +31,9 @@ if [ ! -f "$DATA_PATH" ]; then
     exit 1
 fi
 
-### Explicitly define and manage a temp directory ###
-# Create a unique, job-specific temporary directory in /tmp
-JOB_ID=$(date +%s) # Simple job ID using timestamp for local runs
-GOSSIP_TEMP_DIR="/tmp/gossip_temp_${JOB_ID}"
+### Create output directories ###
 mkdir -p logs
-mkdir -p "${OUTPUT_DIR}/gossip"
 mkdir -p "${OUTPUT_DIR}/metrics"
-mkdir -p "${GOSSIP_TEMP_DIR}"
-echo "Using local temporary directory: $GOSSIP_TEMP_DIR"
 
 # --- Distributed Settings for Launcher & Script ---
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -67,13 +54,10 @@ export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
 echo "torch.compile cache: $TORCHINDUCTOR_CACHE_DIR"
 
-# --- Launch Training with MeZO ---
-echo "Starting 500M parameter MeZO test on 8 GPUs."
+# --- Launch MeZO Training ---
+echo "Starting 500M parameter MeZO training on 8 GPUs."
 echo "Architecture: StandardGRU, NO FFN, TikToken (100K vocab)"
-echo "Configuration: batch_size=4, chunk_size=2048 (same as standard backprop for comparison)"
-echo "Method: MeZO in-place perturbation (2 forward passes per step)"
-echo "Memory: Same as inference! Unbounded context possible!"
-echo "Test duration: 100 steps"
+echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
 
 torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -103,13 +87,13 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --zo_method mezo \
   --zo_epsilon 0.0001 \
   \
-  `# SEQUENCES (same as standard backprop for fair comparison)` \
+  `# SEQUENCES (multi-perturbation via grad_accum)` \
   --chunk_size 2048 \
-  --batch_size 4 \
-  --grad_accum 1 \
+  --batch_size 8 \
+  --grad_accum 4 \
   \
-  `# TRAINING (test multi-perturbation)` \
-  --train_steps 20 \
+  `# TRAINING` \
+  --train_steps 100000 \
   --lr 0.0001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
@@ -117,37 +101,19 @@ torchrun --nproc_per_node=$NUM_GPUS \
   --grad_clip 0.0 \
   \
   `# CHECKPOINTING` \
-  --save_every 1000 \
+  --save_every 500 \
   --keep_checkpoints 5 \
-  --keep_elite 32 \
-  --archive_rate 0.0067 \
-  --validation_interval 500 \
+  --validation_interval 5000 \
   --validation_batches 32 \
-  \
-  `# GOSSIP (evolutionary training)` \
-  --gossip_merge_method recombination \
-  --gossip_recombination_alpha 0.2 \
-  --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.0003 \
-  --gossip_p_value_threshold 0.1 \
-  --gossip_lock_timeout 5.0 \
-  --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
-  --gossip_fitness_window 10000 \
-  --filesystem-coordinator \
-  --fitness-weighted-checkpointing \
-  --elite-checkpoint-multiplier 20.0 \
   \
   `# FLAGS` \
   --ddp \
-  --cuda
+  --cuda \
+  --compile
 
 echo "Training finished."
-echo "Expected performance:"
-echo "  - Memory: ~10 GB (same as inference!)"
-echo "  - Time per step: ~4-5s (2× forward passes)"
-echo "  - Comparison: Standard backprop ~2s, but requires gradients"
-echo "  - MeZO advantage: Can train with UNBOUNDED context!"
-
-### Clean up the temporary directory ###
-rm -rf "$GOSSIP_TEMP_DIR"
-echo "Cleaned up local temporary directory."
+echo "MeZO Training Complete!"
+echo "  - Memory: Same as inference (no gradients stored)"
+echo "  - Forward passes per step: $(( 2 * 4 )) (4 perturbations)"
+echo "  - Data throughput: $(( 8 * 8 * 2048 * 4 )) tokens/step (4 fresh batches)"
+echo "  - Compute: $(( 8 * 8 * 2048 * 8 )) tokens of forward passes per step"

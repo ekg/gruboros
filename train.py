@@ -2070,7 +2070,8 @@ def main():
         step += 1
 
     # pbar.close()  # No progress bar anymore
-    evolutionary_node.stop_gossip_protocol()
+    if args.filesystem_coordinator:
+        evolutionary_node.stop_gossip_protocol()
     checkpoint_manager.stop()
     if global_rank == 0: print("\nTraining complete.")
 
