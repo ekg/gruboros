@@ -34,6 +34,7 @@ fi
 ### Create output directories ###
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/metrics"
+mkdir -p "${OUTPUT_DIR}/gossip"
 
 # --- Distributed Settings for Launcher & Script ---
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
