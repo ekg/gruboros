@@ -26,7 +26,7 @@ def matmul_with_perturbation_kernel(
     x_ptr, w_ptr, pert_ptr, output_ptr,
     # Matrix dimensions
     M, N, K,  # M=batch_size, N=out_features, K=in_features
-    epsilon: tl.constexpr,
+    epsilon,  # NOT constexpr - runtime value
     # Strides
     stride_xm, stride_xk,
     stride_wk, stride_wn,
@@ -38,7 +38,7 @@ def matmul_with_perturbation_kernel(
     BLOCK_K: tl.constexpr,
 ):
     """
-    Fused matmul with perturbation: Y = X @ (W + ε·P)^T
+    Fused matmul with perturbation: Y = X @ (W + ε·P)
 
     Input shapes:
         X: [M, K]       (batch, in_features)
@@ -53,35 +53,37 @@ def matmul_with_perturbation_kernel(
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    # Offsets
+    # Offsets for this block
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    offs_k = tl.arange(0, BLOCK_K)
 
-    # Accumulator
+    # Accumulator - always use float32 for precision
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-    # Compute matmul with perturbation in blocks
-    for k_start in range(0, K, BLOCK_K):
-        k_offs = k_start + offs_k
+    # Iterate over K dimension in blocks
+    for k_start in range(0, tl.cdiv(K, BLOCK_K) * BLOCK_K, BLOCK_K):
+        k_offs = k_start + tl.arange(0, BLOCK_K)
+        k_mask = k_offs < K
 
         # Load X block: [BLOCK_M, BLOCK_K]
         x_ptrs = x_ptr + offs_m[:, None] * stride_xm + k_offs[None, :] * stride_xk
-        x_mask = (offs_m[:, None] < M) & (k_offs[None, :] < K)
-        x = tl.load(x_ptrs, mask=x_mask, other=0.0)
+        x_mask = (offs_m[:, None] < M) & (k_mask[None, :])
+        x = tl.load(x_ptrs, mask=x_mask, other=0.0).to(tl.float32)
 
         # Load W block: [BLOCK_K, BLOCK_N]
         w_ptrs = w_ptr + k_offs[:, None] * stride_wk + offs_n[None, :] * stride_wn
-        w_mask = (k_offs[:, None] < K) & (offs_n[None, :] < N)
-        w = tl.load(w_ptrs, mask=w_mask, other=0.0)
+        w_mask = (k_mask[:, None]) & (offs_n[None, :] < N)
+        w = tl.load(w_ptrs, mask=w_mask, other=0.0).to(tl.float32)
 
         # Load perturbation block: [BLOCK_K, BLOCK_N]
         p_ptrs = pert_ptr + k_offs[:, None] * stride_pk + offs_n[None, :] * stride_pn
-        p_mask = (k_offs[:, None] < K) & (offs_n[None, :] < N)
-        p = tl.load(p_ptrs, mask=p_mask, other=0.0)
+        p_mask = (k_mask[:, None]) & (offs_n[None, :] < N)
+        p = tl.load(p_ptrs, mask=p_mask, other=0.0).to(tl.float32)
 
-        # Fused operation: matmul with (W + ε·P)
+        # Fused operation: compute (W + ε·P) on-the-fly
         w_perturbed = w + epsilon * p
+
+        # Accumulate: matmul
         acc += tl.dot(x, w_perturbed)
 
     # Store output
@@ -92,13 +94,13 @@ def matmul_with_perturbation_kernel(
 
 def matmul_with_perturbation(x, w, pert, epsilon):
     """
-    Fused matmul with perturbation: Y = X @ (W + ε·P)^T
+    Fused matmul with perturbation: Y = X @ (W + ε·P)
 
     Args:
         x: [M, K] input tensor
         w: [K, N] weight tensor
         pert: [K, N] perturbation tensor (same shape as w)
-        epsilon: perturbation scale
+        epsilon: perturbation scale (float)
 
     Returns:
         y: [M, N] output tensor
@@ -107,11 +109,27 @@ def matmul_with_perturbation(x, w, pert, epsilon):
     K2, N = w.shape
     assert K == K2, f"Shape mismatch: {K} != {K2}"
 
-    # Allocate output
-    y = torch.empty((M, N), device=x.device, dtype=x.dtype)
+    # CRITICAL: Triton's tl.dot requires all dimensions >= 16
+    # For small matrices, fall back to PyTorch (which is fast anyway for small sizes)
+    if M < 16 or K < 16 or N < 16:
+        # Fallback to PyTorch for small matrices
+        with torch.no_grad():
+            y = torch.matmul(x, w + epsilon * pert)
+        return y
 
-    # Grid
-    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
+    # CRITICAL: Force float32 for precision
+    # Always compute in float32 to match PyTorch reference
+    y = torch.empty((M, N), device=x.device, dtype=torch.float32)
+
+    # Convert epsilon to float32 explicitly
+    epsilon_f32 = float(epsilon)
+
+    # Block sizes must be >= 16 for tl.dot, but keep small for shared memory
+    # Conservative sizes to avoid OOM: max 64x64x32 uses ~65KB shared memory
+    BLOCK_M = max(16, min(64, triton.next_power_of_2(M)))
+    BLOCK_N = max(16, min(64, triton.next_power_of_2(N)))
+    BLOCK_K = max(16, min(32, triton.next_power_of_2(K)))
+
     grid = lambda META: (
         triton.cdiv(M, META['BLOCK_M']),
         triton.cdiv(N, META['BLOCK_N'])
@@ -121,13 +139,17 @@ def matmul_with_perturbation(x, w, pert, epsilon):
     matmul_with_perturbation_kernel[grid](
         x, w, pert, y,
         M, N, K,
-        epsilon,
+        epsilon_f32,
         x.stride(0), x.stride(1),
         w.stride(0), w.stride(1),
         pert.stride(0), pert.stride(1),
         y.stride(0), y.stride(1),
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
     )
+
+    # Convert back to input dtype if needed
+    if y.dtype != x.dtype:
+        y = y.to(x.dtype)
 
     return y
 
