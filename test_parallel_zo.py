@@ -10,6 +10,7 @@ import time
 from zero_order_parallel import ParallelZeroOrderOptimizer
 from zero_order_optimizer import CD_RGE_Optimizer
 from zero_order_vmap import VmapZeroOrderOptimizer
+from zero_order_batched import BatchedPerturbationOptimizer
 
 # Simple test model
 class TinyLM(nn.Module):
@@ -227,6 +228,140 @@ def test_vmap_optimizer():
     print("="*80)
 
 
+def test_batched_optimizer():
+    """Test batched perturbation dimension optimizer"""
+    print("\n" + "="*80)
+    print("Testing Batched Perturbation Optimizer (Option 2)")
+    print("="*80)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Create model
+    model = TinyLM(vocab_size=256, dim=64, depth=2).to(device)
+
+    # Test batch
+    batch_size = 8
+    seq_len = 64
+    batch_data = torch.randint(0, 256, (batch_size, seq_len), device=device)
+
+    n_pert = 16
+
+    print(f"\nConfiguration:")
+    print(f"  Model params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"  Batch: {batch_size} x {seq_len}")
+    print(f"  Perturbations: {n_pert}")
+
+    opt_batched = BatchedPerturbationOptimizer(
+        model,
+        learning_rate=1e-4,
+        epsilon=1e-4,
+        n_perturbations=n_pert,
+        pert_batch_size=8
+    )
+
+    print("\nRunning 3 steps...")
+    for step in range(3):
+        start = time.time()
+        result = opt_batched.step(loss_fn=None, batch_data=batch_data)
+        elapsed = time.time() - start
+
+        print(f"Step {step+1}:")
+        print(f"  Loss: {result['loss']:.4f}")
+        print(f"  Time: {elapsed:.3f}s")
+        print(f"  Throughput: {batch_size * seq_len / elapsed:.0f} tokens/sec")
+
+    print("\n" + "="*80)
+    print("Batched optimizer test completed successfully!")
+    print("="*80)
+
+
+def compare_all_methods():
+    """Compare all zero-order optimization methods"""
+    print("\n" + "="*80)
+    print("COMPREHENSIVE COMPARISON: All Zero-Order Methods")
+    print("="*80)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Test configuration
+    batch_size = 8
+    seq_len = 64
+    n_pert = 16
+
+    print(f"\nConfiguration:")
+    print(f"  Batch: {batch_size} x {seq_len}")
+    print(f"  Perturbations: {n_pert}")
+    print(f"  Forward passes: {2 * n_pert}")
+
+    # Create batch data
+    batch_data = torch.randint(0, 256, (batch_size, seq_len), device=device)
+
+    # Test each method
+    results = {}
+
+    # Method 1: Sequential (baseline)
+    model1 = TinyLM(vocab_size=256, dim=64, depth=2).to(device)
+    opt1 = CD_RGE_Optimizer(model1, learning_rate=1e-4, epsilon=1e-4,
+                           n_perturbations=n_pert, grad_accum=1)
+
+    def loss_fn_seq(batch_data, hiddens=None, conv=None):
+        with torch.no_grad():
+            logits = model1(batch_data[:, :-1])
+            targets = batch_data[:, 1:]
+            loss = nn.functional.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                targets.reshape(-1)
+            )
+        return loss
+
+    start = time.time()
+    result1 = opt1.step(loss_fn_seq, batch_provider=lambda: batch_data)
+    time1 = time.time() - start
+    results['Sequential'] = time1
+
+    # Method 2: Dynamic Perturbation
+    model2 = TinyLM(vocab_size=256, dim=64, depth=2).to(device)
+    opt2 = ParallelZeroOrderOptimizer(model2, learning_rate=1e-4, epsilon=1e-4,
+                                     n_perturbations=n_pert, pert_batch_size=8)
+    start = time.time()
+    result2 = opt2.step(loss_fn=None, batch_data=batch_data)
+    time2 = time.time() - start
+    results['Dynamic'] = time2
+
+    # Method 3: Vmap
+    model3 = TinyLM(vocab_size=256, dim=64, depth=2).to(device)
+    opt3 = VmapZeroOrderOptimizer(model3, learning_rate=1e-4, epsilon=1e-4,
+                                 n_perturbations=n_pert, pert_batch_size=8)
+    start = time.time()
+    result3 = opt3.step(loss_fn=None, batch_data=batch_data)
+    time3 = time.time() - start
+    results['Vmap'] = time3
+
+    # Method 4: Batched
+    model4 = TinyLM(vocab_size=256, dim=64, depth=2).to(device)
+    opt4 = BatchedPerturbationOptimizer(model4, learning_rate=1e-4, epsilon=1e-4,
+                                       n_perturbations=n_pert, pert_batch_size=8)
+    start = time.time()
+    result4 = opt4.step(loss_fn=None, batch_data=batch_data)
+    time4 = time.time() - start
+    results['Batched'] = time4
+
+    # Print comparison
+    print("\n" + "="*80)
+    print("PERFORMANCE COMPARISON")
+    print("="*80)
+    baseline = results['Sequential']
+    for name, time_taken in results.items():
+        speedup = baseline / time_taken
+        throughput = batch_size * seq_len / time_taken
+        print(f"{name:15s}: {time_taken:6.3f}s  |  {speedup:5.2f}×  |  {throughput:7.0f} tokens/sec")
+
+    print("\n" + "="*80)
+    print(f"BEST METHOD: {min(results, key=results.get)}")
+    print(f"MAX SPEEDUP: {baseline / min(results.values()):.2f}×")
+    print("="*80)
+
+
 if __name__ == '__main__':
     # Test parallel optimizer
     test_parallel_optimizer()
@@ -234,6 +369,12 @@ if __name__ == '__main__':
     # Test vmap optimizer
     test_vmap_optimizer()
 
+    # Test batched optimizer
+    test_batched_optimizer()
+
     # Compare against sequential
     print("\n")
     compare_sequential_vs_parallel()
+
+    # Comprehensive comparison
+    compare_all_methods()
