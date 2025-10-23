@@ -956,8 +956,8 @@ def get_args():
         '--zo_method',
         type=str,
         default='cd_rge',
-        choices=['cd_rge', 'layerwise'],
-        help='Zero-order method: cd_rge (sequential, memory efficient) or layerwise (parallel, 7× faster)'
+        choices=['cd_rge', 'layerwise', 'mezo'],
+        help='Zero-order method: cd_rge (sequential), layerwise (parallel, 7× faster), mezo (memory-efficient, 2 forward passes)'
     )
     zo_group.add_argument(
         '--zo_n_perturbations',
@@ -1329,7 +1329,31 @@ def main():
         # Set epsilon = lr if not explicitly specified (paper recommendation)
         epsilon = args.zo_epsilon if args.zo_epsilon is not None else args.lr
 
-        if args.zo_method == 'layerwise':
+        if args.zo_method == 'mezo':
+            from mezo_optimizer import MeZOOptimizer
+
+            optimizer = MeZOOptimizer(
+                model=model,
+                learning_rate=args.lr,
+                epsilon=epsilon,
+                num_perturbations=args.grad_accum,
+                base_seed=42,
+                rank=global_rank,
+                world_size=world_size
+            )
+
+            if global_rank == 0:
+                print("\n=== Zero-Order Optimization (MeZO) ===")
+                print(f"Method: In-place seed-based perturbation (NeurIPS 2023)")
+                print(f"Learning rate: {args.lr}")
+                print(f"Epsilon: {epsilon}")
+                print(f"Perturbations per step: {args.grad_accum}")
+                print(f"Forward passes per step: {2 * args.grad_accum}")
+                print(f"Memory: Same as inference (no gradients, no backward)")
+                print(f"Scales to thousands of GPUs (no gradient sync)")
+                print("===========================================\n")
+
+        elif args.zo_method == 'layerwise':
             from zero_order_layerwise import LayerwiseZeroOrderOptimizer
 
             optimizer = LayerwiseZeroOrderOptimizer(
