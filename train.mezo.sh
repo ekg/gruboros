@@ -90,8 +90,8 @@ torchrun --nproc_per_node=$NUM_GPUS \
   \
   `# SEQUENCES (multi-perturbation via grad_accum)` \
   --chunk_size 2048 \
-  --batch_size 2 \
-  --grad_accum 16 \
+  --batch_size 8 \
+  --grad_accum 4 \
   \
   `# TRAINING` \
   --train_steps 100000 \
@@ -115,6 +115,6 @@ torchrun --nproc_per_node=$NUM_GPUS \
 echo "Training finished."
 echo "MeZO Training Complete!"
 echo "  - Memory: Same as inference (no gradients stored)"
-echo "  - Forward passes per step: $(( 2 * 16 )) (16 perturbations)"
-echo "  - Data throughput: $(( 8 * 2 * 2048 * 16 )) tokens/step (16 fresh batches)"
-echo "  - Compute: $(( 8 * 2 * 2048 * 32 )) tokens of forward passes per step"
+echo "  - Forward passes per step: $(( 2 * 4 )) (4 perturbations)"
+echo "  - Data throughput: $(( 8 * 8 * 2048 * 4 )) tokens/step (4 fresh batches)"
+echo "  - Compute: $(( 8 * 8 * 2048 * 8 )) tokens of forward passes per step"
