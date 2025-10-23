@@ -953,10 +953,23 @@ def get_args():
         help='Enable zero-order optimization (CD-RGE) for memory-efficient training'
     )
     zo_group.add_argument(
+        '--zo_method',
+        type=str,
+        default='cd_rge',
+        choices=['cd_rge', 'layerwise'],
+        help='Zero-order method: cd_rge (sequential, memory efficient) or layerwise (parallel, 7× faster)'
+    )
+    zo_group.add_argument(
         '--zo_n_perturbations',
         type=int,
         default=96,
         help='Number of probe vectors for gradient estimation (default: 96, range: 48-512)'
+    )
+    zo_group.add_argument(
+        '--zo_perturbation_chunk_size',
+        type=int,
+        default=8,
+        help='Number of perturbations to materialize at once for layerwise method (default: 8, reduces OOM risk)'
     )
     zo_group.add_argument(
         '--zo_epsilon',
@@ -1313,27 +1326,48 @@ def main():
 
     # Initialize optimizer based on training mode
     if args.zero_order:
-        from zero_order_optimizer import CD_RGE_Optimizer, ZeroOrderLossWrapper
-
         # Set epsilon = lr if not explicitly specified (paper recommendation)
         epsilon = args.zo_epsilon if args.zo_epsilon is not None else args.lr
 
-        optimizer = CD_RGE_Optimizer(
-            model=model,
-            learning_rate=args.lr,
-            epsilon=epsilon,
-            n_perturbations=args.zo_n_perturbations,
-            world_size=world_size,
-            rank=global_rank,
-            chunk_size=args.zo_memory_chunk,
-            grad_accum=args.grad_accum
-        )
+        if args.zo_method == 'layerwise':
+            from zero_order_layerwise import LayerwiseZeroOrderOptimizer
 
-        if global_rank == 0:
-            print("\n=== Zero-Order Optimization (CD-RGE) ===")
-            print(f"Learning rate: {args.lr}")
-            print(f"Epsilon: {epsilon}")
-            print(f"Perturbations: {args.zo_n_perturbations}")
+            optimizer = LayerwiseZeroOrderOptimizer(
+                model=model,
+                learning_rate=args.lr,
+                epsilon=epsilon,
+                n_perturbations=args.zo_n_perturbations,
+                perturbation_chunk_size=args.zo_perturbation_chunk_size,
+                base_seed=42,
+                rank=global_rank
+            )
+
+            if global_rank == 0:
+                print("\n=== Zero-Order Optimization (Layer-wise Parallel) ===")
+                print(f"Method: Layer-wise materialized perturbations (7× faster)")
+                print(f"Learning rate: {args.lr}")
+                print(f"Epsilon: {epsilon}")
+                print(f"Perturbations: {args.zo_n_perturbations}")
+        else:
+            from zero_order_optimizer import CD_RGE_Optimizer, ZeroOrderLossWrapper
+
+            optimizer = CD_RGE_Optimizer(
+                model=model,
+                learning_rate=args.lr,
+                epsilon=epsilon,
+                n_perturbations=args.zo_n_perturbations,
+                world_size=world_size,
+                rank=global_rank,
+                chunk_size=args.zo_memory_chunk,
+                grad_accum=args.grad_accum
+            )
+
+            if global_rank == 0:
+                print("\n=== Zero-Order Optimization (CD-RGE) ===")
+                print(f"Method: Sequential virtual perturbations")
+                print(f"Learning rate: {args.lr}")
+                print(f"Epsilon: {epsilon}")
+                print(f"Perturbations: {args.zo_n_perturbations}")
             print(f"Forward passes per step: {2 * args.zo_n_perturbations}")
             print(f"Probe distribution: {args.zo_probe_distribution}")
             print("=========================================\n")
