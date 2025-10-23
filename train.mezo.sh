@@ -109,8 +109,7 @@ torchrun --nproc_per_node=$NUM_GPUS \
   \
   `# FLAGS` \
   --ddp \
-  --cuda \
-  --compile
+  --cuda
 
 echo "Training finished."
 echo "MeZO Training Complete!"
