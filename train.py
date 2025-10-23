@@ -1339,7 +1339,9 @@ def main():
                 num_perturbations=args.grad_accum,
                 base_seed=42,
                 rank=global_rank,
-                world_size=world_size
+                world_size=world_size,
+                beta1=args.sf_beta,
+                beta2=args.sf_beta2,
             )
 
             if global_rank == 0:

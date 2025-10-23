@@ -41,6 +41,8 @@ class MeZOOptimizer:
         base_seed=42,
         rank=0,
         world_size=1,
+        beta1=0.9,
+        beta2=0.999,
     ):
         self.model = model
         self.learning_rate = learning_rate
@@ -49,6 +51,8 @@ class MeZOOptimizer:
         self.base_seed = base_seed
         self.rank = rank
         self.world_size = world_size
+        self.beta1 = beta1
+        self.beta2 = beta2
 
         self.step_counter = 0
         self.model.eval()  # Always in eval mode (no dropout/batchnorm changes)
@@ -56,6 +60,10 @@ class MeZOOptimizer:
         # Get all trainable parameters
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.param_count = sum(p.numel() for p in self.params)
+
+        # Initialize momentum buffers (like Adam's m and v)
+        self.momentum = [torch.zeros_like(p.data) for p in self.params]
+        self.velocity = [torch.zeros_like(p.data) for p in self.params]
 
         # PyTorch optimizer interface compatibility
         self.param_groups = [{'lr': learning_rate, 'params': list(model.parameters())}]
@@ -66,6 +74,7 @@ class MeZOOptimizer:
             print(f"  Learning rate: {learning_rate}")
             print(f"  Epsilon (perturbation scale): {epsilon}")
             print(f"  Perturbations per step: {num_perturbations} (variance reduction: {num_perturbations}×)")
+            print(f"  Momentum: beta1={beta1}, beta2={beta2} (Adam-style)")
             print(f"  Method: IN-PLACE SEED-BASED PERTURBATION")
             print(f"  Memory: SAME AS INFERENCE (no gradients, no backward)")
             print(f"  Perfect for unbounded context & massive parallelism!")
@@ -207,14 +216,18 @@ class MeZOOptimizer:
             dist.all_reduce(grad_tensor, op=dist.ReduceOp.AVG)
             avg_grad_coef = grad_tensor.item()
 
-        # Apply averaged update: θ = θ - lr * avg(g)
-        # We need to regenerate ALL perturbations and apply weighted update
+        # Apply Adam-style momentum update
+        # First, compute the gradient estimate: g = avg_grad_coef * z
+        # Then apply momentum: m = beta1*m + (1-beta1)*g, v = beta2*v + (1-beta2)*g^2
         with torch.no_grad():
-            for k in range(self.num_perturbations):
-                seed = self.base_seed + (self.step_counter * self.num_perturbations + k) * self.world_size + self.rank
-                weight = (1.0 / self.num_perturbations) * avg_grad_coef
+            # Accumulate gradient estimate across all perturbations
+            for i, param in enumerate(self.params):
+                # Zero out gradient accumulator for this parameter
+                grad_estimate = torch.zeros_like(param.data)
 
-                for i, param in enumerate(self.params):
+                # Accumulate gradient estimate from all perturbations
+                for k in range(self.num_perturbations):
+                    seed = self.base_seed + (self.step_counter * self.num_perturbations + k) * self.world_size + self.rank
                     param_seed = seed + i
                     generator = torch.Generator(device=param.device)
                     generator.manual_seed(param_seed)
@@ -224,8 +237,25 @@ class MeZOOptimizer:
                         device=param.device,
                         dtype=param.dtype
                     )
-                    # Accumulate contribution from this perturbation
-                    param.data.add_(z, alpha=-self.learning_rate * weight)
+                    # Accumulate: g += (avg_grad_coef / K) * z
+                    grad_estimate.add_(z, alpha=avg_grad_coef / self.num_perturbations)
+
+                # Update momentum (first moment): m = beta1 * m + (1 - beta1) * g
+                self.momentum[i].mul_(self.beta1).add_(grad_estimate, alpha=1 - self.beta1)
+
+                # Update velocity (second moment): v = beta2 * v + (1 - beta2) * g^2
+                self.velocity[i].mul_(self.beta2).addcmul_(grad_estimate, grad_estimate, value=1 - self.beta2)
+
+                # Bias correction
+                bias_correction1 = 1 - self.beta1 ** (self.step_counter + 1)
+                bias_correction2 = 1 - self.beta2 ** (self.step_counter + 1)
+
+                # Corrected moments
+                m_hat = self.momentum[i] / bias_correction1
+                v_hat = self.velocity[i] / bias_correction2
+
+                # Adam update: θ = θ - lr * m_hat / (sqrt(v_hat) + eps)
+                param.data.addcdiv_(m_hat, v_hat.sqrt().add_(1e-8), value=-self.learning_rate)
 
         self.step_counter += 1
         end_time = time.time()
