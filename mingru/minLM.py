@@ -310,9 +310,9 @@ class minLM(Module):
         if False and STREAMING_LOSS_AVAILABLE:
             loss = triton_streaming_cross_entropy(embed, self.to_logits.weight, labels_masked)
         else:
-            # Chunked loss: MINIMAL chunks to reduce memory, enable larger batch_size!
+            # Chunked loss: Balance speed and memory for profiling baseline
             seq_len = embed.size(1)
-            chunk_size = 16  # 16 tokens = quarter the logits memory vs 64!
+            chunk_size = 64  # 64 tokens = proven working config
             total_loss = 0.0
             num_valid = 0
 

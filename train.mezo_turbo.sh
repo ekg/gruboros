@@ -120,8 +120,8 @@ echo "TURBO MODE: BF16 + NO compile + K=2 + batch=32!"
   \
   `# SEQUENCES (K=4, batch=12, streaming loss!)` \
   --chunk_size 2048 \
-  --batch_size 10 \
-  --grad_accum 1 \
+  --batch_size 8 \
+  --grad_accum 2 \
   \
   `# TRAINING (MeZO with simple momentum, K=2 for speed)` \
   --train_steps 100000 \
