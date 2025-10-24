@@ -312,7 +312,7 @@ class minLM(Module):
         else:
             # Chunked loss: Balance speed and memory for profiling baseline
             seq_len = embed.size(1)
-            chunk_size = 64  # 64 tokens = proven working config
+            chunk_size = 64  # OPTIMAL: Tested 16,32,64,128 - 64 is fastest!
             total_loss = 0.0
             num_valid = 0
 

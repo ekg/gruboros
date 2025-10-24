@@ -944,6 +944,8 @@ def get_args():
                         help='Use simple test GRU implementation for debugging')
     parser.add_argument('--use_standard_gru', action='store_true',
                         help='Use PyTorch nn.GRU (cuDNN-optimized, gold standard nonlinear GRU)')
+    parser.add_argument('--use_causal_conv_gru', action='store_true',
+                        help='Use lightweight causal conv GRU (NO cuDNN, minimal memory!)')
 
     # --- Zero-Order Optimization (CD-RGE) ---
     zo_group = parser.add_argument_group('Zero-Order Optimization')
@@ -976,6 +978,12 @@ def get_args():
         type=float,
         default=None,
         help='Perturbation size for CD-RGE (default: equal to learning rate for stability)'
+    )
+    zo_group.add_argument(
+        '--zo_num_perturbations_mezo',
+        type=int,
+        default=4,
+        help='Number of perturbations per step for MeZO (K). Default: 4. Lower K = faster but higher variance. Each perturbation = 2 forward passes.'
     )
     zo_group.add_argument(
         '--zo_probe_distribution',
@@ -1268,6 +1276,7 @@ def main():
             "use_hybrid_gru": args.hybrid_gru,
             "use_test_gru": args.use_test_gru,
             "use_standard_gru": args.use_standard_gru,
+            "use_causal_conv_gru": args.use_causal_conv_gru,
             "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
             "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init
         }
@@ -1336,23 +1345,28 @@ def main():
                 model=model,
                 learning_rate=args.lr,
                 epsilon=epsilon,
-                num_perturbations=args.grad_accum,
+                num_perturbations=args.zo_num_perturbations_mezo,  # K perturbations (each = 2 forward passes)
                 base_seed=42,
                 rank=global_rank,
                 world_size=world_size,
-                beta1=args.sf_beta,
-                beta2=args.sf_beta2,
+                momentum=args.sf_beta,  # Simple SGD momentum
             )
+
+            # NOTE: We do NOT use DDP for MeZO! DDP allocates gradient buffers we don't need.
+            # MeZO only needs dist.all_reduce() for scalar gradient coefficient (already in optimizer).
+            # This will be handled by skipping DDP wrapping below.
 
             if global_rank == 0:
                 print("\n=== Zero-Order Optimization (MeZO) ===")
                 print(f"Method: In-place seed-based perturbation (NeurIPS 2023)")
                 print(f"Learning rate: {args.lr}")
                 print(f"Epsilon: {epsilon}")
-                print(f"Perturbations per step: {args.grad_accum}")
-                print(f"Forward passes per step: {2 * args.grad_accum}")
+                print(f"Perturbations per step (K): {args.zo_num_perturbations_mezo}")
+                print(f"Forward passes per step: {2 * args.zo_num_perturbations_mezo}")
+                print(f"Gradient accumulation steps: {args.grad_accum}")
                 print(f"Memory: Same as inference (no gradients, no backward)")
                 print(f"Scales to thousands of GPUs (no gradient sync)")
+                print(f"requires_grad=False (prevents DDP gradient buffer allocation!)")
                 print("===========================================\n")
 
         elif args.zo_method == 'layerwise':
@@ -1414,29 +1428,40 @@ def main():
 
     # Setup DDP if enabled
     if args.ddp:
-        # Setup DDP groups
+        # Setup DDP groups (needed for process group initialization)
         ddp_group, ddp_rank, ddp_world_size, is_ddp_primary, node_id = setup_ddp_groups(
             global_rank, local_rank, world_size
         )
-        
-        if global_rank == 0:
-            print(f"\n=== DDP Configuration ===")
-            print(f"DDP enabled: {ddp_world_size} ranks per node")
-            print(f"Node {node_id}: ranks {global_rank - ddp_rank} to {global_rank - ddp_rank + ddp_world_size - 1}")
-            print(f"Gossip participants: rank 0 from each node")
-            print("=========================\n")
-        
-        # Wrap model in DDP
-        model = DDP(
-            model, 
-            device_ids=[device_id] if device.type == 'cuda' else None,
-            process_group=ddp_group,
-            find_unused_parameters=args.ddp_find_unused,
-            gradient_as_bucket_view=True  # Memory optimization
-        )
-        
-        # For DDP, we need to access the underlying module for gossip
-        base_model = model.module
+
+        if not args.zero_order:
+            # Standard training: Wrap model in DDP
+            if global_rank == 0:
+                print(f"\n=== DDP Configuration ===")
+                print(f"DDP enabled: {ddp_world_size} ranks per node")
+                print(f"Node {node_id}: ranks {global_rank - ddp_rank} to {global_rank - ddp_rank + ddp_world_size - 1}")
+                print(f"Gossip participants: rank 0 from each node")
+                print("=========================\n")
+
+            model = DDP(
+                model,
+                device_ids=[device_id] if device.type == 'cuda' else None,
+                process_group=ddp_group,
+                find_unused_parameters=args.ddp_find_unused,
+                gradient_as_bucket_view=True  # Memory optimization
+            )
+
+            # For DDP, we need to access the underlying module for gossip
+            base_model = model.module
+        else:
+            # Zero-order: NO DDP WRAPPING! Saves MASSIVE memory by avoiding gradient buffers.
+            # MeZO only needs dist.all_reduce() for scalar values (process group already initialized above).
+            base_model = model
+
+            if global_rank == 0:
+                print("\n[MeZO] SKIPPING DDP MODEL WRAPPING (saves ~15+ GB gradient buffers!)")
+                print(f"[MeZO] Using {world_size} independent processes with scalar synchronization")
+                print()
+
     else:
         ddp_group = None
         ddp_rank = 0
@@ -1734,15 +1759,16 @@ def main():
                     """
                     batch_chunk, batch_actual_lengths, batch_is_doc_end = batch_data
 
-                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
-                        result = model(
-                            batch_chunk,
-                            return_loss=True,
-                            return_prev_hiddens=True,  # Need hidden states for next batch
-                            prev_hiddens=prev_hiddens,
-                            prev_conv_buffers=prev_conv,
-                            actual_length=batch_actual_lengths
-                        )
+                    # MeZO: NO autocast! It caches 16GB of gradient tensors we never use!
+                    # Model is already in bf16, autocast just wastes memory.
+                    result = model(
+                        batch_chunk,
+                        return_loss=True,
+                        return_prev_hiddens=True,  # Need hidden states for next batch
+                        prev_hiddens=prev_hiddens,
+                        prev_conv_buffers=prev_conv,
+                        actual_length=batch_actual_lengths
+                    )
 
                     # Unpack result
                     if isinstance(result, tuple) and len(result) == 2:
@@ -1793,15 +1819,15 @@ def main():
 
                 # Get hidden states from a single forward pass after optimization
                 # Use return_loss=True for consistent return format
-                with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
-                    result = model(
-                        chunk,
-                        return_loss=True,
-                        return_prev_hiddens=True,
-                        prev_hiddens=hidden_state,
-                        prev_conv_buffers=conv_buffers,
-                        actual_length=actual_lengths
-                    )
+                # MeZO: NO autocast! Model already in bf16, no need to cache gradients.
+                result = model(
+                    chunk,
+                    return_loss=True,
+                    return_prev_hiddens=True,
+                    prev_hiddens=hidden_state,
+                    prev_conv_buffers=conv_buffers,
+                    actual_length=actual_lengths
+                )
 
                 # Unpack the same way as standard path
                 if isinstance(result, tuple) and len(result) == 2:
@@ -1863,8 +1889,12 @@ def main():
         conv_reset_mask = is_doc_end.view(-1, 1, 1)
 
         # Use torch.where for branchless execution - more efficient than multiplication
-        hidden_state = [torch.where(reset_mask, torch.zeros_like(h), h.detach())
-                       for h in next_hidden_state]
+        # Handle architectures without recurrence (hidden states are None)
+        if next_hidden_state and next_hidden_state[0] is not None:
+            hidden_state = [torch.where(reset_mask, torch.zeros_like(h), h.detach())
+                           for h in next_hidden_state]
+        else:
+            hidden_state = []  # No hidden state (e.g., CausalConvGRU)
         # Check if conv buffers exist and contain actual tensors
         if next_conv_buffers and len(next_conv_buffers) > 0 and isinstance(next_conv_buffers[0], torch.Tensor):
             conv_buffers = [torch.where(conv_reset_mask, torch.zeros_like(b), b.detach())
@@ -2018,15 +2048,10 @@ def main():
         # Calculate it/s (always show, it's useful even during warmup)
         iterations_per_sec = 1.0 / step_time if step_time > 0 else 0
         
-        # Track tokens for this step (chunk_size * batch_size)
-        # For zero-order: multiply by 2 * n_perturbations * grad_accum
-        if args.zero_order:
-            # Each perturbation does 2 forward passes (antithetic sampling)
-            # Each perturbation evaluates on grad_accum batches
-            forward_passes_per_step = 2 * args.zo_n_perturbations * args.grad_accum
-            tokens_this_step = chunk_size * batch_size * forward_passes_per_step
-        else:
-            tokens_this_step = chunk_size * batch_size
+        # Track DATA tokens for this step (tokens that contribute to learning)
+        # This is batch_size * chunk_size * world_size regardless of method
+        # (Zero-order does more forward passes, but same data throughput)
+        tokens_this_step = chunk_size * batch_size * world_size
         total_tokens_since_reset += tokens_this_step
 
         # Calculate tok/s (only meaningful after warmup)

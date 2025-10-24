@@ -118,9 +118,9 @@ echo "TURBO MODE: BF16 + NO compile + K=2 + batch=32!"
   --zo_epsilon 0.0001 \
   --zo_num_perturbations_mezo 4 \
   \
-  `# SEQUENCES (K=4, batch=8, no grad_accum!)` \
+  `# SEQUENCES (K=4, batch=12, NO AUTOCAST!)` \
   --chunk_size 2048 \
-  --batch_size 8 \
+  --batch_size 12 \
   --grad_accum 1 \
   \
   `# TRAINING (MeZO with simple momentum, K=2 for speed)` \
