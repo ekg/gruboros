@@ -8,11 +8,11 @@ from mingru.minGRU import minGRU
 
 # Import streaming loss kernel
 try:
-    from mingru.triton_streaming_loss import streaming_cross_entropy_loss_simple
+    from mingru.triton_streaming_loss import triton_streaming_cross_entropy
     STREAMING_LOSS_AVAILABLE = True
-    print("Streaming loss kernel available (position-by-position, NO full logits!)")
+    print("Triton streaming loss available (NO logits materialization!)")
 except ImportError as e:
-    print(f"Streaming loss not available: {e}")
+    print(f"Triton streaming loss not available: {e}")
     STREAMING_LOSS_AVAILABLE = False
 
 # Import GRU implementations
@@ -304,15 +304,15 @@ class minLM(Module):
             mask = arange >= (actual_length - 1)[:, None]
             labels_masked[mask] = -100
 
-        # Use streaming loss if available (NO full logits materialization!)
-        # NOTE: streaming_cross_entropy_loss_simple is SLOW (Python loop over seq_len)!
-        # For zero-order, chunked loss is FASTER and still memory-efficient!
+        # Use Triton streaming loss (NO logits materialization!)
+        # NOTE: Triton kernel has bugs (nested loops), using chunked loss instead
+        # Chunked loss: minimize logits materialization to push batch_size to max!
         if False and STREAMING_LOSS_AVAILABLE:
-            loss = streaming_cross_entropy_loss_simple(embed, self.to_logits, labels_masked)
+            loss = triton_streaming_cross_entropy(embed, self.to_logits.weight, labels_masked)
         else:
-            # Chunked loss: Good balance of speed and memory for zero-order!
+            # Chunked loss: MINIMAL chunks to reduce memory, enable larger batch_size!
             seq_len = embed.size(1)
-            chunk_size = 64  # 64 tokens = faster than 8 while still saving memory
+            chunk_size = 16  # 16 tokens = quarter the logits memory vs 64!
             total_loss = 0.0
             num_valid = 0
 
