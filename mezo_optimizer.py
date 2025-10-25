@@ -41,8 +41,7 @@ class MeZOOptimizer:
         base_seed=42,
         rank=0,
         world_size=1,
-        beta1=0.9,
-        beta2=0.999,
+        momentum=0.9,
     ):
         self.model = model
         self.learning_rate = learning_rate
@@ -51,8 +50,7 @@ class MeZOOptimizer:
         self.base_seed = base_seed
         self.rank = rank
         self.world_size = world_size
-        self.beta1 = beta1
-        self.beta2 = beta2
+        self.momentum = momentum
 
         self.step_counter = 0
         self.model.eval()  # Always in eval mode (no dropout/batchnorm changes)
@@ -61,8 +59,7 @@ class MeZOOptimizer:
         self.params = [p for p in model.parameters() if p.requires_grad]
         self.param_count = sum(p.numel() for p in self.params)
 
-        # Initialize momentum buffers (like Adam's m and v)
-        self.momentum = [torch.zeros_like(p.data) for p in self.params]
+        # Initialize momentum buffer (simple momentum, not Adam!)
         self.velocity = [torch.zeros_like(p.data) for p in self.params]
 
         # PyTorch optimizer interface compatibility
@@ -73,8 +70,8 @@ class MeZOOptimizer:
             print(f"  Parameters: {self.param_count:,}")
             print(f"  Learning rate: {learning_rate}")
             print(f"  Epsilon (perturbation scale): {epsilon}")
-            print(f"  Perturbations per step: {num_perturbations} (variance reduction: {num_perturbations}×)")
-            print(f"  Momentum: beta1={beta1}, beta2={beta2} (Adam-style)")
+            print(f"  Perturbations per step: {num_perturbations}")
+            print(f"  Momentum: {momentum} (simple SGD momentum)")
             print(f"  Method: IN-PLACE SEED-BASED PERTURBATION")
             print(f"  Memory: SAME AS INFERENCE (no gradients, no backward)")
             print(f"  Perfect for unbounded context & massive parallelism!")
@@ -86,42 +83,87 @@ class MeZOOptimizer:
     @contextmanager
     def _perturb_parameters(self, seed, sign):
         """
-        Temporarily perturb all parameters in-place using a random seed.
+        Temporarily perturb all parameters in-place using CHUNKED perturbations.
+
+        MEMORY OPTIMIZATION: Process parameters in 4MB chunks to avoid OOM!
+        - Old approach: 588MB temporary allocation for embedding layer
+        - New approach: 4MB max temporary allocation (150× reduction!)
+
+        TRUE SEED-BASED RESTORATION (no cloning!)
+        - Apply: θ += sign * ε * z
+        - Restore: θ -= sign * ε * z (regenerate z from same seed)
 
         Args:
             seed: Random seed for reproducible perturbation
             sign: +1 or -1 for forward/backward perturbation
         """
-        # Store original parameters and apply perturbation
-        original_values = []
+        # CHUNKED PERTURBATION: Only allocate 4MB at a time!
+        CHUNK_SIZE = 1024 * 1024  # 1M float32 values = 4MB
 
+        # Apply perturbation in chunks (no full materialization!)
         for i, param in enumerate(self.params):
-            # Save original value
-            original_values.append(param.data.clone())
-
-            # Generate and apply perturbation
-            # Use unique seed per parameter to ensure independent perturbations
             param_seed = seed + i
-            generator = torch.Generator(device=param.device)
-            generator.manual_seed(param_seed)
-            z = torch.randn(
-                param.shape,
-                generator=generator,
-                device=param.device,
-                dtype=param.dtype
-            )
-            param.data.add_(z, alpha=sign * self.epsilon)
+            original_shape = param.shape
+            flat_param = param.data.view(-1)
+            num_elements = flat_param.numel()
+
+            # Process in chunks to keep memory usage low
+            for chunk_start in range(0, num_elements, CHUNK_SIZE):
+                chunk_end = min(chunk_start + CHUNK_SIZE, num_elements)
+                chunk_size = chunk_end - chunk_start
+
+                # Deterministic seed for this chunk
+                chunk_seed = param_seed + chunk_start
+                generator = torch.Generator(device=param.device)
+                generator.manual_seed(chunk_seed)
+
+                # Generate perturbation for JUST THIS CHUNK (not the whole param!)
+                z_chunk = torch.randn(
+                    chunk_size,
+                    generator=generator,
+                    device=param.device,
+                    dtype=param.dtype
+                )
+
+                # Apply perturbation to this chunk
+                flat_param[chunk_start:chunk_end].add_(z_chunk, alpha=sign * self.epsilon)
 
         try:
             yield
         finally:
-            # Restore original parameters
-            for param, original in zip(self.params, original_values):
-                param.data.copy_(original)
+            # Restore by regenerating same chunks and subtracting
+            for i, param in enumerate(self.params):
+                param_seed = seed + i
+                flat_param = param.data.view(-1)
+                num_elements = flat_param.numel()
+
+                # Process in same chunks to restore
+                for chunk_start in range(0, num_elements, CHUNK_SIZE):
+                    chunk_end = min(chunk_start + CHUNK_SIZE, num_elements)
+                    chunk_size = chunk_end - chunk_start
+
+                    # Same seed = same random values!
+                    chunk_seed = param_seed + chunk_start
+                    generator = torch.Generator(device=param.device)
+                    generator.manual_seed(chunk_seed)
+
+                    # Regenerate SAME chunk
+                    z_chunk = torch.randn(
+                        chunk_size,
+                        generator=generator,
+                        device=param.device,
+                        dtype=param.dtype
+                    )
+
+                    # Subtract the same perturbation to restore θ
+                    flat_param[chunk_start:chunk_end].add_(z_chunk, alpha=-sign * self.epsilon)
 
     def _compute_loss(self, batch_data):
         """
         Compute cross-entropy loss for language modeling.
+
+        CRITICAL: Uses streaming loss computation that processes positions in small batches.
+        This avoids materializing full [batch, seq, vocab] logits tensor (saves ~4.9 GB!)
 
         Args:
             batch_data: Input tensor [batch_size, seq_len]
@@ -130,15 +172,10 @@ class MeZOOptimizer:
             Scalar loss value
         """
         with torch.no_grad():
-            logits = self.model(batch_data)
-            targets = batch_data[:, 1:]
-            logits_shifted = logits[:, :-1]
+            # The model's forward() expects input x and will internally shift for labels
+            # When return_loss=True, it computes loss using streaming (64-position batches)
+            loss = self.model(batch_data, return_loss=True)
 
-            loss = F.cross_entropy(
-                logits_shifted.reshape(-1, logits_shifted.size(-1)),
-                targets.reshape(-1),
-                reduction='mean'
-            )
             return loss.item()
 
     def _get_gpu_utilization(self):
@@ -216,16 +253,16 @@ class MeZOOptimizer:
             dist.all_reduce(grad_tensor, op=dist.ReduceOp.AVG)
             avg_grad_coef = grad_tensor.item()
 
-        # Apply Adam-style momentum update
-        # First, compute the gradient estimate: g = avg_grad_coef * z
-        # Then apply momentum: m = beta1*m + (1-beta1)*g, v = beta2*v + (1-beta2)*g^2
+        # Apply simple momentum update (proven for MeZO)
+        # gradient estimate: g = avg_grad_coef * z
+        # momentum update: v = momentum * v + g, θ = θ - lr * v
+        total_grad_norm_sq = 0.0
         with torch.no_grad():
-            # Accumulate gradient estimate across all perturbations
             for i, param in enumerate(self.params):
-                # Zero out gradient accumulator for this parameter
+                # Compute gradient estimate: g = avg_grad_coef * z
+                # For K perturbations, we average: g = (1/K) * sum_k [grad_coef_k * z_k]
                 grad_estimate = torch.zeros_like(param.data)
 
-                # Accumulate gradient estimate from all perturbations
                 for k in range(self.num_perturbations):
                     seed = self.base_seed + (self.step_counter * self.num_perturbations + k) * self.world_size + self.rank
                     param_seed = seed + i
@@ -240,22 +277,17 @@ class MeZOOptimizer:
                     # Accumulate: g += (avg_grad_coef / K) * z
                     grad_estimate.add_(z, alpha=avg_grad_coef / self.num_perturbations)
 
-                # Update momentum (first moment): m = beta1 * m + (1 - beta1) * g
-                self.momentum[i].mul_(self.beta1).add_(grad_estimate, alpha=1 - self.beta1)
+                # Accumulate gradient norm (L2 norm across all parameters)
+                total_grad_norm_sq += grad_estimate.norm(2).item() ** 2
 
-                # Update velocity (second moment): v = beta2 * v + (1 - beta2) * g^2
-                self.velocity[i].mul_(self.beta2).addcmul_(grad_estimate, grad_estimate, value=1 - self.beta2)
+                # Update velocity: v = momentum * v + g
+                self.velocity[i].mul_(self.momentum).add_(grad_estimate)
 
-                # Bias correction
-                bias_correction1 = 1 - self.beta1 ** (self.step_counter + 1)
-                bias_correction2 = 1 - self.beta2 ** (self.step_counter + 1)
+                # Update parameters: θ = θ - lr * v
+                param.data.add_(self.velocity[i], alpha=-self.learning_rate)
 
-                # Corrected moments
-                m_hat = self.momentum[i] / bias_correction1
-                v_hat = self.velocity[i] / bias_correction2
-
-                # Adam update: θ = θ - lr * m_hat / (sqrt(v_hat) + eps)
-                param.data.addcdiv_(m_hat, v_hat.sqrt().add_(1e-8), value=-self.learning_rate)
+        # Compute total gradient norm
+        grad_norm = total_grad_norm_sq ** 0.5
 
         self.step_counter += 1
         end_time = time.time()
@@ -266,6 +298,7 @@ class MeZOOptimizer:
 
         return {
             'loss': avg_loss,
+            'grad_norm': grad_norm,  # Add gradient norm for monitoring
             'time_total': end_time - start_time,
             'step': self.step_counter,
             'num_perturbations': self.num_perturbations,

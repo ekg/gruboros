@@ -1848,6 +1848,7 @@ def main():
                     batch_provider=batch_provider_with_first
                 )
                 chunk_loss = zo_result['loss']
+                zo_grad_norm = zo_result.get('grad_norm', None)  # Extract gradient norm for logging
 
                 # CRITICAL: Clear cache after optimizer.step() to free memory from 8 forward passes!
                 if device.type == 'cuda':
@@ -1955,8 +1956,9 @@ def main():
         grad_norm = None
         if should_optimize:
             if args.zero_order:
-                # Zero-order: No gradients to clip or scale
+                # Zero-order: Extract gradient norm from optimizer result
                 # Optimizer step already happened in the forward pass
+                grad_norm = zo_grad_norm  # Use the gradient norm computed by MeZO optimizer
                 accumulated_steps = 0
             else:
                 # Standard backpropagation: handle gradients
