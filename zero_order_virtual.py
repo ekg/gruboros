@@ -84,6 +84,105 @@ def matmul_with_virtual_perturbation_kernel(
     tl.store(out_ptrs, acc, mask=out_mask)
 
 
+@triton.jit
+def matmul_with_virtual_perturbation_batched_kernel(
+    x_ptr, w_ptr, output_ptr,
+    seeds_ptr,  # Pointer to seeds [M] - one seed per batch element!
+    M, N, K,
+    epsilon,
+    stride_xm, stride_xk,
+    stride_wk, stride_wn,
+    stride_om, stride_on,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    """
+    Batched fused matmul with VIRTUAL perturbations: Y = X @ (W + ε·P)
+
+    Each row of X gets a DIFFERENT perturbation based on seeds[row_idx].
+    Uses hash-based RNG for true vectorization over batch dimension!
+    """
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+
+    # Load seeds for this batch of rows [BLOCK_M]
+    seed_ptrs = seeds_ptr + offs_m
+    seed_mask = offs_m < M
+    seeds = tl.load(seed_ptrs, mask=seed_mask, other=0).to(tl.int32)
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    # Iterate over K dimension
+    for k_start in range(0, tl.cdiv(K, BLOCK_K) * BLOCK_K, BLOCK_K):
+        k_offs = k_start + tl.arange(0, BLOCK_K)
+        k_mask = k_offs < K
+
+        # Load X block [BLOCK_M, BLOCK_K]
+        x_ptrs = x_ptr + offs_m[:, None] * stride_xm + k_offs[None, :] * stride_xk
+        x_mask = (offs_m[:, None] < M) & k_mask[None, :]
+        x = tl.load(x_ptrs, mask=x_mask, other=0.0).to(tl.float32)
+
+        # Load W block [BLOCK_K, BLOCK_N] (same for all batch elements)
+        w_ptrs = w_ptr + k_offs[:, None] * stride_wk + offs_n[None, :] * stride_wn
+        w_mask = k_mask[:, None] & (offs_n[None, :] < N)
+        w = tl.load(w_ptrs, mask=w_mask, other=0.0).to(tl.float32)
+
+        # Generate per-row perturbations using hash-based RNG
+        # For each (m, k, n), generate random value from seeds[m]
+
+        # Broadcast seeds to [BLOCK_M, 1, 1]
+        seeds_broadcast = seeds[:, None, None]
+
+        # Generate hash inputs: [BLOCK_M, BLOCK_K, BLOCK_N]
+        k_broadcast = k_offs[None, :, None]  # [1, BLOCK_K, 1]
+        n_broadcast = offs_n[None, None, :]  # [1, 1, BLOCK_N]
+
+        # Hash function (simple but effective)
+        # Mix seed, k index, and n index to get pseudo-random values
+        hash1 = (seeds_broadcast * 2654435761 + k_broadcast * 1103515245 + n_broadcast * 12345)
+        hash2 = (hash1 ^ (hash1 >> 16)) * 0x45d9f3b
+        hash3 = (hash2 ^ (hash2 >> 16)) * 0x45d9f3b
+        hash_final = hash3 ^ (hash3 >> 16)
+
+        # Normalize to [0, 1] range (hash_final is int32, so values are in [-2^31, 2^31))
+        # Take absolute value and normalize
+        hash_abs = tl.abs(hash_final)
+        random_01 = (hash_abs & 0x7FFFFFFF).to(tl.float32) / 2147483647.0
+
+        # Convert to Rademacher: ±1 based on threshold
+        # perturbation shape: [BLOCK_M, BLOCK_K, BLOCK_N]
+        perturbation = tl.where(random_01 > 0.5, 1.0, -1.0)
+
+        # Compute Y = X @ (W + eps * P) using broadcasting (NO LOOPS!)
+        # Y[m, n] = sum_k X[m, k] * (W[k, n] + eps * P[m, k, n])
+        #         = sum_k X[m, k] * W[k, n] + eps * sum_k X[m, k] * P[m, k, n]
+        #         = (X @ W)[m, n] + eps * (X[:, :, None] * P).sum(axis=1)[m, n]
+
+        # Base matmul: [BLOCK_M, BLOCK_N]
+        y_base = tl.dot(x, w)
+
+        # Perturbed term using broadcasting:
+        # x: [BLOCK_M, BLOCK_K]
+        # perturbation: [BLOCK_M, BLOCK_K, BLOCK_N]
+        # x[:, :, None]: [BLOCK_M, BLOCK_K, 1]
+        # x[:, :, None] * perturbation: [BLOCK_M, BLOCK_K, BLOCK_N]
+        # sum(axis=1): [BLOCK_M, BLOCK_N]
+        x_expanded = x[:, :, None]  # [BLOCK_M, BLOCK_K, 1]
+        y_pert = tl.sum(x_expanded * perturbation, axis=1)  # [BLOCK_M, BLOCK_N]
+
+        # Combine: Y = Y_base + eps * Y_pert
+        acc += y_base + epsilon * y_pert
+
+    # Store result
+    out_ptrs = output_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+    out_mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+    tl.store(out_ptrs, acc, mask=out_mask)
+
+
 def matmul_with_virtual_perturbation(x, w, perturbation_seed: int, epsilon: float):
     """
     Compute Y = X @ (W + ε·P) where P is VIRTUALLY generated from seed
@@ -130,6 +229,67 @@ def matmul_with_virtual_perturbation(x, w, perturbation_seed: int, epsilon: floa
         M, N, K,
         epsilon,
         perturbation_seed,
+        x.stride(0), x.stride(1),
+        w.stride(0), w.stride(1),
+        y.stride(0), y.stride(1),
+        BLOCK_M, BLOCK_N, BLOCK_K,
+    )
+
+    return y
+
+
+def matmul_with_virtual_perturbation_batched(x, w, seeds: torch.Tensor, epsilon: float):
+    """
+    Compute Y = X @ (W + ε·P) where EACH ROW gets a DIFFERENT perturbation from seeds
+
+    Args:
+        x: Input tensor [M, K]
+        w: Weight tensor [K, N]
+        seeds: Seed tensor [M] - one seed per row!
+        epsilon: Perturbation magnitude
+
+    Returns:
+        y: Output tensor [M, N]
+
+    This enables TRUE batch-parallel perturbation evaluation!
+    """
+    M, K = x.shape
+    K2, N = w.shape
+    assert K == K2
+    assert seeds.shape[0] == M, f"Need one seed per row: seeds.shape={seeds.shape}, M={M}"
+
+    # Fallback for small matrices
+    if M < 16 or K < 16 or N < 16:
+        # Process each row with its own seed
+        outputs = []
+        for i in range(M):
+            seed = seeds[i].item()
+            torch.manual_seed(seed)
+            p = torch.randn(K, N, device=w.device, dtype=w.dtype).sign()
+            y_row = torch.matmul(x[i:i+1], w + epsilon * p)
+            outputs.append(y_row)
+        return torch.cat(outputs, dim=0)
+
+    # Output tensor
+    y = torch.empty((M, N), device=x.device, dtype=torch.float32)
+
+    # Ensure seeds are contiguous int32
+    seeds_int32 = seeds.to(dtype=torch.int32).contiguous()
+
+    # Block sizes
+    BLOCK_M = max(16, min(64, triton.next_power_of_2(M)))
+    BLOCK_N = max(16, min(64, triton.next_power_of_2(N)))
+    BLOCK_K = max(16, min(32, triton.next_power_of_2(K)))
+
+    # Grid
+    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+
+    # Launch batched kernel
+    matmul_with_virtual_perturbation_batched_kernel[grid](
+        x, w, y,
+        seeds_int32,
+        M, N, K,
+        epsilon,
         x.stride(0), x.stride(1),
         w.stride(0), w.stride(1),
         y.stride(0), y.stride(1),
