@@ -86,7 +86,7 @@ echo "Memory defragmentation ENABLED!"
 echo "Starting 500M parameter MeZO OVERNIGHT STABLE training on 8 GPUs."
 echo "Architecture: CausalConvGRU (NO cuDNN!), NO FFN, TikToken (100K vocab)"
 echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
-echo "STABLE MODE: K=80 (K IS THE BATCH!), BS=1, LR=0.0001, 40k steps, checkpoint every 2k steps"
+echo "STABLE MODE: K=256 (MAX VARIANCE REDUCTION!), BS=1, LR=0.0001, 40k steps, checkpoint every 2k steps"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -115,14 +115,14 @@ echo "STABLE MODE: K=80 (K IS THE BATCH!), BS=1, LR=0.0001, 40k steps, checkpoin
   --zero_order \
   --zo_method mezo \
   --zo_epsilon 0.0001 \
-  --zo_num_perturbations_mezo 80 \
+  --zo_num_perturbations_mezo 256 \
   \
-  `# SEQUENCES (K=80: perturbations ARE the batch! BS=1 for max gradient quality)` \
+  `# SEQUENCES (K=256: MAX perturbations! BS=1 for ultimate gradient quality)` \
   --chunk_size 2048 \
   --batch_size 1 \
   --grad_accum 1 \
   \
-  `# TRAINING (MeZO with K=80: 9× variance reduction vs K=8!)` \
+  `# TRAINING (MeZO with K=256: 16× variance reduction vs K=8, 1/16 noise!)` \
   --train_steps 40000 \
   --lr 0.0001 \
   --sf_beta 0.9 \
@@ -147,11 +147,11 @@ echo "  - Precision: BF16 (half memory!)"
 echo "  - torch.compile: DISABLED (saves ~30GB!)"
 echo "  - torch.no_grad(): CRITICAL FIX (saved 40GB activation cache!)"
 echo "  - Memory usage: ~4.6 GB constant (leak fixed!)"
-echo "  - Forward passes: 160 (K=80, K IS THE BATCH SIZE!)"
+echo "  - Forward passes: 512 (K=256, MAXIMUM perturbations!)"
 echo "  - Batch size: 1 (all variance reduction goes to K, not data!)"
 echo "  - Data throughput: $(( 1 * 1 * 8 * 2048 )) tokens/step = 16,384 tok/step"
-echo "  - Variance reduction: 9× better than K=8 (1/√80 vs 1/√8)"
+echo "  - Variance reduction: 16× better than K=8 (1/√256 vs 1/√8 = 1/16 vs 1/2.8)"
+echo "  - Gradient noise: 1/16 of original (ultra-stable!)"
 echo "  - Seed-based restoration: NO parameter cloning!"
 echo "  - Chunked loss (64 tokens): Avoids OOM!"
 echo "  - LR: 0.0001 with simple SGD momentum=0.9"
-echo "  - Expected: ~18k tok/s/GPU × 8 GPUs = ~144k tok/s total (same as K=8!)"
