@@ -50,9 +50,34 @@ class CausalConvGRU(nn.Module):
         # Output projection
         self.out_proj = nn.Linear(self.dim_inner, dim, bias=False)
 
-        # Initialize with small values for stability
-        nn.init.normal_(self.conv.weight, mean=0.0, std=0.02)
+        # IDENTITY INITIALIZATION for better gradient flow & zero-order training!
+        # Goal: Make the layer initially act as identity (output ≈ input)
+
+        # 1. Conv starts as identity: only last kernel position has weight
+        #    For causal conv, this means output[t] ≈ input[t]
+        with torch.no_grad():
+            nn.init.zeros_(self.conv.weight)
+            # Set last position to small value (will grow during training)
+            # Shape: [dim_inner, dim, kernel_size]
+            if expansion_factor == 1.0:
+                # When expansion=1, can init as perfect identity
+                for i in range(min(dim, self.dim_inner)):
+                    self.conv.weight[i, i, -1] = 1.0
+            else:
+                # When expansion!=1, use Xavier for the last kernel position
+                nn.init.xavier_uniform_(self.conv.weight[:, :, -1:])
+
+        # 2. Gate projection: small random weights
         nn.init.normal_(self.gate_proj.weight, mean=0.0, std=0.02)
+
+        # 3. Gate biases: favor identity behavior
+        #    - Update gate bias = negative (sigmoid(neg) ≈ 0, passes through conv)
+        #    - Reset gate bias = positive (sigmoid(pos) ≈ 1, allows full signal)
+        with torch.no_grad():
+            self.gate_proj.bias.data[:self.dim_inner] = -1.0  # Reset gate: start low
+            self.gate_proj.bias.data[self.dim_inner:] = -1.0  # Update gate: start low
+
+        # 4. Output projection: ZERO init (critical for residual!)
         nn.init.constant_(self.out_proj.weight, 0.)  # Start as identity
 
     def forward(
