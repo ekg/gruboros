@@ -86,7 +86,7 @@ echo "Memory defragmentation ENABLED!"
 echo "Starting 500M parameter MeZO OVERNIGHT STABLE training on 8 GPUs."
 echo "Architecture: CausalConvGRU (NO cuDNN!), NO FFN, TikToken (100K vocab)"
 echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
-echo "STABLE MODE: K=4, LR=0.00003, 40k steps (~16 hours), checkpoint every 2k steps"
+echo "STABLE MODE: K=4, LR=0.0001, 40k steps (~16 hours), checkpoint every 2k steps"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -122,9 +122,9 @@ echo "STABLE MODE: K=4, LR=0.00003, 40k steps (~16 hours), checkpoint every 2k s
   --batch_size 80 \
   --grad_accum 1 \
   \
-  `# TRAINING (MeZO with conservative LR for stability)` \
+  `# TRAINING (MeZO with K=4 for stable gradients)` \
   --train_steps 40000 \
-  --lr 0.00003 \
+  --lr 0.0001 \
   --sf_beta 0.9 \
   --weight_decay 0.0 \
   --grad_clip 0.0 \
