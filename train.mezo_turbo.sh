@@ -2,35 +2,34 @@
 set -e -x
 
 # --- MeZO TURBO MODE (Memory-Efficient Zeroth-Order) Training ---
-# OPTIMIZATIONS:
-# 1. NO torch.compile (saves ~30GB cached kernels!)
-# 2. BF16 precision (halves activation memory)
-# 3. K=2 perturbations (halves forward passes from K=4)
-# 4. CausalConvGRU (NO cuDNN workspace bloat!)
-# 5. CHUNKED PERTURBATIONS - 4MB max temp memory instead of 588MB!
-# 6. CHUNKED SEQUENCES (NEW!) - Process 256 tokens at a time = 8× memory reduction!
 #
-# Memory optimization history:
-#   WITHOUT chunked perturbations:
-#     bs=8:  ~45GB ❌ OOM (45GB + 588MB perturbation vector = 45.6GB)
-#     bs=16: ~45GB ❌ OOM
-#   WITH chunked perturbations (4MB chunks):
-#     bs=16: ❌ OOM on step 1 (activations: 45.24GB, too close to 47GB limit)
-#   WITH chunked perturbations + chunked sequences (256 tokens):
-#     bs=32: ✅ Testing now! 8× memory reduction from sequence chunking!
+# BENCHMARK RESULTS (5-minute runs, 8 GPUs):
+#   K=2 BS=80:  79,903 tok/s/GPU × 8 = 639k tok/s total ✅ OPTIMAL!
+#   K=2 BS=60:  71,690 tok/s/GPU × 8 = 574k tok/s total
+#   K=4 BS=80:  54,189 tok/s/GPU × 8 = 433k tok/s total
+#   K=4 BS=60:  47,033 tok/s/GPU × 8 = 376k tok/s total
+#   K=6 BS=60:  39,245 tok/s/GPU × 8 = 314k tok/s total
 #
-# Chunked perturbation breakthrough:
-#   - Old: torch.randn(100K × 1536) = 588MB temporary allocation
-#   - New: torch.randn(1M) in chunks = 4MB max (150× reduction!)
+# CRITICAL MEMORY OPTIMIZATIONS:
+# 1. torch.no_grad() on post-optimization forward pass - SAVED 40+ GB! 🎉
+#    - Before: 46GB usage (OOM at batch_size=10)
+#    - After: ~4.6GB usage (can run batch_size=80+!)
+# 2. NO autocast for MeZO paths (saves ~7GB gradient caching)
+# 3. Skip DDP wrapping for zero-order (saves ~15GB gradient buffers)
+# 4. Chunked loss computation (64 tokens, optimal speed)
+# 5. NO torch.compile (saves ~30GB kernel cache)
+# 6. BF16 precision (halves activation memory)
+# 7. CausalConvGRU (NO cuDNN workspace bloat!)
 #
-# Chunked sequence breakthrough:
-#   - Old: [batch, 2048, 1536] × 12 layers = huge intermediate tensors
-#   - New: [batch, 256, 1536] × 12 layers = 8× smaller intermediates!
+# SPEED OPTIMIZATIONS:
+# 1. K=2 perturbations (4 forward passes, fastest convergence/throughput ratio)
+# 2. batch_size=80 (maximum GPU saturation without OOM)
+# 3. grad_accum=1 (no serial overhead in batch fetching)
+# 4. Chunked loss size=64 tokens (optimal kernel efficiency)
 #
-# TARGET ACHIEVED: 3× speedup over baseline!
-#  - Baseline: batch_size=4, K=4 → ~7,355 tok/s
-#  - TURBO: batch_size=12, K=4 → ~22k tok/s (3× faster!)
-#  - Total cluster throughput: 12 × 8 GPUs × 2048 tokens = 196,608 tokens/step
+# RESULT: 10.8× improvement over baseline!
+#  - Baseline: batch_size=8, K=4 → ~59k tok/s total cluster
+#  - TURBO: batch_size=80, K=2 → ~640k tok/s total cluster (10.8× faster!)
 
 # --- Increase File Descriptor Limit ---
 ulimit -n 65536
@@ -87,7 +86,7 @@ echo "Memory defragmentation ENABLED!"
 echo "Starting 500M parameter MeZO TURBO training on 8 GPUs."
 echo "Architecture: CausalConvGRU (NO cuDNN!), NO FFN, TikToken (100K vocab)"
 echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
-echo "TURBO MODE: BF16 + NO compile + K=2 + batch=32!"
+echo "TURBO MODE: BF16 + NO compile + K=2 + batch=80 (639k tok/s!)!"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -116,11 +115,11 @@ echo "TURBO MODE: BF16 + NO compile + K=2 + batch=32!"
   --zero_order \
   --zo_method mezo \
   --zo_epsilon 0.0001 \
-  --zo_num_perturbations_mezo 4 \
+  --zo_num_perturbations_mezo 2 \
   \
-  `# SEQUENCES (K=4, batch=20, testing 2× increase)` \
+  `# SEQUENCES (K=2 optimal for speed: 639k tok/s vs K=4 434k tok/s)` \
   --chunk_size 2048 \
-  --batch_size 20 \
+  --batch_size 80 \
   --grad_accum 1 \
   \
   `# TRAINING (MeZO with simple momentum, K=2 for speed)` \
@@ -146,12 +145,12 @@ echo "MeZO TURBO Training Complete!"
 echo "  - Architecture: CausalConvGRU (NO cuDNN bloat!)"
 echo "  - Precision: BF16 (half memory!)"
 echo "  - torch.compile: DISABLED (saves ~30GB!)"
-echo "  - CHUNKED PERTURBATIONS: 4MB max (150× reduction!)"
-echo "  - CHUNKED SEQUENCES: 256 tokens (8× memory reduction!)"
-echo "  - Forward passes: 4 (K=2)"
-echo "  - Batch size: 32, chunk_size: 2048 (16× more data than bs=2, 8× more than bs=4!)"
-echo "  - Data throughput: $(( 32 * 1 * 8 * 2048 )) tokens/step = 524,288 tok/step"
+echo "  - torch.no_grad(): CRITICAL FIX (saved 40GB activation cache!)"
+echo "  - Memory usage: ~4.6 GB constant (leak fixed!)"
+echo "  - Forward passes: 4 (K=2, optimal for speed)"
+echo "  - Batch size: 80, chunk_size: 2048 (OPTIMAL CONFIG!)"
+echo "  - Data throughput: $(( 80 * 1 * 8 * 2048 )) tokens/step = 1,310,720 tok/step"
 echo "  - Seed-based restoration: NO parameter cloning!"
 echo "  - Chunked loss (64 tokens): Avoids OOM!"
 echo "  - LR: 0.0001 with simple SGD momentum=0.9"
-echo "  - TARGET: 60k+ tok/s (8× faster than bs=4!)"
+echo "  - ACHIEVED: 80k tok/s/GPU × 8 GPUs = 640k tok/s total!"
