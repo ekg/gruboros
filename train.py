@@ -1324,6 +1324,12 @@ def main():
 
 
     model = get_model(model_config).to(device)
+
+    # MEMORY CHECKPOINT 1: After model creation
+    if global_rank == 0 and device.type == 'cuda':
+        mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+        print(f"[MEMORY] After model creation: {mem_allocated:.2f} GB")
+
     # Compile the model for better performance
     if args.compile:
         if global_rank == 0:
@@ -1368,6 +1374,11 @@ def main():
                 print(f"Scales to thousands of GPUs (no gradient sync)")
                 print(f"requires_grad=False (prevents DDP gradient buffer allocation!)")
                 print("===========================================\n")
+
+                # MEMORY CHECKPOINT 2: After optimizer creation
+                if device.type == 'cuda':
+                    mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+                    print(f"[MEMORY] After optimizer creation: {mem_allocated:.2f} GB")
 
         elif args.zo_method == 'layerwise':
             from zero_order_layerwise import LayerwiseZeroOrderOptimizer
@@ -1496,7 +1507,8 @@ def main():
     # DataLoader for batched streaming
     # Use multiple workers to tokenize in parallel (hides CPU tokenization latency)
     # High worker count (plenty of CPU cores), low prefetch (avoid OOM from buffering)
-    num_workers = 8 if tokenizer.__class__.__name__ != 'ByteTokenizer' else 0
+    # MEMORY DEBUG: Force num_workers=0 to test if workers consume 40+ GB!
+    num_workers = 0  # Was: 8 if tokenizer.__class__.__name__ != 'ByteTokenizer' else 0
 
     # Worker initialization function to reseed each worker's PRNG
     # This ensures each worker reads from different file positions
@@ -1520,6 +1532,11 @@ def main():
 
     if global_rank == 0 and num_workers > 0:
         print(f"Using {num_workers} DataLoader workers for parallel tokenization")
+
+    # MEMORY CHECKPOINT 3: After DataLoader creation
+    if global_rank == 0 and device.type == 'cuda':
+        mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+        print(f"[MEMORY] After DataLoader creation: {mem_allocated:.2f} GB")
 
     # --- 3. GOSSIP AND METRICS SETUP ---
     metrics_dir = os.path.join(checkpoint_dir, "metrics")
@@ -1679,6 +1696,11 @@ def main():
     #     z_stats_file = os.path.join(checkpoint_dir, f"z_stats_rank{global_rank}.tsv")
     #     print(f"[Rank {global_rank}] Logging z-gate stats to: {z_stats_file}")
 
+    # MEMORY CHECKPOINT 4: Before training loop
+    if global_rank == 0 and device.type == 'cuda':
+        mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+        print(f"[MEMORY] Before training loop: {mem_allocated:.2f} GB")
+
     while step < train_steps:
         # NOTE: Moved gossip updates to after optimization for safety
         # This prevents mid-batch model updates that could cause segfaults
@@ -1711,7 +1733,12 @@ def main():
         # CRITICAL: Synchronize async transfers before forward pass
         if device.type == 'cuda':
             torch.cuda.synchronize()
-        
+
+        # MEMORY CHECKPOINT 6: After first batch loaded (only on step 0)
+        if step == 0 and global_rank == 0 and device.type == 'cuda':
+            mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+            print(f"[MEMORY] After first batch loaded to GPU: {mem_allocated:.2f} GB")
+
         # Acquire model mutex for entire forward/backward pass
         with evolutionary_node.model_mutex:
             # Mark that we're entering forward pass - no weight updates allowed
@@ -1810,6 +1837,11 @@ def main():
                     else:
                         return batch_provider()
 
+                # MEMORY CHECKPOINT 5: Before first optimizer.step() (only on step 0)
+                if step == 0 and global_rank == 0 and device.type == 'cuda':
+                    mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+                    print(f"[MEMORY] Before first optimizer.step(): {mem_allocated:.2f} GB")
+
                 # Call optimizer step with batch provider
                 zo_result = optimizer.step(
                     loss_fn=compute_loss_on_batch,
@@ -1817,17 +1849,31 @@ def main():
                 )
                 chunk_loss = zo_result['loss']
 
+                # CRITICAL: Clear cache after optimizer.step() to free memory from 8 forward passes!
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+
+                # MEMORY CHECKPOINT: Log memory usage periodically (every 10 steps)
+                if (step % 10 == 0) and global_rank == 0 and device.type == 'cuda':
+                    mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+                    mem_reserved = torch.cuda.memory_reserved(device) / 1024**3
+                    mem_free = (torch.cuda.get_device_properties(device).total_memory / 1024**3) - mem_allocated
+                    print(f"[MEM step{step:>4}] Allocated: {mem_allocated:5.2f} GB | Reserved: {mem_reserved:5.2f} GB | Free: {mem_free:5.2f} GB", flush=True)
+
                 # Get hidden states from a single forward pass after optimization
                 # Use return_loss=True for consistent return format
                 # MeZO: NO autocast! Model already in bf16, no need to cache gradients.
-                result = model(
-                    chunk,
-                    return_loss=True,
-                    return_prev_hiddens=True,
-                    prev_hiddens=hidden_state,
-                    prev_conv_buffers=conv_buffers,
-                    actual_length=actual_lengths
-                )
+                # MeZO: NO hidden state continuity! Each optimization step is independent (stateless).
+                # MeZO: CRITICAL - torch.no_grad() to avoid caching 40+ GB of activations!
+                with torch.no_grad():
+                    result = model(
+                        chunk,
+                        return_loss=True,
+                        return_prev_hiddens=True,
+                        prev_hiddens=None,  # MeZO is stateless - no hidden state across steps!
+                        prev_conv_buffers=None,  # No conv buffers either!
+                        actual_length=actual_lengths
+                    )
 
                 # Unpack the same way as standard path
                 if isinstance(result, tuple) and len(result) == 2:
