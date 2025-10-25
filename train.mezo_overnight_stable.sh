@@ -86,7 +86,7 @@ echo "Memory defragmentation ENABLED!"
 echo "Starting 500M parameter MeZO OVERNIGHT STABLE training on 8 GPUs."
 echo "Architecture: CausalConvGRU (NO cuDNN!), NO FFN, TikToken (100K vocab)"
 echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
-echo "STABLE MODE: K=4, LR=0.0001, 40k steps (~16 hours), checkpoint every 2k steps"
+echo "STABLE MODE: K=8, LR=0.0001, 40k steps (~24 hours), checkpoint every 2k steps"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -115,14 +115,14 @@ echo "STABLE MODE: K=4, LR=0.0001, 40k steps (~16 hours), checkpoint every 2k st
   --zero_order \
   --zo_method mezo \
   --zo_epsilon 0.0001 \
-  --zo_num_perturbations_mezo 4 \
+  --zo_num_perturbations_mezo 8 \
   \
-  `# SEQUENCES (K=4 for stability: 433k tok/s, stable gradients)` \
+  `# SEQUENCES (K=8 for stable gradients, 4× variance reduction vs K=4)` \
   --chunk_size 2048 \
   --batch_size 80 \
   --grad_accum 1 \
   \
-  `# TRAINING (MeZO with K=4 for stable gradients)` \
+  `# TRAINING (MeZO with K=8 for stable gradients)` \
   --train_steps 40000 \
   --lr 0.0001 \
   --sf_beta 0.9 \
@@ -141,16 +141,16 @@ echo "STABLE MODE: K=4, LR=0.0001, 40k steps (~16 hours), checkpoint every 2k st
   --bf16
 
 echo "Training finished."
-echo "MeZO TURBO Training Complete!"
-echo "  - Architecture: CausalConvGRU (NO cuDNN bloat!)"
+echo "MeZO STABLE Training Complete!"
+echo "  - Architecture: CausalConvGRU (NO cuDNN bloat!) with IDENTITY INIT"
 echo "  - Precision: BF16 (half memory!)"
 echo "  - torch.compile: DISABLED (saves ~30GB!)"
 echo "  - torch.no_grad(): CRITICAL FIX (saved 40GB activation cache!)"
 echo "  - Memory usage: ~4.6 GB constant (leak fixed!)"
-echo "  - Forward passes: 4 (K=2, optimal for speed)"
-echo "  - Batch size: 80, chunk_size: 2048 (OPTIMAL CONFIG!)"
+echo "  - Forward passes: 16 (K=8, stable gradients, 4× variance reduction)"
+echo "  - Batch size: 80, chunk_size: 2048"
 echo "  - Data throughput: $(( 80 * 1 * 8 * 2048 )) tokens/step = 1,310,720 tok/step"
 echo "  - Seed-based restoration: NO parameter cloning!"
 echo "  - Chunked loss (64 tokens): Avoids OOM!"
 echo "  - LR: 0.0001 with simple SGD momentum=0.9"
-echo "  - ACHIEVED: 80k tok/s/GPU × 8 GPUs = 640k tok/s total!"
+echo "  - Expected: ~18k tok/s/GPU × 8 GPUs = ~144k tok/s total (slower but STABLE!)"
