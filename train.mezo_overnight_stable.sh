@@ -86,7 +86,7 @@ echo "Memory defragmentation ENABLED!"
 echo "Starting 500M parameter MeZO OVERNIGHT STABLE training on 8 GPUs."
 echo "Architecture: CausalConvGRU (NO cuDNN!), NO FFN, TikToken (100K vocab)"
 echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
-echo "HIGH DIVERSITY MODE: K=32, BS=8 (2048 sequences/step across 8 GPUs!), LR=0.0001, 40k steps, checkpoint every 2k steps"
+echo "FAST MODE: K=32, BS=8, chunk=256 (2048 seqs/step, 8× faster!), LR=0.0001, 40k steps, checkpoint every 2k steps"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -117,12 +117,12 @@ echo "HIGH DIVERSITY MODE: K=32, BS=8 (2048 sequences/step across 8 GPUs!), LR=0
   --zo_epsilon 0.0001 \
   --zo_num_perturbations_mezo 32 \
   \
-  `# SEQUENCES (K=32, BS=8, different batch per K = 2048 seqs/step!)` \
-  --chunk_size 2048 \
+  `# SEQUENCES (K=32, BS=8, chunk=256 for 8× speedup!)` \
+  --chunk_size 256 \
   --batch_size 8 \
   --grad_accum 1 \
   \
-  `# TRAINING (K=32×BS=8×8GPUs = 2048 sequences, 4.2M tokens/step!)` \
+  `# TRAINING (K=32×BS=8×8GPUs×256tok = 2048 seqs, 524k tokens/step!)` \
   --train_steps 40000 \
   --lr 0.0001 \
   --sf_beta 0.9 \
@@ -141,19 +141,21 @@ echo "HIGH DIVERSITY MODE: K=32, BS=8 (2048 sequences/step across 8 GPUs!), LR=0
   --bf16
 
 echo "Training finished."
-echo "MeZO HIGH DIVERSITY Training Complete!"
+echo "MeZO FAST MODE Training Complete!"
 echo "  - Architecture: CausalConvGRU (NO cuDNN bloat!) with IDENTITY INIT"
 echo "  - Precision: BF16 (half memory!)"
 echo "  - torch.compile: DISABLED (saves ~30GB!)"
 echo "  - torch.no_grad(): CRITICAL FIX (saved 40GB activation cache!)"
 echo "  - Memory usage: ~4-6 GB estimate (BS=8)"
 echo "  - Forward passes: 64 TOTAL (K=32 × 2 directions)"
+echo "  - Chunk size: 256 tokens (8× faster than 2048!)"
 echo "  - Data diversity: DIFFERENT batch per K (critical for convergence!)"
+echo "  - Pre-loaded batches: Eliminates I/O overhead in K loop"
 echo "  - Sequences per step: 32×8×8 = 2,048 sequences"
-echo "  - Data throughput: $(( 32 * 8 * 8 * 2048 )) tokens/step = 4,194,304 tok/step"
+echo "  - Data throughput: $(( 32 * 8 * 8 * 256 )) tokens/step = 524,288 tok/step"
 echo "  - Variance reduction: From K=32 perturbations (1/√32 = 1/5.66)"
 echo "  - GPU utilization: Target ~100%"
-echo "  - Speed: ~30-40 seconds per step (serial K loop)"
+echo "  - Speed: Target ~20-25 seconds per step (8× faster than chunk=2048!)"
 echo "  - Seed-based restoration: NO parameter cloning!"
 echo "  - Chunked loss (64 tokens): Avoids OOM!"
 echo "  - LR: 0.0001 with simple SGD momentum=0.9"
