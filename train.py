@@ -1345,13 +1345,13 @@ def main():
         epsilon = args.zo_epsilon if args.zo_epsilon is not None else args.lr
 
         if args.zo_method == 'mezo':
-            from mezo_optimizer import MeZOOptimizer
+            from mezo_batched_optimizer import MeZOBatchedOptimizer
 
-            optimizer = MeZOOptimizer(
+            optimizer = MeZOBatchedOptimizer(
                 model=model,
                 learning_rate=args.lr,
                 epsilon=epsilon,
-                num_perturbations=args.zo_num_perturbations_mezo,  # K perturbations (each = 2 forward passes)
+                batch_size=batch_size,  # Perturbations per GPU processed in PARALLEL!
                 base_seed=42,
                 rank=global_rank,
                 world_size=world_size,
@@ -1359,21 +1359,24 @@ def main():
             )
 
             # NOTE: We do NOT use DDP for MeZO! DDP allocates gradient buffers we don't need.
-            # MeZO only needs dist.all_reduce() for scalar gradient coefficient (already in optimizer).
+            # MeZO uses dist.all_gather() for gradient coefficient cooperation (in batched optimizer).
             # This will be handled by skipping DDP wrapping below.
 
             if global_rank == 0:
-                print("\n=== Zero-Order Optimization (MeZO) ===")
-                print(f"Method: In-place seed-based perturbation (NeurIPS 2023)")
+                total_perturbations = batch_size * world_size
+                print("\n=== Zero-Order Optimization (MeZO BATCHED) ===")
+                print(f"Method: BATCHED parallel perturbations with seed-based generation")
                 print(f"Learning rate: {args.lr}")
                 print(f"Epsilon: {epsilon}")
-                print(f"Perturbations per step (K): {args.zo_num_perturbations_mezo}")
-                print(f"Forward passes per step: {2 * args.zo_num_perturbations_mezo}")
+                print(f"Perturbations per GPU: {batch_size} (processed in PARALLEL via batch dimension!)")
+                print(f"Total perturbations: {total_perturbations} ({batch_size} × {world_size} GPUs)")
+                print(f"Forward passes per GPU: {2 * batch_size} (vs {2 * args.zo_num_perturbations_mezo} serial in old version)")
+                print(f"Expected speedup: ~{args.zo_num_perturbations_mezo // batch_size}× vs serial K={args.zo_num_perturbations_mezo}")
                 print(f"Gradient accumulation steps: {args.grad_accum}")
                 print(f"Memory: Same as inference (no gradients, no backward)")
-                print(f"Scales to thousands of GPUs (no gradient sync)")
+                print(f"GPU cooperation: dist.all_gather() for gradient coefficients")
                 print(f"requires_grad=False (prevents DDP gradient buffer allocation!)")
-                print("===========================================\n")
+                print("================================================\n")
 
                 # MEMORY CHECKPOINT 2: After optimizer creation
                 if device.type == 'cuda':
