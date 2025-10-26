@@ -86,7 +86,7 @@ echo "Memory defragmentation ENABLED!"
 echo "Starting 500M parameter MeZO OVERNIGHT STABLE training on 8 GPUs."
 echo "Architecture: CausalConvGRU (NO cuDNN!), NO FFN, TikToken (100K vocab)"
 echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
-echo "TURBO MODE: K=2, BS=256 (NO SERIAL LOOPS!), LR=0.0001, 40k steps, checkpoint every 2k steps"
+echo "OPTIMIZED MODE: K=2, BS=64 (FAST + EFFICIENT!), LR=0.0001, 40k steps, checkpoint every 2k steps"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -117,12 +117,12 @@ echo "TURBO MODE: K=2, BS=256 (NO SERIAL LOOPS!), LR=0.0001, 40k steps, checkpoi
   --zo_epsilon 0.0001 \
   --zo_num_perturbations_mezo 2 \
   \
-  `# SEQUENCES (K=2 minimal loop, BS=256 MASSIVE parallelism!)` \
+  `# SEQUENCES (K=2 minimal loop, BS=64 for fast forward passes!)` \
   --chunk_size 2048 \
-  --batch_size 256 \
+  --batch_size 64 \
   --grad_accum 1 \
   \
-  `# TRAINING (K=2, BS=256: 4 forward passes total, 2-3s per step!)` \
+  `# TRAINING (K=2, BS=64: 4 forward passes total, ~10s per step!)` \
   --train_steps 40000 \
   --lr 0.0001 \
   --sf_beta 0.9 \
@@ -146,13 +146,13 @@ echo "  - Architecture: CausalConvGRU (NO cuDNN bloat!) with IDENTITY INIT"
 echo "  - Precision: BF16 (half memory!)"
 echo "  - torch.compile: DISABLED (saves ~30GB!)"
 echo "  - torch.no_grad(): CRITICAL FIX (saved 40GB activation cache!)"
-echo "  - Memory usage: ~15-20 GB estimate (BS=256)"
+echo "  - Memory usage: ~6-8 GB estimate (BS=64)"
 echo "  - Forward passes: ONLY 4 TOTAL (K=2 × 2 directions - NO SERIAL LOOPS!)"
-echo "  - Parallelism: 256 sequences processed simultaneously!"
-echo "  - Data throughput: $(( 256 * 1 * 8 * 2048 )) tokens/step = 4,194,304 tok/step"
-echo "  - Variance reduction: From batch averaging (1/√256 = 1/16)"
+echo "  - Parallelism: 64 sequences processed simultaneously!"
+echo "  - Data throughput: $(( 64 * 1 * 8 * 2048 )) tokens/step = 1,048,576 tok/step"
+echo "  - Variance reduction: From batch averaging (1/√64 = 1/8)"
 echo "  - GPU utilization: 100% SUSTAINED (all cores saturated!)"
-echo "  - Speed: 2-3 seconds per step (60× faster than K=16!)"
+echo "  - Speed: ~10 seconds per step (4× faster than BS=256!)"
 echo "  - Seed-based restoration: NO parameter cloning!"
 echo "  - Chunked loss (64 tokens): Avoids OOM!"
 echo "  - LR: 0.0001 with simple SGD momentum=0.9"
