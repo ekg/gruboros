@@ -294,3 +294,45 @@ class MeZOBatchedOptimizer:
             'num_perturbations': self.total_perturbations,
             'forward_passes': 2 * self.batch_size,  # Per GPU
         }
+
+    def state_dict(self):
+        """
+        Return optimizer state for checkpointing.
+
+        Returns dictionary with all state needed to resume training.
+        """
+        return {
+            'step_counter': self.step_counter,
+            'velocity': [v.clone().cpu() for v in self.velocity],  # Move to CPU for checkpoint
+            'learning_rate': self.learning_rate,
+            'epsilon': self.epsilon,
+            'momentum': self.momentum,
+            'batch_size': self.batch_size,
+            'base_seed': self.base_seed,
+        }
+
+    def load_state_dict(self, state_dict):
+        """
+        Load optimizer state from checkpoint.
+
+        Args:
+            state_dict: Dictionary returned by state_dict()
+        """
+        self.step_counter = state_dict['step_counter']
+
+        # Restore velocity buffers (move back to correct device)
+        for i, v in enumerate(state_dict['velocity']):
+            self.velocity[i].copy_(v.to(self.params[i].device))
+
+        # Restore hyperparameters (allow override)
+        self.learning_rate = state_dict.get('learning_rate', self.learning_rate)
+        self.epsilon = state_dict.get('epsilon', self.epsilon)
+        self.momentum = state_dict.get('momentum', self.momentum)
+        self.batch_size = state_dict.get('batch_size', self.batch_size)
+        self.base_seed = state_dict.get('base_seed', self.base_seed)
+
+        if self.rank == 0:
+            print(f"[MeZO] Loaded optimizer state from checkpoint:")
+            print(f"  Step counter: {self.step_counter}")
+            print(f"  Learning rate: {self.learning_rate}")
+            print(f"  Momentum: {self.momentum}")
