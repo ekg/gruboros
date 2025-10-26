@@ -86,7 +86,7 @@ echo "Memory defragmentation ENABLED!"
 echo "Starting 500M parameter MeZO OVERNIGHT STABLE training on 8 GPUs."
 echo "Architecture: CausalConvGRU (NO cuDNN!), NO FFN, TikToken (100K vocab)"
 echo "Method: Zero-order optimization (forward-only, same memory as inference!)"
-echo "OPTIMIZED MODE: K=2, BS=64 (FAST + EFFICIENT!), LR=0.0001, 40k steps, checkpoint every 2k steps"
+echo "PARALLEL MODE: K=32, BS=8 (batch once, parallel perturbations!), LR=0.0001, 40k steps, checkpoint every 2k steps"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -111,18 +111,18 @@ echo "OPTIMIZED MODE: K=2, BS=64 (FAST + EFFICIENT!), LR=0.0001, 40k steps, chec
   `# GRU CONFIGURATION (lightweight causal conv - NO cuDNN!)` \
   --use_causal_conv_gru \
   \
-  `# ZERO-ORDER OPTIMIZATION (MeZO TURBO - NO SERIAL LOOPS!)` \
+  `# ZERO-ORDER OPTIMIZATION (MeZO PARALLEL - batch loaded once!)` \
   --zero_order \
   --zo_method mezo \
   --zo_epsilon 0.0001 \
-  --zo_num_perturbations_mezo 2 \
+  --zo_num_perturbations_mezo 32 \
   \
-  `# SEQUENCES (K=2 minimal loop, BS=64 for fast forward passes!)` \
+  `# SEQUENCES (K=32 perturbations, BS=8, batch loaded ONCE!)` \
   --chunk_size 2048 \
-  --batch_size 64 \
+  --batch_size 8 \
   --grad_accum 1 \
   \
-  `# TRAINING (K=2, BS=64: 4 forward passes total, ~10s per step!)` \
+  `# TRAINING (K=32, BS=8: 64 forward passes, same batch reused!)` \
   --train_steps 40000 \
   --lr 0.0001 \
   --sf_beta 0.9 \
@@ -141,18 +141,18 @@ echo "OPTIMIZED MODE: K=2, BS=64 (FAST + EFFICIENT!), LR=0.0001, 40k steps, chec
   --bf16
 
 echo "Training finished."
-echo "MeZO TURBO Training Complete!"
+echo "MeZO PARALLEL Training Complete!"
 echo "  - Architecture: CausalConvGRU (NO cuDNN bloat!) with IDENTITY INIT"
 echo "  - Precision: BF16 (half memory!)"
 echo "  - torch.compile: DISABLED (saves ~30GB!)"
 echo "  - torch.no_grad(): CRITICAL FIX (saved 40GB activation cache!)"
-echo "  - Memory usage: ~6-8 GB estimate (BS=64)"
-echo "  - Forward passes: ONLY 4 TOTAL (K=2 × 2 directions - NO SERIAL LOOPS!)"
-echo "  - Parallelism: 64 sequences processed simultaneously!"
-echo "  - Data throughput: $(( 64 * 1 * 8 * 2048 )) tokens/step = 1,048,576 tok/step"
-echo "  - Variance reduction: From batch averaging (1/√64 = 1/8)"
-echo "  - GPU utilization: 100% SUSTAINED (all cores saturated!)"
-echo "  - Speed: ~10 seconds per step (4× faster than BS=256!)"
+echo "  - Memory usage: ~4-6 GB estimate (BS=8)"
+echo "  - Forward passes: 64 TOTAL (K=32 × 2 directions)"
+echo "  - Batch loading: ONCE per step (reused for all K perturbations!)"
+echo "  - Data throughput: $(( 8 * 1 * 8 * 2048 )) tokens/step = 131,072 tok/step"
+echo "  - Variance reduction: From K perturbations (1/√32 = 1/5.66)"
+echo "  - GPU utilization: Target 100% (parallel perturbations!)"
+echo "  - Speed: Target ~20-30 seconds per step (no batch loading overhead!)"
 echo "  - Seed-based restoration: NO parameter cloning!"
 echo "  - Chunked loss (64 tokens): Avoids OOM!"
 echo "  - LR: 0.0001 with simple SGD momentum=0.9"
