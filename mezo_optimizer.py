@@ -206,18 +206,18 @@ class MeZOOptimizer:
         start_time = time.time()
         gpu_utils = []
 
-        # Load batch ONCE (reuse for all K perturbations - no data diversity needed!)
-        result = batch_provider()
-        if isinstance(result, tuple):
-            batch_data = result[0]
-        else:
-            batch_data = result
-
         # Accumulate gradients across K perturbations
         accumulated_grad_coef = 0.0
         all_losses = []
 
         for k in range(self.num_perturbations):
+            # Get fresh batch for this perturbation (DATA DIVERSITY IS CRITICAL!)
+            result = batch_provider()
+            if isinstance(result, tuple):
+                batch_data = result[0]
+            else:
+                batch_data = result
+
             # Generate unique seed for this perturbation
             # Format: base + (step * K + k) * world_size + rank
             seed = self.base_seed + (self.step_counter * self.num_perturbations + k) * self.world_size + self.rank
