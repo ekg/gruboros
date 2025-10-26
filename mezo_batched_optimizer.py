@@ -42,6 +42,7 @@ class MeZOBatchedOptimizer:
         rank=0,
         world_size=1,
         momentum=0.9,
+        grad_accum=1,
     ):
         self.model = model
         self.learning_rate = learning_rate
@@ -51,8 +52,10 @@ class MeZOBatchedOptimizer:
         self.rank = rank
         self.world_size = world_size
         self.momentum = momentum
+        self.grad_accum = grad_accum
 
         self.step_counter = 0
+        self.accum_counter = 0  # Track gradient accumulation steps
         self.model.eval()
 
         # Get all trainable parameters
@@ -61,6 +64,9 @@ class MeZOBatchedOptimizer:
 
         # Initialize momentum buffer
         self.velocity = [torch.zeros_like(p.data) for p in self.params]
+
+        # Initialize gradient accumulation buffer
+        self.accumulated_grad_coefs = None
 
         # PyTorch optimizer interface compatibility
         self.param_groups = [{'lr': learning_rate, 'params': list(model.parameters())}]
@@ -75,6 +81,8 @@ class MeZOBatchedOptimizer:
             print(f"  Epsilon (perturbation scale): {epsilon}")
             print(f"  Batch size (perturbations per GPU): {batch_size}")
             print(f"  Total perturbations: {self.total_perturbations} ({batch_size} × {world_size} GPUs)")
+            print(f"  Gradient accumulation: {grad_accum}")
+            print(f"  Effective perturbations per update: {self.total_perturbations * grad_accum}")
             print(f"  Momentum: {momentum} (simple SGD momentum)")
             print(f"  Method: BATCHED PARALLEL PERTURBATIONS")
             print(f"  Expected speedup: ~{batch_size}× vs serial!")
@@ -191,19 +199,18 @@ class MeZOBatchedOptimizer:
 
     def step(self, loss_fn, batch_provider):
         """
-        Perform one batched MeZO optimization step.
+        Perform one batched MeZO optimization step with gradient accumulation.
 
-        Key difference from serial version:
-        - Process batch_size perturbations in PARALLEL (not serial loop!)
-        - Each GPU handles different perturbation indices
-        - Proper cooperation across GPUs via all-gather
+        With grad_accum > 1:
+        - Accumulates gradient coefficients over multiple batches
+        - Only updates parameters when accum_counter reaches grad_accum
 
         Args:
             loss_fn: Not used (for compatibility)
             batch_provider: Function that returns batched data
 
         Returns:
-            Dictionary with loss and timing info
+            Dictionary with loss, timing info, and 'updated' flag
         """
         start_time = time.time()
 
@@ -216,7 +223,6 @@ class MeZOBatchedOptimizer:
 
         # Ensure batch_data has correct batch size
         if batch_data.shape[0] < self.batch_size:
-            # Repeat to fill batch if necessary
             batch_data = batch_data.repeat(
                 (self.batch_size + batch_data.shape[0] - 1) // batch_data.shape[0],
                 *([1] * (batch_data.ndim - 1))
@@ -225,60 +231,74 @@ class MeZOBatchedOptimizer:
         # Generate seeds for this GPU's perturbations
         seeds = [self._generate_perturbation_batch(i) for i in range(self.batch_size)]
 
-        # Forward perturbations: θ + ε*z_k for each k in this GPU's batch
+        # Forward perturbations: θ + ε*z_k
         losses_plus = self._compute_loss_batched(batch_data, seeds, +1)
 
-        # Backward perturbations: θ - ε*z_k for each k in this GPU's batch
+        # Backward perturbations: θ - ε*z_k
         losses_minus = self._compute_loss_batched(batch_data, seeds, -1)
 
         # Gradient coefficients for this GPU's perturbations
-        grad_coefs = (losses_plus - losses_minus) / (2 * self.epsilon)  # [batch_size]
+        grad_coefs = (losses_plus - losses_minus) / (2 * self.epsilon)
 
         # Gather gradient coefficients from ALL GPUs
         if self.world_size > 1:
-            # Gather all gradient coefficients across GPUs
             gathered_coefs = [torch.zeros_like(grad_coefs) for _ in range(self.world_size)]
             dist.all_gather(gathered_coefs, grad_coefs)
             all_grad_coefs = torch.cat(gathered_coefs)  # [total_perturbations]
         else:
             all_grad_coefs = grad_coefs
 
-        # Average gradient coefficient
-        avg_grad_coef = all_grad_coefs.mean().item()
+        # === GRADIENT ACCUMULATION ===
+        # Accumulate coefficients (average over grad_accum steps)
+        if self.accumulated_grad_coefs is None:
+            self.accumulated_grad_coefs = all_grad_coefs / self.grad_accum
+        else:
+            self.accumulated_grad_coefs += all_grad_coefs / self.grad_accum
 
-        # Compute gradient estimate and update parameters
-        total_grad_norm_sq = 0.0
-        with torch.no_grad():
-            for i, param in enumerate(self.params):
-                # Accumulate gradient estimate from ALL perturbations
-                grad_estimate = torch.zeros_like(param.data)
+        self.accum_counter += 1
+        should_update = (self.accum_counter >= self.grad_accum)
 
-                for k in range(self.total_perturbations):
-                    seed = self.base_seed + (self.step_counter * self.total_perturbations + k)
-                    param_seed = seed + i
-                    generator = torch.Generator(device=param.device)
-                    generator.manual_seed(param_seed)
+        if should_update:
+            # Compute gradient estimate and update parameters
+            total_grad_norm_sq = 0.0
+            with torch.no_grad():
+                for i, param in enumerate(self.params):
+                    grad_estimate = torch.zeros_like(param.data)
 
-                    z = torch.randn(
-                        param.shape,
-                        generator=generator,
-                        device=param.device,
-                        dtype=param.dtype
-                    )
+                    # Use the ACCUMULATED coefficients from all grad_accum steps
+                    for k in range(self.total_perturbations):
+                        # Regenerate perturbation from seed
+                        seed = self.base_seed + (self.step_counter * self.total_perturbations + k)
+                        param_seed = seed + i
+                        generator = torch.Generator(device=param.device)
+                        generator.manual_seed(param_seed)
 
-                    # Weight by this perturbation's gradient coefficient
-                    grad_estimate.add_(z, alpha=all_grad_coefs[k].item() / self.total_perturbations)
+                        z = torch.randn(
+                            param.shape,
+                            generator=generator,
+                            device=param.device,
+                            dtype=param.dtype
+                        )
 
-                # Accumulate gradient norm
-                total_grad_norm_sq += grad_estimate.norm(2).item() ** 2
+                        # Weight by accumulated coefficient
+                        grad_estimate.add_(z, alpha=self.accumulated_grad_coefs[k].item() / self.total_perturbations)
 
-                # Update velocity: v = momentum * v + g
-                self.velocity[i].mul_(self.momentum).add_(grad_estimate)
+                    # Accumulate gradient norm
+                    total_grad_norm_sq += grad_estimate.norm(2).item() ** 2
 
-                # Update parameters: θ = θ - lr * v
-                param.data.add_(self.velocity[i], alpha=-self.learning_rate)
+                    # Update velocity: v = momentum * v + g
+                    self.velocity[i].mul_(self.momentum).add_(grad_estimate)
 
-        grad_norm = total_grad_norm_sq ** 0.5
+                    # Update parameters: θ = θ - lr * v
+                    param.data.add_(self.velocity[i], alpha=-self.learning_rate)
+
+            grad_norm = total_grad_norm_sq ** 0.5
+
+            # Reset accumulation
+            self.accumulated_grad_coefs = None
+            self.accum_counter = 0
+        else:
+            grad_norm = 0.0  # No update yet
 
         self.step_counter += 1
         end_time = time.time()
@@ -292,7 +312,8 @@ class MeZOBatchedOptimizer:
             'time_total': end_time - start_time,
             'step': self.step_counter,
             'num_perturbations': self.total_perturbations,
-            'forward_passes': 2 * self.batch_size,  # Per GPU
+            'forward_passes': 2 * self.batch_size,
+            'updated': should_update,  # Flag indicating if parameters were updated
         }
 
     def state_dict(self):
@@ -303,12 +324,15 @@ class MeZOBatchedOptimizer:
         """
         return {
             'step_counter': self.step_counter,
-            'velocity': [v.clone().cpu() for v in self.velocity],  # Move to CPU for checkpoint
+            'accum_counter': self.accum_counter,
+            'accumulated_grad_coefs': self.accumulated_grad_coefs.clone().cpu() if self.accumulated_grad_coefs is not None else None,
+            'velocity': [v.clone().cpu() for v in self.velocity],
             'learning_rate': self.learning_rate,
             'epsilon': self.epsilon,
             'momentum': self.momentum,
             'batch_size': self.batch_size,
             'base_seed': self.base_seed,
+            'grad_accum': self.grad_accum,
         }
 
     def load_state_dict(self, state_dict):
@@ -319,20 +343,29 @@ class MeZOBatchedOptimizer:
             state_dict: Dictionary returned by state_dict()
         """
         self.step_counter = state_dict['step_counter']
+        self.accum_counter = state_dict.get('accum_counter', 0)
 
-        # Restore velocity buffers (move back to correct device)
+        # Restore accumulated coefficients if present
+        if state_dict.get('accumulated_grad_coefs') is not None:
+            self.accumulated_grad_coefs = state_dict['accumulated_grad_coefs'].to(self.params[0].device)
+        else:
+            self.accumulated_grad_coefs = None
+
+        # Restore velocity buffers
         for i, v in enumerate(state_dict['velocity']):
             self.velocity[i].copy_(v.to(self.params[i].device))
 
-        # Restore hyperparameters (allow override)
+        # Restore hyperparameters
         self.learning_rate = state_dict.get('learning_rate', self.learning_rate)
         self.epsilon = state_dict.get('epsilon', self.epsilon)
         self.momentum = state_dict.get('momentum', self.momentum)
         self.batch_size = state_dict.get('batch_size', self.batch_size)
         self.base_seed = state_dict.get('base_seed', self.base_seed)
+        self.grad_accum = state_dict.get('grad_accum', self.grad_accum)
 
         if self.rank == 0:
             print(f"[MeZO] Loaded optimizer state from checkpoint:")
             print(f"  Step counter: {self.step_counter}")
+            print(f"  Accum counter: {self.accum_counter}/{self.grad_accum}")
             print(f"  Learning rate: {self.learning_rate}")
             print(f"  Momentum: {self.momentum}")

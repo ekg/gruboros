@@ -1356,6 +1356,7 @@ def main():
                 rank=global_rank,
                 world_size=world_size,
                 momentum=args.sf_beta,  # Simple SGD momentum
+                grad_accum=args.grad_accum,  # Gradient accumulation for stability
             )
 
             # NOTE: We do NOT use DDP for MeZO! DDP allocates gradient buffers we don't need.
@@ -1887,8 +1888,11 @@ def main():
                     next_hidden_state = None
                     next_conv_buffers = None
 
-                # Zero-order doesn't accumulate gradients
-                accumulated_steps = args.grad_accum  # Always optimize
+                # Check if optimizer actually updated parameters (gradient accumulation support)
+                if zo_result.get('updated', True):  # True for backward compatibility with old optimizers
+                    accumulated_steps = args.grad_accum  # Trigger optimization logic
+                else:
+                    accumulated_steps = 0  # Still accumulating, don't trigger yet
             else:
                 # Standard backpropagation
                 # Forward pass with both RNN hidden states and conv buffers
