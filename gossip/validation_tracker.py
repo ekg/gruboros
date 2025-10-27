@@ -132,7 +132,7 @@ class ValidationTracker:
                     if isinstance(next_hidden_states, list):
                         # List of hidden states from multiple layers
                         reset_mask = doc_end_mask.view(-1, 1)  # [B, 1] for 2D states
-                        hidden_states = [h.detach() * (~reset_mask) for h in next_hidden_states]
+                        hidden_states = [h.detach() * (~reset_mask) for h in next_hidden_states if h is not None]
                     else:
                         # Single hidden state
                         if next_hidden_states.dim() == 2:
@@ -145,7 +145,7 @@ class ValidationTracker:
                 
                 if next_conv_buffers:
                     conv_reset_mask = doc_end_mask.view(-1, 1, 1, 1)
-                    conv_buffers = [b.detach() * (~conv_reset_mask) for b in next_conv_buffers]
+                    conv_buffers = [b.detach() * (~conv_reset_mask) for b in next_conv_buffers if b is not None]
                 else:
                     conv_buffers = None
         
