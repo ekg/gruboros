@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e -x
 
-# --- MeZO ULTRA-SMOOTH: Maximum Smoothing + Ultra-Low LR ---
-# Strategy: Option C - Push slow-and-steady to the extreme!
-# - grad_accum=32 (2× previous, MASSIVE smoothing)
-# - lr=0.00001 (10× lower than stable 0.0001)
+# --- MeZO OPTIMIZED: High Smoothing + Proven LR ---
+# Strategy: Best of both worlds!
+# - grad_accum=32 (MASSIVE smoothing, 2× better than baseline)
+# - lr=0.0001 (proven stable value from successful run)
 # - batch_size=16 (unchanged, 128 total perturbations)
 # Total effective perturbations: 32 × 8 GPUs × 16 = 4096!
-# Variance reduction: 2× better than previous run
+# Advantage: 2× variance reduction allows faster LR than baseline!
 
 ulimit -n 65536
 
@@ -19,7 +19,7 @@ if [ ! -f "$DATA_PATH" ]; then
 fi
 
 # Create output directory with timestamp
-OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_mezo_ultra_smooth"
+OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_mezo_optimized"
 mkdir -p "${OUTPUT_DIR}/metrics"
 mkdir -p "${OUTPUT_DIR}/gossip"
 mkdir -p "${OUTPUT_DIR}/checkpoints"
@@ -40,17 +40,17 @@ NUM_GPUS=8
 export PYTORCH_DISABLE_COMPILE=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-echo "=== MeZO ULTRA-SMOOTH RUN (Option C) ==="
+echo "=== MeZO OPTIMIZED RUN ==="
 echo "Architecture: 500M params, CausalConvGRU"
 echo "Method: BATCHED parallel perturbations"
 echo "Config: batch_size=16 × 8 GPUs = 128 perturbations/step"
 echo "Grad accum: 32 → 4096 EFFECTIVE perturbations per update!"
-echo "Learning rate: 0.00001 (ULTRA-LOW - 10× lower than stable)"
+echo "Learning rate: 0.0001 (proven stable + extra smoothing)"
 echo "torch.compile: DISABLED"
 echo "Chunk size: 2048 tokens"
 echo "Train steps: 10,000"
 echo "Checkpoints: Every 500 steps"
-echo "Strategy: Maximum smoothness, minimal variance"
+echo "Strategy: Maximum smoothing + optimal LR for fast progress"
 echo "================================================"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
@@ -89,7 +89,7 @@ echo "================================================"
   \
   `# TRAINING (10K steps, ULTRA-LOW LR!)` \
   --train_steps 10000 \
-  --lr 0.00001 \
+  --lr 0.0001 \
   --sf_beta 0.9 \
   --weight_decay 0.0 \
   --grad_clip 0.0 \
