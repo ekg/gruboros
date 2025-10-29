@@ -1,12 +1,13 @@
 #!/bin/bash
 set -e -x
 
-# --- MeZO STABLE: Conservative LR + Strong Smoothing ---
-# Strategy: Avoid instability from previous lr=0.001 explosion
-# - grad_accum=16 (4× more smoothing, better gradient estimates)
-# - lr=0.0001 (10× lower than unstable 0.001, same as baseline)
+# --- MeZO ULTRA-SMOOTH: Maximum Smoothing + Ultra-Low LR ---
+# Strategy: Option C - Push slow-and-steady to the extreme!
+# - grad_accum=32 (2× previous, MASSIVE smoothing)
+# - lr=0.00001 (10× lower than stable 0.0001)
 # - batch_size=16 (unchanged, 128 total perturbations)
-# Total effective perturbations: 16 × 8 GPUs × 16 = 2048!
+# Total effective perturbations: 32 × 8 GPUs × 16 = 4096!
+# Variance reduction: 2× better than previous run
 
 ulimit -n 65536
 
@@ -18,7 +19,7 @@ if [ ! -f "$DATA_PATH" ]; then
 fi
 
 # Create output directory with timestamp
-OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_mezo_stable"
+OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_mezo_ultra_smooth"
 mkdir -p "${OUTPUT_DIR}/metrics"
 mkdir -p "${OUTPUT_DIR}/gossip"
 mkdir -p "${OUTPUT_DIR}/checkpoints"
@@ -39,17 +40,18 @@ NUM_GPUS=8
 export PYTORCH_DISABLE_COMPILE=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-echo "=== MeZO STABLE RUN ==="
+echo "=== MeZO ULTRA-SMOOTH RUN (Option C) ==="
 echo "Architecture: 500M params, CausalConvGRU"
 echo "Method: BATCHED parallel perturbations"
 echo "Config: batch_size=16 × 8 GPUs = 128 perturbations/step"
-echo "Grad accum: 16 → 2048 EFFECTIVE perturbations per update"
-echo "Learning rate: 0.0001 (STABLE - avoid lr=0.001 explosion!)"
+echo "Grad accum: 32 → 4096 EFFECTIVE perturbations per update!"
+echo "Learning rate: 0.00001 (ULTRA-LOW - 10× lower than stable)"
 echo "torch.compile: DISABLED"
 echo "Chunk size: 2048 tokens"
 echo "Train steps: 10,000"
 echo "Checkpoints: Every 500 steps"
-echo "========================================="
+echo "Strategy: Maximum smoothness, minimal variance"
+echo "================================================"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -80,14 +82,14 @@ echo "========================================="
   --zo_epsilon 0.0001 \
   --zo_num_perturbations_mezo 32 \
   \
-  `# IMPROVED CONFIG` \
+  `# ULTRA-SMOOTH CONFIG (Option C)` \
   --chunk_size 2048 \
   --batch_size 16 \
-  --grad_accum 16 \
+  --grad_accum 32 \
   \
-  `# TRAINING (10K steps, STABLE LR!)` \
+  `# TRAINING (10K steps, ULTRA-LOW LR!)` \
   --train_steps 10000 \
-  --lr 0.0001 \
+  --lr 0.00001 \
   --sf_beta 0.9 \
   --weight_decay 0.0 \
   --grad_clip 0.0 \
@@ -104,6 +106,6 @@ echo "========================================="
   --bf16
 
 echo ""
-echo "=== IMPROVED RUN COMPLETE ==="
+echo "=== ULTRA-SMOOTH RUN COMPLETE ==="
 echo "Output directory: $OUTPUT_DIR"
 echo "Checkpoints saved every 500 steps"
