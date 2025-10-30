@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e -x
 
-# --- MeZO OPTIMIZED: High Smoothing + Proven LR ---
-# Strategy: Best of both worlds!
+# --- MeZO AGGRESSIVE: Finding the Explosion Boundary ---
+# Strategy: Push the limits!
 # - grad_accum=32 (MASSIVE smoothing, 2× better than baseline)
-# - lr=0.0001 (proven stable value from successful run)
+# - lr=0.0003 (3× faster than stable 0.0001!)
 # - batch_size=16 (unchanged, 128 total perturbations)
 # Total effective perturbations: 32 × 8 GPUs × 16 = 4096!
-# Advantage: 2× variance reduction allows faster LR than baseline!
+# Goal: Find explosion boundary, maximize throughput!
 
 ulimit -n 65536
 
@@ -19,7 +19,7 @@ if [ ! -f "$DATA_PATH" ]; then
 fi
 
 # Create output directory with timestamp
-OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_mezo_optimized"
+OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_mezo_aggressive"
 mkdir -p "${OUTPUT_DIR}/metrics"
 mkdir -p "${OUTPUT_DIR}/gossip"
 mkdir -p "${OUTPUT_DIR}/checkpoints"
@@ -40,17 +40,17 @@ NUM_GPUS=8
 export PYTORCH_DISABLE_COMPILE=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-echo "=== MeZO OPTIMIZED RUN ==="
+echo "=== MeZO AGGRESSIVE RUN ==="
 echo "Architecture: 500M params, CausalConvGRU"
 echo "Method: BATCHED parallel perturbations"
 echo "Config: batch_size=16 × 8 GPUs = 128 perturbations/step"
 echo "Grad accum: 32 → 4096 EFFECTIVE perturbations per update!"
-echo "Learning rate: 0.0001 (proven stable + extra smoothing)"
+echo "Learning rate: 0.0003 (3× FASTER than stable!)"
 echo "torch.compile: DISABLED"
 echo "Chunk size: 2048 tokens"
 echo "Train steps: 10,000"
 echo "Checkpoints: Every 500 steps"
-echo "Strategy: Maximum smoothing + optimal LR for fast progress"
+echo "Strategy: Find explosion boundary, maximize throughput!"
 echo "================================================"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
@@ -89,7 +89,7 @@ echo "================================================"
   \
   `# TRAINING (10K steps, ULTRA-LOW LR!)` \
   --train_steps 10000 \
-  --lr 0.0001 \
+  --lr 0.0003 \
   --sf_beta 0.9 \
   --weight_decay 0.0 \
   --grad_clip 0.0 \
@@ -106,6 +106,6 @@ echo "================================================"
   --bf16
 
 echo ""
-echo "=== ULTRA-SMOOTH RUN COMPLETE ==="
+echo "=== AGGRESSIVE RUN COMPLETE ==="
 echo "Output directory: $OUTPUT_DIR"
 echo "Checkpoints saved every 500 steps"
