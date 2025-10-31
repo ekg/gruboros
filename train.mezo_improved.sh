@@ -2,12 +2,11 @@
 set -e -x
 
 # --- MeZO 100K: Proven Stable Config ---
-# Based on successful 20251029_220027_mezo_optimized run:
-# - lr=0.0001 (PROVEN stable, completed 10K steps: loss 11.5→5.5)
-# - grad_accum=32 (ultra-smooth, 4096 effective perturbations!)
-# - batch_size=16 (128 perturbations/step across 8 GPUs)
+# Based on successful 20251029_220027_mezo_optimized run (commit 0dca418)
+# - grad_accum=32 (MASSIVE smoothing, 4096 effective perturbations)
+# - lr=0.0001 (proven stable, completed 10K steps: loss 11.5→5.5)
+# - batch_size=16 (128 total perturbations across 8 GPUs)
 # Goal: 100K steps to reach loss ~2.0 or better
-# TODO: Add 1% clean (non-perturbed) loss evaluations for true progress tracking
 
 ulimit -n 65536
 
@@ -45,14 +44,13 @@ echo "Architecture: 500M params, CausalConvGRU"
 echo "Method: BATCHED parallel perturbations"
 echo "Config: batch_size=16 × 8 GPUs = 128 perturbations/step"
 echo "Grad accum: 32 → 4096 EFFECTIVE perturbations per update!"
-echo "Learning rate: 0.0001 (PROVEN stable)"
+echo "Learning rate: 0.0001 (proven stable)"
 echo "torch.compile: DISABLED"
 echo "Chunk size: 2048 tokens"
 echo "Train steps: 100,000"
 echo "Checkpoints: Every 1000 steps"
-echo "Strategy: Proven config from 10K run (loss 11.5→5.5)"
+echo "Strategy: Proven config from 10K run (commit 0dca418)"
 echo "Expected: loss ~2.0 or better at 100K steps"
-echo "TODO: Add clean_loss column for unbiased tracking"
 echo "================================================"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
@@ -84,12 +82,12 @@ echo "================================================"
   --zo_epsilon 0.0001 \
   --zo_num_perturbations_mezo 32 \
   \
-  `# PROVEN STABLE CONFIG` \
+  `# PROVEN STABLE CONFIG (commit 0dca418)` \
   --chunk_size 2048 \
   --batch_size 16 \
   --grad_accum 32 \
   \
-  `# TRAINING (100K steps, proven LR)` \
+  `# TRAINING (100K steps)` \
   --train_steps 100000 \
   --lr 0.0001 \
   --sf_beta 0.9 \
