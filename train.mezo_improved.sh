@@ -1,12 +1,14 @@
 #!/bin/bash
 set -e -x
 
-# --- MeZO 100K: Proven Stable Config ---
-# Based on successful 20251029_220027_mezo_optimized run (commit 0dca418)
-# - grad_accum=32 (MASSIVE smoothing, 4096 effective perturbations)
-# - lr=0.0001 (proven stable, completed 10K steps: loss 11.5→5.5)
-# - batch_size=16 (128 total perturbations across 8 GPUs)
-# Goal: 100K steps to reach loss ~2.0 or better
+# --- MeZO 100K: FIXED EPSILON + HIGHER LR ---
+# Previous run (epsilon=0.0001) plateaued at loss ~5.2 after 40K steps
+# Research shows MeZO standard epsilon = 0.001 (we were 10× too small!)
+#
+# Changes from previous (failed) run:
+# - zo_epsilon: 0.001 (10× increase - matches MeZO paper standard)
+# - lr: 0.0002 (2× increase for faster learning)
+# - grad_accum=32, batch_size=16 (keep proven smoothing config)
 
 ulimit -n 65536
 
@@ -76,10 +78,10 @@ echo "================================================"
   `# GRU CONFIGURATION` \
   --use_causal_conv_gru \
   \
-  `# ZERO-ORDER OPTIMIZATION (BATCHED!)` \
+  `# ZERO-ORDER OPTIMIZATION (BATCHED!) - FIXED EPSILON!` \
   --zero_order \
   --zo_method mezo \
-  --zo_epsilon 0.0001 \
+  --zo_epsilon 0.001 \
   --zo_num_perturbations_mezo 32 \
   \
   `# PROVEN STABLE CONFIG (commit 0dca418)` \
@@ -87,9 +89,9 @@ echo "================================================"
   --batch_size 16 \
   --grad_accum 32 \
   \
-  `# TRAINING (100K steps)` \
+  `# TRAINING (100K steps, 10× epsilon + 2× LR)` \
   --train_steps 100000 \
-  --lr 0.0001 \
+  --lr 0.0002 \
   --sf_beta 0.9 \
   --weight_decay 0.0 \
   --grad_clip 0.0 \
