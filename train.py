@@ -107,13 +107,14 @@ def setup_ddp_groups(global_rank, local_rank, world_size):
 class CheckpointManager:
     """Background thread for rank 0 to handle symlinks and cleanup"""
     
-    def __init__(self, checkpoint_dir, check_interval=10, keep_last_n=5, keep_elite_n=10, global_rank=0, archive_rate=0.0):
+    def __init__(self, checkpoint_dir, check_interval=10, keep_last_n=5, keep_elite_n=10, global_rank=0, archive_rate=0.0, milestone_every=0):
         self.checkpoint_dir = checkpoint_dir
         self.check_interval = check_interval
         self.keep_last_n = keep_last_n
         self.keep_elite_n = keep_elite_n
         self.global_rank = global_rank
         self.archive_rate = archive_rate
+        self.milestone_every = milestone_every
         self.archive_counter = 0
         self.running = False
         self.thread = None
@@ -161,6 +162,7 @@ class CheckpointManager:
                     self._update_latest_symlink(parsed_checkpoints)
                     self._update_best_symlink(parsed_checkpoints)
                     self._update_elite_symlinks(parsed_checkpoints)
+                    self._update_milestone_symlinks(parsed_checkpoints)
                     self._cleanup_old_checkpoints(parsed_checkpoints, all_checkpoint_paths)
                 
                 # Temp file cleanup can still run independently.
@@ -235,22 +237,48 @@ class CheckpointManager:
     def _update_elite_symlinks(self, parsed_checkpoints):
         try:
             elite_checkpoints = sorted(parsed_checkpoints, key=lambda x: x['loss'])[:self.keep_elite_n]
-            
+
             for i, elite_ckpt in enumerate(elite_checkpoints, 1):
                 elite_basename = os.path.basename(elite_ckpt['path'])
                 elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
                 self._atomic_symlink(elite_basename, elite_symlink)
-            
+
             # Remove any extra elite symlinks if we have fewer elite models than before
             # Check a wider range to be safe in case of manual deletions
             for i in range(len(elite_checkpoints) + 1, self.keep_elite_n + 20):
                 elite_symlink = os.path.join(self.checkpoint_dir, f"elite_{i:02d}.pt")
                 if os.path.islink(elite_symlink):
                     os.remove(elite_symlink)
-                    
+
         except Exception as e:
             print(f"Rank 0: Elite symlinks update failed: {e}")
-            
+
+    def _update_milestone_symlinks(self, parsed_checkpoints):
+        """Create permanent milestone symlinks for checkpoints at milestone steps"""
+        if self.milestone_every <= 0:
+            return
+
+        try:
+            # Find all checkpoints that should have milestone symlinks
+            milestone_checkpoints = [
+                ckpt for ckpt in parsed_checkpoints
+                if ckpt['step'] % self.milestone_every == 0
+            ]
+
+            # Create milestone symlink for each milestone checkpoint
+            for milestone_ckpt in milestone_checkpoints:
+                milestone_basename = os.path.basename(milestone_ckpt['path'])
+                milestone_symlink = os.path.join(
+                    self.checkpoint_dir,
+                    f"milestone_{milestone_ckpt['step']:06d}.pt"
+                )
+                # Only create if it doesn't exist yet
+                if not os.path.exists(milestone_symlink):
+                    self._atomic_symlink(milestone_basename, milestone_symlink)
+
+        except Exception as e:
+            print(f"Rank 0: Milestone symlinks update failed: {e}")
+
     def _cleanup_old_checkpoints(self, parsed_checkpoints, all_checkpoint_paths):
         """Clean up based on the consistent snapshot."""
         # A simple check to avoid work if there's nothing to clean up.
@@ -271,8 +299,13 @@ class CheckpointManager:
             # Get the real, absolute path of the target file for each archive symlink.
             archived_target_paths = {os.path.realpath(s) for s in archive_symlinks if os.path.islink(s)}
 
-            # 4. Combine ALL sets of files to preserve: elites, recents, AND existing archives.
-            files_to_keep = elite_paths.union(recent_paths).union(archived_target_paths)
+            # 3b. Identify files that are protected by milestone symlinks.
+            milestone_symlinks = glob.glob(os.path.join(self.checkpoint_dir, "milestone_*.pt"))
+            # Get the real, absolute path of the target file for each milestone symlink.
+            milestone_target_paths = {os.path.realpath(s) for s in milestone_symlinks if os.path.islink(s)}
+
+            # 4. Combine ALL sets of files to preserve: elites, recents, archives, AND milestones.
+            files_to_keep = elite_paths.union(recent_paths).union(archived_target_paths).union(milestone_target_paths)
 
             # 5. Determine which files to remove. This list will now correctly
             #    exclude any checkpoint that is already archived.
@@ -891,6 +924,7 @@ def get_args():
     parser.add_argument('--keep_checkpoints', type=int, default=3, help='number of recent checkpoints to keep')
     parser.add_argument('--keep_elite', type=int, default=10, help='number of elite models to preserve')
     parser.add_argument('--archive_rate', type=float, default=0.0, help='probability (0.0-1.0) of archiving checkpoints before deletion')
+    parser.add_argument('--milestone_every', type=int, default=0, help='save permanent milestone checkpoint every N steps (0=disabled)')
     parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True)
     parser.add_argument('--sf_beta', type=float, default=0.9)
     parser.add_argument('--sf_beta2', type=float, default=0.999)
@@ -1204,9 +1238,11 @@ def main():
     # Use args.output directly, which is now guaranteed to exist.
     checkpoint_dir = args.output or f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    # Rank 0 creates the checkpoint directory, all others wait for it to be ready.
+    # Rank 0 creates the checkpoint directory and subdirectories, all others wait for it to be ready.
     if global_rank == 0:
         os.makedirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(os.path.join(checkpoint_dir, 'gossip'), exist_ok=True)
+        os.makedirs(os.path.join(checkpoint_dir, 'metrics'), exist_ok=True)
 
     if world_size > 1:
         simple_barrier('setup')
@@ -1216,7 +1252,8 @@ def main():
 
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
-        keep_elite_n=args.keep_elite, global_rank=global_rank, archive_rate=args.archive_rate
+        keep_elite_n=args.keep_elite, global_rank=global_rank, archive_rate=args.archive_rate,
+        milestone_every=args.milestone_every
     )
     checkpoint_manager.start()
 
@@ -1558,37 +1595,8 @@ def main():
             header.append("locked")
         f.write('\t'.join(header) + '\n')
 
-    # Calculate save probability first
-    base_save_probability = 1.0 / (args.save_every * world_size) if world_size > 1 and args.save_every > 0 else (1.0 / args.save_every if args.save_every > 0 else 0)
-    
-    # Adjust save probability to compensate for gossip lock blocking
-    if args.use_gossip_lock:
-        # If ~80% of regular saves get blocked by gossip locks, and we get some compensation 
-        # from opportunistic saves during gossip wins, boost base probability by ~4.5x
-        lock_compensation_factor = 4.5
-        save_probability = base_save_probability * lock_compensation_factor
-    else:
-        save_probability = base_save_probability
-
-    def create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config):
-        def opportunistic_save_callback(step, current_validation_fitness, opportunistic=False):
-            if opportunistic:
-                save_prob = save_probability * 5.0  # 5x more likely for winners
-            else:
-                save_prob = save_probability
-            
-            if random.random() < save_prob:
-                checkpoint_data = {
-                    'step': step, 'model_state_dict': model.state_dict(), 
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
-                    'validation_fitness': current_validation_fitness, 'model_config': model_config
-                }
-                return save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_validation_fitness)
-            return False
-        return opportunistic_save_callback
-
-    save_callback = create_save_callback(checkpoint_dir, global_rank, save_probability, model, optimizer, model_config)
+    # No probabilistic saving - using deterministic saving at fixed intervals instead
+    save_callback = None  # Not used anymore, checkpoints saved deterministically in training loop
 
     # Configure gossip for DDP mode
     if args.ddp:
@@ -2128,26 +2136,23 @@ def main():
                 log_str += f" skipped={status['skipped_due_to_lock']}"
             print(log_str)
 
-        # MODIFIED: Simplified saving (opportunistic saving happens in gossip wins)
-        if step > 0 and save_probability > 0:
-            if args.fitness_weighted_checkpointing and args.filesystem_coordinator:
-                my_percentile = evolutionary_node.coordinator.get_my_percentile()
-                if my_percentile is not None:
-                    scaling_factor = 1.0 + (args.elite_checkpoint_multiplier - 1.0) * (1.0 - my_percentile)
-                    save_prob_final = save_probability * scaling_factor
-                else:
-                    save_prob_final = save_probability
-            else:
-                save_prob_final = save_probability
-            
-            if args.use_gossip_lock:
-                try:
-                    with file_lock(evolutionary_node.node_lock_path, timeout=0.01):
-                        save_callback(step, current_validation_fitness, opportunistic=False)
-                except TimeoutError:
-                    pass  # Winners save opportunistically, so this is OK
-            else:
-                save_callback(step, current_validation_fitness, opportunistic=False)
+        # Deterministic checkpoint saving at fixed intervals (no probabilistic saving)
+        # Only rank 0 saves, all other ranks wait synchronously
+        if step > 0 and args.save_every > 0 and step % args.save_every == 0:
+            if global_rank == 0:
+                checkpoint_data = {
+                    'step': step,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+                    'validation_fitness': current_validation_fitness,
+                    'model_config': model_config
+                }
+                save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_validation_fitness)
+
+            # All ranks wait for rank 0 to finish saving
+            if args.ddp:
+                dist.barrier()
         
         step += 1
 
