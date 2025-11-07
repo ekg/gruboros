@@ -18,9 +18,7 @@ fi
 
 # Create output directory with timestamp
 OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_bootstrap_100k"
-mkdir -p "${OUTPUT_DIR}/metrics"
-mkdir -p "${OUTPUT_DIR}/checkpoints"
-mkdir -p "${OUTPUT_DIR}/gossip"
+mkdir -p "${OUTPUT_DIR}"
 
 echo "Output directory: $OUTPUT_DIR"
 
