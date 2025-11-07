@@ -104,6 +104,85 @@ def setup_ddp_groups(global_rank, local_rank, world_size):
     
     return ddp_group, ddp_rank, ddp_world_size, is_ddp_primary, node_id
 
+def update_symlinks_and_cleanup(checkpoint_dir, keep_last_n, keep_elite_n, milestone_every):
+    """
+    Simplified synchronous checkpoint management (NO background thread).
+    Updates symlinks and cleans up old checkpoints immediately after saving.
+    """
+    ckpt_pattern = re.compile(r'checkpoint_rank_(\d+)_step_(\d+)_loss_([\d.]+)\.pt')
+
+    # Get all checkpoint files
+    all_files = glob.glob(os.path.join(checkpoint_dir, "checkpoint_rank_*_step_*_loss_*.pt"))
+
+    # Parse checkpoint metadata
+    parsed = []
+    for filepath in all_files:
+        match = ckpt_pattern.search(os.path.basename(filepath))
+        if match:
+            try:
+                parsed.append({
+                    'path': filepath,
+                    'rank': int(match.group(1)),
+                    'step': int(match.group(2)),
+                    'loss': float(match.group(3)),
+                    'mtime': os.path.getmtime(filepath)
+                })
+            except (FileNotFoundError, ValueError):
+                continue
+
+    if not parsed:
+        return
+
+    # Update latest.pt → newest checkpoint by mtime
+    newest = max(parsed, key=lambda x: x['mtime'])
+    latest_symlink = os.path.join(checkpoint_dir, "latest.pt")
+    atomic_symlink(os.path.basename(newest['path']), latest_symlink)
+
+    # Update best.pt → lowest loss checkpoint
+    best = min(parsed, key=lambda x: x['loss'])
+    best_symlink = os.path.join(checkpoint_dir, "best.pt")
+    atomic_symlink(os.path.basename(best['path']), best_symlink)
+
+    # Update elite_NN.pt → top N by loss
+    elite_checkpoints = sorted(parsed, key=lambda x: x['loss'])[:keep_elite_n]
+    for i, elite in enumerate(elite_checkpoints, 1):
+        elite_symlink = os.path.join(checkpoint_dir, f"elite_{i:02d}.pt")
+        atomic_symlink(os.path.basename(elite['path']), elite_symlink)
+
+    # Update milestone_NNNNN.pt → checkpoints at milestone intervals
+    milestone_checkpoints = []
+    if milestone_every > 0:
+        for ckpt in parsed:
+            if ckpt['step'] % milestone_every == 0:
+                milestone_checkpoints.append(ckpt)
+        for ckpt in milestone_checkpoints:
+            milestone_symlink = os.path.join(checkpoint_dir, f"milestone_{ckpt['step']:06d}.pt")
+            atomic_symlink(os.path.basename(ckpt['path']), milestone_symlink)
+
+    # Determine which files to keep
+    elite_paths = {os.path.realpath(ckpt['path']) for ckpt in elite_checkpoints}
+    recent_paths = {os.path.realpath(ckpt['path']) for ckpt in sorted(parsed, key=lambda x: x['mtime'], reverse=True)[:keep_last_n]}
+    milestone_paths = {os.path.realpath(ckpt['path']) for ckpt in milestone_checkpoints}
+    files_to_keep = elite_paths.union(recent_paths).union(milestone_paths)
+
+    # Delete old checkpoints
+    for ckpt in parsed:
+        if os.path.realpath(ckpt['path']) not in files_to_keep:
+            try:
+                os.remove(ckpt['path'])
+            except OSError:
+                pass
+
+def atomic_symlink(target_basename, symlink_path):
+    """Atomically create or update a symlink."""
+    if os.path.islink(symlink_path) and os.readlink(symlink_path) == target_basename:
+        return
+    temp_symlink = symlink_path + ".tmp"
+    if os.path.lexists(temp_symlink):
+        os.remove(temp_symlink)
+    os.symlink(target_basename, temp_symlink)
+    os.rename(temp_symlink, symlink_path)
+
 class CheckpointManager:
     """Background thread for rank 0 to handle symlinks and cleanup"""
     
@@ -353,7 +432,7 @@ def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, v
     filename = f"checkpoint_rank_{global_rank:04d}_step_{step:06d}_loss_{validation_fitness:.4f}.pt"
     temp_file = os.path.join(checkpoint_dir, filename + ".tmp")
     final_file = os.path.join(checkpoint_dir, filename)
-    
+
     try:
         torch.save(checkpoint_data, temp_file)
         os.rename(temp_file, final_file)
@@ -366,6 +445,23 @@ def save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, v
             pass
         print(f"Rank {global_rank}: Checkpoint save failed: {e}")
         return False
+
+def save_checkpoint_background(checkpoint_data_cpu, checkpoint_dir, step, global_rank, validation_fitness, cleanup_fn=None):
+    """
+    Background thread function to save checkpoint to disk.
+    checkpoint_data_cpu should already be on CPU.
+    """
+    success = save_checkpoint_atomic(checkpoint_data_cpu, checkpoint_dir, step, global_rank, validation_fitness)
+
+    if success:
+        if cleanup_fn:
+            try:
+                cleanup_fn()
+                print(f"Rank 0: Checkpoint saved successfully (background)")
+            except Exception as e:
+                print(f"Rank 0: Symlink/cleanup failed: {e}")
+    else:
+        print(f"Rank 0: WARNING - Background checkpoint save failed!")
 
 @contextlib.contextmanager
 def file_lock(lock_path, timeout=30):
@@ -1250,12 +1346,13 @@ def main():
     # Set environment variable for memory logging
     os.environ['GRUBOROS_OUTPUT_DIR'] = checkpoint_dir
 
-    checkpoint_manager = CheckpointManager(
-        checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
-        keep_elite_n=args.keep_elite, global_rank=global_rank, archive_rate=args.archive_rate,
-        milestone_every=args.milestone_every
-    )
-    checkpoint_manager.start()
+    # DISABLED: No background thread, using synchronous checkpoint management
+    # checkpoint_manager = CheckpointManager(
+    #     checkpoint_dir=checkpoint_dir, keep_last_n=args.keep_checkpoints,
+    #     keep_elite_n=args.keep_elite, global_rank=global_rank, archive_rate=args.archive_rate,
+    #     milestone_every=args.milestone_every
+    # )
+    # checkpoint_manager.start()
 
     model_config, checkpoint = None, None
     if resuming:
@@ -1361,6 +1458,11 @@ def main():
 
 
     model = get_model(model_config).to(device)
+
+    # Print ACTUAL parameter count (not estimated!)
+    if global_rank == 0:
+        actual_params = sum(p.numel() for p in model.parameters())
+        print(f"ACTUAL model parameters: {actual_params/1e9:.2f}B ({actual_params/1e6:.1f}M)")
 
     # MEMORY CHECKPOINT 1: After model creation
     if global_rank == 0 and device.type == 'cuda':
@@ -2136,21 +2238,41 @@ def main():
                 log_str += f" skipped={status['skipped_due_to_lock']}"
             print(log_str)
 
-        # Deterministic checkpoint saving at fixed intervals (no probabilistic saving)
-        # Only rank 0 saves, all other ranks wait synchronously
+        # Background checkpoint saving: copy to CPU (fast), then save in thread (slow)
         if step > 0 and args.save_every > 0 and step % args.save_every == 0:
             if global_rank == 0:
-                checkpoint_data = {
+                print(f"Rank 0: Copying checkpoint to CPU at step {step}, loss {chunk_loss:.4f}")
+
+                # Copy state dicts to CPU (fast, ~1-2s)
+                checkpoint_data_cpu = {
                     'step': step,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
+                    'model_state_dict': {k: v.cpu() for k, v in model.state_dict().items()},
+                    'optimizer_state_dict': {
+                        k: {k2: v2.cpu() if torch.is_tensor(v2) else v2 for k2, v2 in v.items()}
+                        if isinstance(v, dict) else v
+                        for k, v in optimizer.state_dict().items()
+                    },
                     'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+                    'training_loss': chunk_loss,
                     'validation_fitness': current_validation_fitness,
                     'model_config': model_config
                 }
-                save_checkpoint_atomic(checkpoint_data, checkpoint_dir, step, global_rank, current_validation_fitness)
 
-            # All ranks wait for rank 0 to finish saving
+                # Launch background thread to save (slow disk I/O doesn't block training!)
+                def cleanup():
+                    update_symlinks_and_cleanup(checkpoint_dir, args.keep_checkpoints,
+                                                args.keep_elite, args.milestone_every)
+
+                save_thread = threading.Thread(
+                    target=save_checkpoint_background,
+                    args=(checkpoint_data_cpu, checkpoint_dir, step, global_rank, chunk_loss, cleanup)
+                )
+                save_thread.daemon = True
+                save_thread.start()
+
+                print(f"Rank 0: Checkpoint copy complete, saving in background...")
+
+            # Quick barrier just to sync that all ranks are ready (doesn't wait for disk I/O!)
             if args.ddp:
                 dist.barrier()
         
@@ -2159,7 +2281,7 @@ def main():
     # pbar.close()  # No progress bar anymore
     if args.filesystem_coordinator:
         evolutionary_node.stop_gossip_protocol()
-    checkpoint_manager.stop()
+    # checkpoint_manager.stop()  # DISABLED - no background thread
     if global_rank == 0: print("\nTraining complete.")
 
 if __name__ == "__main__":
