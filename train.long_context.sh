@@ -26,6 +26,8 @@ echo "  Batch size: 8 per GPU"
 echo "  Effective batch: 8 × 8 = 64"
 echo "  Context length: 2048 tokens (16× longer than baseline)"
 echo ""
+echo "  TRAINING: 100,000 steps (~13.1B tokens, ~43 hours)"
+echo ""
 echo "  Benefits:"
 echo "  - Standard context length for most documents"
 echo "  - 2× better batch diversity vs 4096 context"
@@ -60,8 +62,8 @@ echo "================================================================"
   --chunk_size 2048 \
   --batch_size 8 \
   --grad_accum 1 \
-  `# TRAINING (10K steps)` \
-  --train_steps 10000 \
+  `# TRAINING (100K steps)` \
+  --train_steps 100000 \
   --lr 0.001 \
   --sf_beta 0.9 \
   --weight_decay 0.01 \
