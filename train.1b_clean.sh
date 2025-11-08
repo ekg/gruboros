@@ -26,13 +26,13 @@ echo "  Batch size: 16 per GPU"
 echo "  Effective batch: 16 × 8 = 128"
 echo "  Context length: 2048 tokens"
 echo ""
-echo "  TRAINING: 100,000 steps (~26.2B tokens, ~43 hours)"
+echo "  TRAINING: 100,000 steps (~19.7B tokens, ~43 hours)"
 echo ""
 echo "  Architecture improvements:"
 echo "  - NO expansion (simpler, faster)"
 echo "  - Wider hidden state (2048 vs 1536)"
 echo "  - NO gradient clipping (natural learning)"
-echo "  - 2× larger batch size (16 vs 8)"
+echo "  - 1.5× larger batch size (12 vs 8)"
 echo ""
 echo "  CHECKPOINT STRATEGY (background saves):"
 echo "  - Rolling: save_every=500, keep_checkpoints=3"
@@ -60,7 +60,7 @@ echo "================================================================"
   --use_causal_conv_gru \
   `# CONTEXT CONFIGURATION` \
   --chunk_size 2048 \
-  --batch_size 16 \
+  --batch_size 12 \
   --grad_accum 1 \
   `# TRAINING (100K steps)` \
   --train_steps 100000 \
