@@ -377,7 +377,9 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
         "enable_conv": config.get("enable_conv", False),
         "dropout": config.get("dropout", 0.0),
         "use_hybrid_gru": config.get("use_hybrid_gru", False),
-        "use_test_gru": config.get("use_test_gru", False)
+        "use_test_gru": config.get("use_test_gru", False),
+        "use_standard_gru": config.get("use_standard_gru", False),
+        "use_causal_conv_gru": config.get("use_causal_conv_gru", False)
     }
     
     print(f"INFO: Creating model with dimension={model_params['dim']}, depth={model_params['depth']}...")
