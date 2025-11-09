@@ -2042,11 +2042,22 @@ def main():
                 # Track accumulation progress
                 accumulated_steps += 1
 
-                # Backward pass - still under mutex protection
-                if scaler is not None:
-                    scaler.scale(scaled_loss).backward()
+                # Backward pass with conditional DDP sync
+                # Only sync gradients on the final accumulation step
+                should_sync_now = (accumulated_steps >= args.grad_accum)
+                if args.ddp and not should_sync_now:
+                    # Skip gradient sync during accumulation (steps 1-15 of 16)
+                    with model.no_sync():
+                        if scaler is not None:
+                            scaler.scale(scaled_loss).backward()
+                        else:
+                            scaled_loss.backward()
                 else:
-                    scaled_loss.backward()
+                    # Allow DDP sync on final step (step 16 of 16), or always if not DDP
+                    if scaler is not None:
+                        scaler.scale(scaled_loss).backward()
+                    else:
+                        scaled_loss.backward()
 
             # Mark that we've exited forward pass - safe for weight updates
             evolutionary_node.exit_forward_pass()
