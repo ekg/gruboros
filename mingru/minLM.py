@@ -6,11 +6,11 @@ from torch.nn import Module, ModuleList
 
 from mingru.minGRU import minGRU
 
-# Import streaming loss kernel
+# Import streaming loss kernel (FIXED VERSION!)
 try:
-    from mingru.triton_streaming_loss import triton_streaming_cross_entropy
+    from mingru.triton_streaming_loss_fixed import triton_streaming_cross_entropy
     STREAMING_LOSS_AVAILABLE = True
-    print("Triton streaming loss available (NO logits materialization!)")
+    print("Triton streaming loss available (FIXED - NO logits materialization!)")
 except ImportError as e:
     print(f"Triton streaming loss not available: {e}")
     STREAMING_LOSS_AVAILABLE = False
@@ -323,9 +323,8 @@ class minLM(Module):
             labels_masked[mask] = -100
 
         # Use Triton streaming loss (NO logits materialization!)
-        # NOTE: Triton kernel has bugs (for loop in JIT), using chunked loss instead
-        # Chunked loss: minimize logits materialization to push batch_size to max!
-        if False and STREAMING_LOSS_AVAILABLE:
+        # FIXED: Kernel bugs resolved - replaced Python loops with Triton vectorization
+        if STREAMING_LOSS_AVAILABLE:
             loss = triton_streaming_cross_entropy(embed, self.to_logits.weight, labels_masked)
         else:
             # Chunked loss: Balance speed and memory for profiling baseline
