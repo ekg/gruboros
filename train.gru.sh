@@ -66,8 +66,9 @@ mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
 echo "torch.compile cache: $TORCHINDUCTOR_CACHE_DIR"
 
 # --- Launch Training with HybridGRU Architecture ---
-echo "Starting ~709M parameter HybridGRU training on 8 GPUs."
+echo "Starting ~794M parameter HybridGRU training on 8 GPUs."
 echo "Architecture: depth=20, dim=2048, p50k_base tokenizer, 512 token chunks"
+echo "Batch size: 90 per GPU (max safe: 43.7GB/48GB), 5.9M tokens/update across 8 GPUs"
 echo "Optimizations: z_bias=0.0, DDP pipeline (static_graph, prefetch)"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
@@ -93,9 +94,9 @@ echo "Optimizations: z_bias=0.0, DDP pipeline (static_graph, prefetch)"
   --z_bias_hidden 0.0 \
   --hybrid_gru \
   \
-  `# SEQUENCES (512 tokens, 1M tokens per update)` \
+  `# SEQUENCES (512 tokens, 737K tokens per update per GPU, 5.9M across 8 GPUs)` \
   --chunk_size 512 \
-  --batch_size 128 \
+  --batch_size 90 \
   --grad_accum 16 \
   \
   `# TRAINING` \
