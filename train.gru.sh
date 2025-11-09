@@ -1,21 +1,22 @@
 #!/bin/bash
 set -e -x
 
-# --- HybridGRU Training Script ---
-# No FFN layers, embedding-heavy, long sequences
-# Key differences from byte-level training:
-# - TikToken tokenization (100K vocab) vs bytes (256 vocab)
-# - No FFN layers (ff_mult=0.0) - forces learning through recurrence
-# - Longer sequences (2048 tokens vs 256 bytes)
-# - Hyperparameters: lr=0.003, weight_decay=0.033, grad_clip=1.0
+# --- Optimized HybridGRU Training Script ---
+# Configuration:
+# - p50k_base tokenizer (50,257 tokens) - 50% smaller vocab, faster softmax
+# - depth=20 (vs 12) - 67% deeper model for better representations
+# - dim=2048, ~709M params
+# - chunk_size=512 - 2× more gradient updates per epoch
+# - z_bias=0.0 - let model learn optimal update/forget balance
+# - DDP pipeline optimizations (static_graph, prefetch, persistent workers)
 
 # --- Increase File Descriptor Limit ---
 ulimit -n 65536
 
 # --- Paths and Directories ---
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-PARAMS="500m"
-NAME="${PARAMS}_gru"
+PARAMS="700m"
+NAME="${PARAMS}_gru_deep"
 
 # Try to get git commit hash (first 7 chars)
 GIT_HASH=""
@@ -65,67 +66,59 @@ mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
 echo "torch.compile cache: $TORCHINDUCTOR_CACHE_DIR"
 
 # --- Launch Training with HybridGRU Architecture ---
-echo "Starting 500M parameter HybridGRU training on 8 GPUs."
-echo "Architecture: NO FFN, TikToken (100K vocab), 2048 token sequences"
+echo "Starting ~709M parameter HybridGRU training on 8 GPUs."
+echo "Architecture: depth=20, dim=2048, p50k_base tokenizer, 512 token chunks"
+echo "Optimizations: z_bias=0.0, DDP pipeline (static_graph, prefetch)"
 
-torchrun --nproc_per_node=$NUM_GPUS \
+/home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
   train.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
-  --params $PARAMS \
   \
-  `# TOKENIZATION (CRITICAL - enables semantic learning)` \
+  `# TOKENIZATION (p50k_base - 50% smaller vocab)` \
   --tokenizer tiktoken \
-  --tiktoken_encoding cl100k_base \
+  --tiktoken_encoding p50k_base \
   \
-  `# ARCHITECTURE (NO FFN!)` \
-  --dim 1536 \
-  --depth 12 \
+  `# ARCHITECTURE (Deep HybridGRU)` \
+  --dim 2048 \
+  --depth 20 \
   --expansion_factor 1.0 \
   --ff_mult 0.0 \
-  --conv_kernel_size 4 \
   --dropout 0.0 \
   \
-  `# GRU CONFIGURATION` \
-  --z_bias_input -2.0 \
-  --z_bias_hidden -2.0 \
+  `# GRU CONFIGURATION (z_bias=0.0 for adaptive gating)` \
+  --z_bias_input 0.0 \
+  --z_bias_hidden 0.0 \
   --hybrid_gru \
   \
-  `# SEQUENCES (long context)` \
-  --chunk_size 4096 \
-  --batch_size 4 \
+  `# SEQUENCES (512 tokens, 1M tokens per update)` \
+  --chunk_size 512 \
+  --batch_size 128 \
   --grad_accum 16 \
   \
   `# TRAINING` \
   --train_steps 100000 \
-  --lr 0.003 \
+  --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.033 \
   --grad_clip 1.0 \
+  \
+  `# DDP OPTIMIZATIONS` \
+  --num_workers 4 \
   \
   `# CHECKPOINTING` \
   --save_every 500 \
   --keep_checkpoints 5 \
   --keep_elite 32 \
   --archive_rate 0.0067 \
-  --validation_interval 5000 \
+  --validation_interval 2000 \
   --validation_batches 32 \
   \
-  `# GOSSIP (evolutionary training)` \
-  --gossip_merge_method recombination \
-  --gossip_recombination_alpha 0.2 \
-  --gossip_optimizer_recombination interpolate \
-  --gossip_mixing_rate 0.0003 \
-  --gossip_p_value_threshold 0.1 \
-  --gossip_lock_timeout 5.0 \
-  --gossip_temp_dir "$GOSSIP_TEMP_DIR" \
-  --gossip_fitness_window 10000 \
-  --filesystem-coordinator \
-  --fitness-weighted-checkpointing \
-  --elite-checkpoint-multiplier 20.0 \
+  `# GOSSIP (evolutionary training - DISABLED for clean baseline)` \
+  --gossip_mixing_rate 0.0 \
   \
   `# FLAGS` \
   --ddp \
