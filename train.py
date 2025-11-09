@@ -1812,7 +1812,8 @@ def main():
     
     # Track accumulated steps for gradient accumulation
     accumulated_steps = 0
-    
+    documents_processed_count = 0  # Track documents seen in main process
+
     # Z-gate logging setup (rank 0 only)
     # DISABLED: Z-gates are healthy, no need for monitoring
     z_stats_file = None
@@ -2069,6 +2070,9 @@ def main():
             print(f"[PROFILE STEP {step}] Forward+Backward: {t_fwd_bwd*1000:.1f}ms", flush=True)
         
         # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET (OPTIMIZED) ---
+        # Count documents processed in main process
+        documents_processed_count += is_doc_end.sum().item()
+
         # Create broadcastable masks for branchless execution
         reset_mask = is_doc_end.view(-1, 1)
         conv_reset_mask = is_doc_end.view(-1, 1, 1)
@@ -2209,10 +2213,10 @@ def main():
         # Aggregate stats across all streams for accurate reporting
         all_stats = train_dataset.get_all_stats()
         doc_stats = {
-            'documents_processed': sum(s['documents_processed'] for s in all_stats),
-            'bytes_processed': sum(s['bytes_processed'] for s in all_stats),
-            'tokens_processed': sum(s.get('tokens_processed', 0) for s in all_stats),
-            'file_wraps': sum(s['file_wraps'] for s in all_stats),
+            'documents_processed': documents_processed_count,  # FIXED: Count in main process
+            'bytes_processed': sum(s['bytes_processed'] for s in all_stats) if all_stats else 0,
+            'tokens_processed': sum(s.get('tokens_processed', 0) for s in all_stats) if all_stats else 0,
+            'file_wraps': sum(s['file_wraps'] for s in all_stats) if all_stats else 0,
             'current_position': 0  # Not meaningful with multiple streams
         }
         # First calculate timing metrics (needed for log_metrics)
