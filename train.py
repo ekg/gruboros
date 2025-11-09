@@ -1048,10 +1048,14 @@ def get_args():
                         help='Number of batches to run for validation (default: 8)')
     
     # DDP (Distributed Data Parallel) support
-    parser.add_argument('--ddp', action='store_true', 
+    parser.add_argument('--ddp', action='store_true',
                         help='Enable DDP within nodes, gossip between nodes')
     parser.add_argument('--ddp-find-unused', action='store_true',
                         help='Enable find_unused_parameters in DDP (slower but safer)')
+
+    # DataLoader configuration
+    parser.add_argument('--num_workers', type=int, default=0,
+                        help='Number of DataLoader workers for async data loading (default: 0, use 4-8 for pipelining)')
     
     # --- NEW: Filesystem-Augmented Evolution ---
     parser.add_argument('--filesystem-coordinator', action='store_true',
@@ -1607,7 +1611,8 @@ def main():
                 device_ids=[device_id] if device.type == 'cuda' else None,
                 process_group=ddp_group,
                 find_unused_parameters=args.ddp_find_unused,
-                gradient_as_bucket_view=True  # Memory optimization
+                gradient_as_bucket_view=True,  # Memory optimization
+                static_graph=args.ddp_find_unused  # Enable pipelining when using find_unused
             )
 
             # For DDP, we need to access the underlying module for gossip
@@ -1656,8 +1661,7 @@ def main():
     # DataLoader for batched streaming
     # Use multiple workers to tokenize in parallel (hides CPU tokenization latency)
     # High worker count (plenty of CPU cores), low prefetch (avoid OOM from buffering)
-    # MEMORY DEBUG: Force num_workers=0 to test if workers consume 40+ GB!
-    num_workers = 0  # Was: 8 if tokenizer.__class__.__name__ != 'ByteTokenizer' else 0
+    num_workers = args.num_workers
 
     # Worker initialization function to reseed each worker's PRNG
     # This ensures each worker reads from different file positions
@@ -1674,8 +1678,8 @@ def main():
         batch_size=None,  # Set to None as the wrapper handles batching
         num_workers=num_workers,  # Many parallel tokenization workers
         pin_memory=True,
-        prefetch_factor=1 if num_workers > 0 else None,  # Minimal prefetch to avoid memory bloat
-        persistent_workers=False,  # DISABLED: causes data repetition with IterableDataset
+        prefetch_factor=4 if num_workers > 0 else None,  # Prefetch 4 batches per worker for smooth pipelining
+        persistent_workers=True if num_workers > 0 else False,  # Keep workers alive to avoid respawn overhead
         worker_init_fn=worker_init_fn if num_workers > 0 else None  # Reseed each worker
     )
 
