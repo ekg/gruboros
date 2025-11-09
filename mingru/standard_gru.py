@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class StandardGRU(nn.Module):
@@ -11,17 +12,21 @@ class StandardGRU(nn.Module):
 
     Uses cuDNN-optimized kernels (fastest available).
     This is the gold standard nonlinear GRU implementation.
+
+    Supports gradient checkpointing to reduce memory usage.
     """
 
     def __init__(
         self,
         dim,
         expansion_factor=1.0,
+        use_gradient_checkpointing=False,
         **kwargs  # Ignore other minGRU-specific args
     ):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         # Standard GRU: hidden_size = dim_inner
         # Input projection: dim -> dim_inner
@@ -38,6 +43,10 @@ class StandardGRU(nn.Module):
 
         # Output projection: dim_inner -> dim
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
+
+    def _gru_forward(self, x_proj, h0):
+        """Helper function for gradient checkpointing."""
+        return self.gru(x_proj, h0)
 
     def forward(self, x, prev_hiddens=None, prev_conv_buffers=None, return_hiddens=True, return_next_prev_hidden=True, actual_length=None):
         """
@@ -65,8 +74,17 @@ class StandardGRU(nn.Module):
         else:
             h0 = torch.zeros(1, batch, self.dim_inner, device=x.device, dtype=x.dtype)
 
-        # Run GRU
-        gru_out, hn = self.gru(x_proj, h0)
+        # Run GRU with optional gradient checkpointing
+        if self.use_gradient_checkpointing and self.training:
+            # Gradient checkpointing: recompute forward during backward to save memory
+            gru_out, hn = checkpoint(
+                self._gru_forward,
+                x_proj,
+                h0,
+                use_reentrant=False  # Use new non-reentrant checkpointing
+            )
+        else:
+            gru_out, hn = self.gru(x_proj, h0)
         # gru_out: (batch, seq_len, dim_inner)
         # hn: (1, batch, dim_inner)
 

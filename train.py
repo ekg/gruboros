@@ -1074,8 +1074,12 @@ def get_args():
                         help='Use simple test GRU implementation for debugging')
     parser.add_argument('--use_standard_gru', action='store_true',
                         help='Use PyTorch nn.GRU (cuDNN-optimized, gold standard nonlinear GRU)')
-    parser.add_argument('--use_causal_conv_gru', action='store_true',
-                        help='Use lightweight causal conv GRU (NO cuDNN, minimal memory!)')
+    parser.add_argument('--use_local_conv', action='store_true',
+                        help='Use LocalConvGRU (local conv window, NOT recurrent!)')
+    parser.add_argument('--use_flash_gru', action='store_true',
+                        help='Use FlashRNN GRU (hardware-optimized, 50x speedup!)')
+    parser.add_argument('--use_gradient_checkpointing', action='store_true',
+                        help='Use gradient checkpointing to reduce memory (trades compute for memory)')
 
     # --- Zero-Order Optimization (CD-RGE) ---
     zo_group = parser.add_argument_group('Zero-Order Optimization')
@@ -1410,7 +1414,9 @@ def main():
             "use_hybrid_gru": args.hybrid_gru,
             "use_test_gru": args.use_test_gru,
             "use_standard_gru": args.use_standard_gru,
-            "use_causal_conv_gru": args.use_causal_conv_gru,
+            "use_local_conv": args.use_local_conv,
+            "use_flash_gru": args.use_flash_gru,
+            "use_gradient_checkpointing": args.use_gradient_checkpointing,
             "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
             "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init
         }

@@ -38,13 +38,21 @@ except ImportError as e:
     print(f"Failed to import StandardGRU: {e}")
     StandardGRU = None
 
-# Import lightweight causal conv GRU (NO cuDNN!)
+# Import local conv window (NOT recurrent - limited receptive field!)
 try:
-    from mingru.causal_conv_gru import CausalConvGRU
-    print("CausalConvGRU available (lightweight, NO cuDNN bloat!)")
+    from mingru.local_conv_gru import LocalConvGRU
+    print("LocalConvGRU available (local conv window, NOT recurrent!)")
 except ImportError as e:
-    print(f"Failed to import CausalConvGRU: {e}")
-    CausalConvGRU = None
+    print(f"Failed to import LocalConvGRU: {e}")
+    LocalConvGRU = None
+
+# Import FlashRNN GRU (hardware-optimized, 50x faster!)
+try:
+    from mingru.flash_gru import FlashGRU
+    print("FlashGRU available (FlashRNN optimized, 50x speedup!)")
+except ImportError as e:
+    print(f"Failed to import FlashGRU: {e}")
+    FlashGRU = None
 
 def exists(v):
     return v is not None
@@ -129,7 +137,9 @@ class minLM(Module):
         use_hybrid_gru = False,  # Use HybridFusedGRU with Triton kernel
         use_test_gru = False,  # Use simple test GRU
         use_standard_gru = False,  # Use PyTorch nn.GRU (cuDNN, gold standard)
-        use_causal_conv_gru = False,  # Use lightweight causal conv (NO cuDNN!)
+        use_local_conv = False,  # Use LocalConvGRU (local window, NOT recurrent!)
+        use_flash_gru = False,  # Use FlashRNN GRU (50x faster, hardware-optimized!)
+        use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
         z_bias_input = -2.0,  # Initial bias for z-gates on input projection
         z_bias_hidden = -2.0  # Initial bias for z-gates on hidden projection
     ):
@@ -152,14 +162,22 @@ class minLM(Module):
             min_rnn_klass = TestGRU
             print(f"Using Test GRU for depth={depth} model")
             rnn_kwargs = {'expansion_factor': expansion}
-        elif use_causal_conv_gru:
-            min_rnn_klass = CausalConvGRU
-            print(f"Using CausalConvGRU (lightweight causal conv, NO cuDNN bloat!) for depth={depth} model")
+        elif use_local_conv:
+            min_rnn_klass = LocalConvGRU
+            print(f"Using LocalConvGRU (local conv window, NOT recurrent!) for depth={depth} model")
+            rnn_kwargs = {'expansion_factor': expansion}
+        elif use_flash_gru:
+            min_rnn_klass = FlashGRU
+            print(f"Using FlashGRU (FlashRNN optimized, 50x speedup!) for depth={depth} model")
             rnn_kwargs = {'expansion_factor': expansion}
         elif use_standard_gru:
             min_rnn_klass = StandardGRU
-            print(f"Using StandardGRU (cuDNN-optimized, gold standard) for depth={depth} model")
-            rnn_kwargs = {'expansion_factor': expansion}
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using StandardGRU (cuDNN-optimized, gold standard{checkpoint_str}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing
+            }
         elif use_hybrid_gru:
             min_rnn_klass = HybridFusedGRU
             # HybridFusedGRU uses PyTorch matmul + Triton fused cell
@@ -305,7 +323,7 @@ class minLM(Module):
             labels_masked[mask] = -100
 
         # Use Triton streaming loss (NO logits materialization!)
-        # NOTE: Triton kernel has bugs (nested loops), using chunked loss instead
+        # NOTE: Triton kernel has bugs (for loop in JIT), using chunked loss instead
         # Chunked loss: minimize logits materialization to push batch_size to max!
         if False and STREAMING_LOSS_AVAILABLE:
             loss = triton_streaming_cross_entropy(embed, self.to_logits.weight, labels_masked)

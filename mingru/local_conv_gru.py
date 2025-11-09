@@ -10,9 +10,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class CausalConvGRU(nn.Module):
+class LocalConvGRU(nn.Module):
     """
-    Minimal GRU replacement: Causal conv for context + gated linear mixing.
+    Local convolutional window (NOT A TRUE RNN - NO RECURRENCE!)
+
+    Limited receptive field (~37 tokens for depth=12), NOT full sequence memory.
 
     NO recurrence, NO cuDNN workspace!
     Memory: Just the parameters (~2MB per layer for 1536 dim)
