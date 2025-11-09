@@ -202,6 +202,13 @@ class DocumentStreamDataset(Dataset):
 
         # For subword tokenization: buffer bytes until we have enough text to tokenize
         self.text_read_size = 4096  # Read 4KB chunks for tokenization
+
+        if rank == 0:
+            print(f"[DEBUG] Rank 0: DocumentStreamDataset initialized")
+            print(f"[DEBUG]   - is_byte_level: {self.is_byte_level}")
+            print(f"[DEBUG]   - tokenizer: {type(tokenizer).__name__}")
+            print(f"[DEBUG]   - chunk_size: {chunk_size}")
+            print(f"[DEBUG]   - text_read_size: {self.text_read_size}")
     
     def __len__(self):
         return 1_000_000_000  # Effectively infinite
@@ -307,12 +314,16 @@ class DocumentStreamDataset(Dataset):
                     if text:
                         tokens = self.tokenizer.encode(text)
                         self.token_buffer.extend(tokens)
+                        if self.rank == 0 and self.chunks_served % 100 == 0:
+                            print(f"[DEBUG] Rank 0: Tokenized {len(tokens)} tokens, buffer now has {len(self.token_buffer)} tokens")
                 except Exception as e:
                     print(f"Rank {self.rank}: Warning - tokenization error: {e}")
                     continue
 
                 # Check if we hit document boundary
                 if hit_boundary:
+                    if self.rank == 0:
+                        print(f"[DEBUG] Rank 0: HIT BOUNDARY! Buffer has {len(self.token_buffer)} tokens, chunk_size={self.chunk_size}")
                     if len(self.token_buffer) > 0:
                         # Partial chunk at doc boundary - pad and return
                         actual_length = min(len(self.token_buffer), self.chunk_size)
@@ -321,7 +332,12 @@ class DocumentStreamDataset(Dataset):
                             self.token_buffer[:self.chunk_size],
                             dtype=torch.long
                         )
-                        self.token_buffer = self.token_buffer[self.chunk_size:] if len(self.token_buffer) > self.chunk_size else []
+                        # BUG FIX: Clear buffer completely at document boundaries!
+                        # Don't keep leftover tokens from previous document
+                        self.token_buffer = []
+
+                        if self.rank == 0:
+                            print(f"[DEBUG] Rank 0: Returning boundary chunk with actual_length={actual_length}, is_end=True")
 
                         return chunk, True, actual_length
                     # else: Empty buffer, continue to next document
