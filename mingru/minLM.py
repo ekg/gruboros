@@ -323,8 +323,9 @@ class minLM(Module):
             labels_masked[mask] = -100
 
         # Use Triton streaming loss (NO logits materialization!)
-        # FIXED: Kernel bugs resolved - replaced Python loops with Triton vectorization
-        if STREAMING_LOSS_AVAILABLE:
+        # NOTE: Kernel works but needs custom autograd.Function for gradients
+        # TODO: Implement backward pass, for now use chunked fallback
+        if False and STREAMING_LOSS_AVAILABLE:
             loss = triton_streaming_cross_entropy(embed, self.to_logits.weight, labels_masked)
         else:
             # Chunked loss: Balance speed and memory for profiling baseline
