@@ -1907,9 +1907,7 @@ def main():
                     batch_actual_lengths = batch_actual_lengths.to(device, non_blocking=True)
                     batch_is_doc_end = batch_is_doc_end.to(device, non_blocking=True)
 
-                    if device.type == 'cuda':
-                        torch.cuda.synchronize()
-
+                    # NO GPU SYNC! non_blocking=True handles async transfers properly.
                     # NO DATA BROADCAST! Each rank loads independently for data parallelism.
                     # DDP will synchronize gradients automatically during backward pass
                     # (only when accumulated_steps reaches grad_accum, not every step!)
