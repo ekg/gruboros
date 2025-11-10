@@ -192,14 +192,10 @@ class minLM(Module):
                 'use_gradient_checkpointing': use_gradient_checkpointing
             }
         elif use_fused_gru:
-            # Use CuDNNFusedGRU (3× faster than old HybridFusedGRU!)
-            # Falls back to HybridFusedGRU if CuDNN version not available
-            if CuDNNFusedGRU is not None:
-                min_rnn_klass = CuDNNFusedGRU
-                print(f"Using CuDNNFusedGRU (cuDNN kernel, 3× faster!) for depth={depth} model")
-            else:
-                min_rnn_klass = HybridFusedGRU
-                print(f"Using HybridFusedGRU (Triton kernel fallback) for depth={depth} model")
+            # Use HybridFusedGRU (Triton fused kernel)
+            # Note: CuDNNFusedGRU is 3× faster but materializes all timesteps → OOM for large models
+            min_rnn_klass = HybridFusedGRU
+            print(f"Using HybridFusedGRU (Triton fused kernel) for depth={depth} model")
 
             rnn_kwargs = {
                 'expansion_factor': expansion,
