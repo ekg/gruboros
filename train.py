@@ -1876,10 +1876,10 @@ def main():
         is_doc_end = is_doc_end.to(device, non_blocking=True) # [B]
         # Move actual_lengths to GPU to prevent device mismatch
         actual_lengths = actual_lengths.to(device, non_blocking=True)
-        
-        # CRITICAL: Synchronize async transfers before forward pass
-        if device.type == 'cuda':
-            torch.cuda.synchronize()
+
+        # NO EXPLICIT SYNC: Let GPU kernel implicitly wait for data when needed
+        # Explicit synchronize forces GPU to idle while waiting for transfer
+        # With non_blocking=True + prefetch_factor=4, transfer overlaps with compute
 
         # MEMORY CHECKPOINT 6: After first batch loaded (only on step 0)
         if step == 0 and global_rank == 0 and device.type == 'cuda':
