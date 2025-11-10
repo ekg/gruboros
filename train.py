@@ -1797,7 +1797,7 @@ def main():
             f"{validation_fitness:.6f}" if validation_fitness != float('inf') else "NA",
             total_tokens_processed,  # Per-GPU tokens
             f"{tokens_per_sec:.2f}", f"{current_lr:.8f}",
-            doc_stats['documents_processed'],  # NEW
+            doc_stats['documents_processed'].item() if torch.is_tensor(doc_stats['documents_processed']) else doc_stats['documents_processed'],  # Sync only when logging
             f"{doc_stats['current_position'] / 1e9:.3f}",  # NEW
             acc_steps,  # NEW: accumulated steps
             1 if optimized else 0,  # NEW: whether optimizer stepped
@@ -1825,7 +1825,7 @@ def main():
     
     # Track accumulated steps for gradient accumulation
     accumulated_steps = 0
-    documents_processed_count = 0  # Track documents seen in main process
+    documents_processed_count = torch.tensor(0, device=device)  # Keep on GPU to avoid sync!
 
     # Z-gate logging setup (rank 0 only)
     # DISABLED: Z-gates are healthy, no need for monitoring
@@ -2058,7 +2058,7 @@ def main():
 
                 # Scale loss for gradient accumulation
                 scaled_loss = loss / args.grad_accum
-                chunk_loss = loss.detach()  # Keep on GPU - avoid sync every step!
+                chunk_loss = loss.detach().item()  # Convert to scalar for logging (sync once per step)
 
                 # Track accumulation progress
                 accumulated_steps += 1
@@ -2275,10 +2275,11 @@ def main():
         if global_rank == 0:
             
             # Console logging with it/s added
+            doc_count = doc_stats['documents_processed'].item() if torch.is_tensor(doc_stats['documents_processed']) else doc_stats['documents_processed']
             if grad_norm is not None:
-                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={grad_norm:.4f} T/s={tokens_per_sec:.0f} it/s={iterations_per_sec:.2f} D={doc_stats['documents_processed']}"
+                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={grad_norm:.4f} T/s={tokens_per_sec:.0f} it/s={iterations_per_sec:.2f} D={doc_count}"
             else:
-                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={'NA':>6s} T/s={tokens_per_sec:.0f} it/s={iterations_per_sec:.2f} D={doc_stats['documents_processed']}"
+                log_str = f"Step {step:6d}: L={chunk_loss:.4f} V={status['fitness']:.4f} G={'NA':>6s} T/s={tokens_per_sec:.0f} it/s={iterations_per_sec:.2f} D={doc_count}"
             if 'skipped_due_to_lock' in status:
                 log_str += f" skipped={status['skipped_due_to_lock']}"
             print(log_str)
