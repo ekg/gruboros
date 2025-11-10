@@ -23,6 +23,14 @@ except ImportError as e:
     print(f"Failed to import hybrid_fused_gru: {e}")
     HybridFusedGRU = None
 
+# Import cuDNN Fused GRU (3× faster than Hybrid!)
+try:
+    from mingru.cudnn_fused_gru import CuDNNFusedGRU
+    print("CuDNNFusedGRU available (cuDNN kernel, 3× faster than Hybrid!)")
+except ImportError as e:
+    print(f"Failed to import CuDNNFusedGRU: {e}")
+    CuDNNFusedGRU = None
+
 # Import test GRU for debugging
 try:
     from mingru.test_gru import TestGRU
@@ -134,7 +142,8 @@ class minLM(Module):
         use_lstm = None,  # Kept for backward compatibility but ignored
         enable_conv = None,  # Deprecated - for backwards compatibility only
         dropout = 0.,
-        use_hybrid_gru = False,  # Use HybridFusedGRU with Triton kernel
+        use_fused_gru = False,  # Use Fused GRU (cuDNN kernel, 3× faster)
+        use_hybrid_gru = False,  # Backwards compat alias for use_fused_gru
         use_test_gru = False,  # Use simple test GRU
         use_standard_gru = False,  # Use PyTorch nn.GRU (cuDNN, gold standard)
         use_local_conv = False,  # Use LocalConvGRU (local window, NOT recurrent!)
@@ -152,6 +161,10 @@ class minLM(Module):
                 conv_kernel_size = conv_kernel_size if conv_kernel_size != 3 else 3
             else:
                 conv_kernel_size = None
+
+        # Handle use_hybrid_gru as alias for use_fused_gru
+        if use_hybrid_gru:
+            use_fused_gru = True
         
         self.token_emb = nn.Embedding(num_tokens, dim)
 
@@ -178,14 +191,18 @@ class minLM(Module):
                 'expansion_factor': expansion,
                 'use_gradient_checkpointing': use_gradient_checkpointing
             }
-        elif use_hybrid_gru:
-            min_rnn_klass = HybridFusedGRU
-            # HybridFusedGRU uses PyTorch matmul + Triton fused cell
-            print(f"Using HybridFusedGRU (Triton kernel) for depth={depth} model")
+        elif use_fused_gru:
+            # Use CuDNNFusedGRU (3× faster than old HybridFusedGRU!)
+            # Falls back to HybridFusedGRU if CuDNN version not available
+            if CuDNNFusedGRU is not None:
+                min_rnn_klass = CuDNNFusedGRU
+                print(f"Using CuDNNFusedGRU (cuDNN kernel, 3× faster!) for depth={depth} model")
+            else:
+                min_rnn_klass = HybridFusedGRU
+                print(f"Using HybridFusedGRU (Triton kernel fallback) for depth={depth} model")
 
             rnn_kwargs = {
                 'expansion_factor': expansion,
-                'use_hybrid_gru': use_hybrid_gru,
                 'z_bias_input': z_bias_input,
                 'z_bias_hidden': z_bias_hidden
             }

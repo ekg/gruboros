@@ -1072,8 +1072,8 @@ def get_args():
                         help='If elite losses are within this fractional threshold, use step count as a tie-breaker (e.g., 0.01 for 1%).')
     
     # --- GRU Implementation Selection ---
-    parser.add_argument('--hybrid_gru', action='store_true',
-                        help='Use fused GRU implementation (HybridFusedGRU) instead of minGRU')
+    parser.add_argument('--fused_gru', '--hybrid_gru', action='store_true', dest='fused_gru',
+                        help='Use Fused GRU (cuDNN kernel, 3× faster)')
     parser.add_argument('--use_test_gru', action='store_true',
                         help='Use simple test GRU implementation for debugging')
     parser.add_argument('--use_standard_gru', action='store_true',
@@ -1394,18 +1394,18 @@ def main():
         elif args.dim and not args.depth:
             # User specified dim, solve for depth
             dim = int(parse_size_with_suffix(args.dim))
-            depth = solve_for_depth(params_value, dim, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
+            depth = solve_for_depth(params_value, dim, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.fused_gru)
         elif not args.dim and args.depth:
             # User specified depth, solve for dim
             depth = args.depth
-            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
+            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.fused_gru)
         else:
             # Default behavior: guess a dim and solve for depth, then refine dim
             base_dim = 512 if params_value < 1e9 else 1024
             # Heuristic scaling for dimension based on Chinchilla laws (very approximate)
             dim_guess = round_to_multiple(base_dim * (params_value / (100e6 if params_value < 1e9 else 1e9))**0.25)
-            depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
-            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.hybrid_gru)
+            depth = solve_for_depth(params_value, dim_guess, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.fused_gru)
+            dim = solve_for_dimension(params_value, depth, expansion=args.expansion_factor, ff_mult=args.ff_mult, use_hybrid_gru=args.fused_gru)
             
         model_config = {
             "num_tokens": 256,  # Will be updated by tokenizer
@@ -1415,7 +1415,7 @@ def main():
             "expansion": args.expansion_factor,
             "conv_kernel_size": args.conv_kernel_size,
             "dropout": args.dropout,
-            "use_hybrid_gru": args.hybrid_gru,
+            "use_fused_gru": args.fused_gru,
             "use_test_gru": args.use_test_gru,
             "use_standard_gru": args.use_standard_gru,
             "use_local_conv": args.use_local_conv,

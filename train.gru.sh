@@ -92,11 +92,11 @@ echo "Optimizations: NCCL backend, z_bias=0.0, checkpoints 1/1000 steps, milesto
   `# GRU CONFIGURATION (z_bias=0.0 for adaptive gating)` \
   --z_bias_input 0.0 \
   --z_bias_hidden 0.0 \
-  --hybrid_gru \
+  --fused_gru \
   \
-  `# SEQUENCES (512 tokens, 737K tokens per update per GPU, 5.9M across 8 GPUs)` \
+  `# SEQUENCES (512 tokens, reduce batch for CuDNN memory)` \
   --chunk_size 512 \
-  --batch_size 90 \
+  --batch_size 64 \
   --grad_accum 16 \
   \
   `# TRAINING` \
