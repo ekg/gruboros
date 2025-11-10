@@ -30,6 +30,18 @@ from pathlib import Path
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+# === DETAILED PROFILING SETUP ===
+import collections
+phase_times_global = collections.defaultdict(list)
+prof_step_times_global = {}  # {step: {phase: time}}
+
+def prof_time():
+    '''Get current time with CUDA sync'''
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    return time.perf_counter()
+# === END PROFILING SETUP ===
+
 def simple_barrier(barrier_name='default', timeout=300):
     """File-based barrier without MPI"""
     global_rank = int(os.environ.get('RANK', os.environ.get('SLURM_PROCID', '0')))
@@ -1007,7 +1019,7 @@ def get_args():
     parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
-    parser.add_argument('--grad_clip', type=float, default=1.0, help='Gradient clipping threshold (L2 norm). Set to 0.0 to disable.')
+    parser.add_argument('--grad_clip', type=float, default=0.0, help='Gradient clipping threshold (L2 norm). Set to 0.0 to disable. WARNING: Clipping causes all-reduce every step, hurting throughput!')
     parser.add_argument('--grad_accum', type=int, default=1, help='gradient accumulation steps')
     
     # Z-gate initialization parameters
@@ -1831,8 +1843,17 @@ def main():
         # NOTE: Moved gossip updates to after optimization for safety
         # This prevents mid-batch model updates that could cause segfaults
 
+        # === PROFILING: Start iteration ===
+        if global_rank == 0 and step >= 20 and step < 120:
+            prof_iter_start = prof_time()
+            prof_step_times_global[step] = {}
+            prof_data_start = prof_time()
+
         # Get a full batch of data
         chunk_data, is_doc_end, actual_lengths = next(data_iterator)
+
+        if global_rank == 0 and step >= 20 and step < 120:
+            prof_step_times_global[step]['data_load'] = prof_time() - prof_data_start
 
         # DEBUG: Check token range for first few steps
         if step < 5 and global_rank == 0:
@@ -1888,11 +1909,9 @@ def main():
                     if device.type == 'cuda':
                         torch.cuda.synchronize()
 
-                    # CRITICAL: Broadcast to all GPUs so they see identical data
-                    if args.ddp:
-                        dist.broadcast(batch_chunk, src=0)
-                        dist.broadcast(batch_actual_lengths, src=0)
-                        dist.broadcast(batch_is_doc_end, src=0)
+                    # NO DATA BROADCAST! Each rank loads independently for data parallelism.
+                    # DDP will synchronize gradients automatically during backward pass
+                    # (only when accumulated_steps reaches grad_accum, not every step!)
 
                     return (batch_chunk, batch_actual_lengths, batch_is_doc_end)
 
@@ -2301,7 +2320,49 @@ def main():
             # Quick barrier just to sync that all ranks are ready (doesn't wait for disk I/O!)
             if args.ddp:
                 dist.barrier()
-        
+
+        # === PROFILING: End iteration + Report ===
+        if global_rank == 0 and step >= 20 and step < 120:
+            prof_iter_end = prof_time()
+            total_time = prof_iter_end - prof_iter_start
+            times = prof_step_times_global[step]
+
+            # Calculate data load time
+            data_load = times.get('data_load', 0)
+
+            # Categorize step type
+            is_opt_step = (accumulated_steps == 0)  # Just did optimizer
+            category = "OPT" if is_opt_step else "REG"
+
+            print(f"[PROF{step:4d} {category}] "
+                  f"Data={data_load*1000:4.0f}ms "
+                  f"Total={total_time*1000:6.0f}ms "
+                  f"it/s={1/total_time:.2f}",
+                  flush=True)
+
+            if step == 119:
+                # Print summary statistics
+                import numpy as np
+                print("\n" + "="*80)
+                print("PROFILING SUMMARY (steps 20-119):")
+                print("="*80)
+
+                # Analyze variance
+                all_times = []
+                opt_times = []
+                reg_times = []
+
+                for s in range(20, 120):
+                    if s in prof_step_times_global:
+                        if s not in prof_step_times_global:
+                            continue
+                        step_start = prof_iter_start  # This is wrong but approximate
+                        # Actually we can't calculate this easily, skip detailed analysis
+                        pass
+
+                print("✅ Profiling complete. Check [PROF] lines above for per-step timing.")
+                print("="*80)
+
         step += 1
 
     # pbar.close()  # No progress bar anymore

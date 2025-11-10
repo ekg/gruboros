@@ -105,7 +105,7 @@ echo "Optimizations: NCCL backend, z_bias=0.0, checkpoints 1/1000 steps, milesto
   --sf_beta 0.9 \
   --sf_beta2 0.995 \
   --weight_decay 0.033 \
-  --grad_clip 1.0 \
+  --grad_clip 0.0 \
   \
   `# DDP OPTIMIZATIONS` \
   --num_workers 4 \
@@ -125,8 +125,7 @@ echo "Optimizations: NCCL backend, z_bias=0.0, checkpoints 1/1000 steps, milesto
   `# FLAGS` \
   --ddp \
   --ddp-find-unused \
-  --cuda \
-  --bf16
+  --cuda
 
 echo "Training finished."
 
