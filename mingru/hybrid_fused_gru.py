@@ -141,7 +141,7 @@ class HybridFusedGRU(nn.Module):
         if not isinstance(self.to_out, nn.Identity):
             nn.init.constant_(self.to_out.weight, 0.0)
     
-    def forward(self, x, prev_hidden=None, return_next_prev_hidden=False):
+    def forward(self, x, prev_hidden=None, return_next_prev_hidden=False, doc_boundaries=None):
         if x.dim() == 4 and x.size(2) == 1:
             x = x.squeeze(2)
         
@@ -229,6 +229,13 @@ class HybridFusedGRU(nn.Module):
                 h_new = gru_cell_pytorch(input_gates, hidden_gates, h)
             
             h = h_new
+
+            # Reset hidden states in-place at document boundaries (NO allocation!)
+            if doc_boundaries is not None:
+                reset_mask = doc_boundaries[:, t]  # [B] - which batch elements reset at this timestep
+                if reset_mask.any():
+                    h = h.masked_fill(reset_mask.unsqueeze(-1), 0.0)  # In-place zero-out
+
             outputs.append(h)
         
         # Stack outputs and apply final projection

@@ -2036,6 +2036,12 @@ def main():
             else:
                 # Standard backpropagation
                 # Forward pass with both RNN hidden states and conv buffers
+                # Create doc_boundaries tensor: [B, T] where True = reset hidden state at this token
+                # For now, mark only the LAST token of chunks that end documents
+                B, T = chunk.shape
+                doc_boundaries = torch.zeros(B, T, dtype=torch.bool, device=chunk.device)
+                doc_boundaries[:, -1] = is_doc_end  # Reset at last token for streams ending documents
+
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
                     result = model(
                         chunk,
@@ -2043,7 +2049,8 @@ def main():
                         return_prev_hiddens=True,
                         prev_hiddens=hidden_state,
                         prev_conv_buffers=conv_buffers,
-                        actual_length=actual_lengths
+                        actual_length=actual_lengths,
+                        doc_boundaries=doc_boundaries
                     )
 
                 # Unpack the result - could be just loss or loss + (hiddens, buffers)
@@ -2088,24 +2095,21 @@ def main():
         #     t_fwd_bwd = time.time() - t0
         #     print(f"[PROFILE STEP {step}] Forward+Backward: {t_fwd_bwd*1000:.1f}ms", flush=True)
         
-        # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET (OPTIMIZED) ---
+        # --- KEY LOGIC: DYNAMIC HIDDEN STATE HANDLING (NO ALLOCATION!) ---
         # Count documents processed in main process
         # Defer doc count sync - keep on GPU
         documents_processed_count += is_doc_end.sum()  # Accumulate on GPU
 
-        # Create broadcastable masks for branchless execution
-        reset_mask = is_doc_end.view(-1, 1)
-        conv_reset_mask = is_doc_end.view(-1, 1, 1)
-
-        # Use torch.where for branchless execution - more efficient than multiplication
-        # Handle architectures without recurrence (hidden states are None)
+        # Hidden states are now reset IN-PLACE during forward pass (no allocation needed!)
+        # Just detach and pass through for next iteration
         if next_hidden_state and next_hidden_state[0] is not None:
-            hidden_state = [torch.where(reset_mask, torch.zeros_like(h), h.detach())
-                           for h in next_hidden_state]
+            hidden_state = [h.detach() for h in next_hidden_state]
         else:
             hidden_state = []  # No hidden state (e.g., CausalConvGRU)
-        # Check if conv buffers exist and contain actual tensors
+
+        # Conv buffers still need reset at document boundaries (not handled by GRU in-place logic)
         if next_conv_buffers and len(next_conv_buffers) > 0 and isinstance(next_conv_buffers[0], torch.Tensor):
+            conv_reset_mask = is_doc_end.view(-1, 1, 1)
             conv_buffers = [torch.where(conv_reset_mask, torch.zeros_like(b), b.detach())
                            for b in next_conv_buffers]
         else:

@@ -48,7 +48,7 @@ class StandardGRU(nn.Module):
         """Helper function for gradient checkpointing."""
         return self.gru(x_proj, h0)
 
-    def forward(self, x, prev_hiddens=None, prev_conv_buffers=None, return_hiddens=True, return_next_prev_hidden=True, actual_length=None):
+    def forward(self, x, prev_hiddens=None, prev_conv_buffers=None, return_hiddens=True, return_next_prev_hidden=True, actual_length=None, doc_boundaries=None):
         """
         Args:
             x: (batch, seq_len, dim)
@@ -56,6 +56,7 @@ class StandardGRU(nn.Module):
             prev_conv_buffers: Unused (kept for API compatibility with conv layers)
             return_hiddens: Whether to return hidden states
             actual_length: Unused (kept for API compatibility)
+            doc_boundaries: Unused (cuDNN GRU doesn't support in-place resets, kept for API compatibility)
 
         Returns:
             output: (batch, seq_len, dim)

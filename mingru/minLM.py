@@ -237,7 +237,8 @@ class minLM(Module):
         return_prev_hiddens = False,
         prev_hiddens = None,
         prev_conv_buffers = None,  # New parameter for conv buffers
-        actual_length = None  # For masking padded chunks at doc boundaries
+        actual_length = None,  # For masking padded chunks at doc boundaries
+        doc_boundaries = None  # [B, T] boolean tensor: True = reset hidden state at this token
     ):
         """
         Forward pass with support for both RNN hidden states and conv buffers.
@@ -290,7 +291,8 @@ class minLM(Module):
             mingru_result = mingru(
                 norm(x),
                 prev_hidden,
-                return_next_prev_hidden = True
+                return_next_prev_hidden = True,
+                doc_boundaries = doc_boundaries
             )
 
             # Unpack result (handles 2 or 3 return values)
