@@ -1868,10 +1868,10 @@ def main():
             print(f"[DEBUG STEP {step}] Grad accumulation: {accumulated_steps}/{args.grad_accum}", flush=True)
             sys.stdout.flush()
 
-        # Simple profiling every 50 steps
-        profile_this_step = (step % 50 == 0 and step > 0 and global_rank == 0)
-        if profile_this_step:
-            t0 = time.time()
+        # Profiling disabled (was causing sync overhead)
+        profile_this_step = False
+        # if profile_this_step:
+        #     t0 = time.time()
 
         chunk = chunk_data.to(device, non_blocking=True) # [B, SeqLen]
         is_doc_end = is_doc_end.to(device, non_blocking=True) # [B]
@@ -2082,11 +2082,11 @@ def main():
             # Mark that we've exited forward pass - safe for weight updates
             evolutionary_node.exit_forward_pass()
 
-        # Profile timing breakdown
-        if profile_this_step:
-            torch.cuda.synchronize()
-            t_fwd_bwd = time.time() - t0
-            print(f"[PROFILE STEP {step}] Forward+Backward: {t_fwd_bwd*1000:.1f}ms", flush=True)
+        # Profile timing breakdown (DISABLED)
+        # if profile_this_step:
+        #     torch.cuda.synchronize()
+        #     t_fwd_bwd = time.time() - t0
+        #     print(f"[PROFILE STEP {step}] Forward+Backward: {t_fwd_bwd*1000:.1f}ms", flush=True)
         
         # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET (OPTIMIZED) ---
         # Count documents processed in main process
@@ -2322,47 +2322,47 @@ def main():
             if args.ddp:
                 dist.barrier()
 
-        # === PROFILING: End iteration + Report ===
-        if global_rank == 0 and step >= 20 and step < 120:
-            prof_iter_end = prof_time()
-            total_time = prof_iter_end - prof_iter_start
-            times = prof_step_times_global[step]
-
-            # Calculate data load time
-            data_load = times.get('data_load', 0)
-
-            # Categorize step type
-            is_opt_step = (accumulated_steps == 0)  # Just did optimizer
-            category = "OPT" if is_opt_step else "REG"
-
-            print(f"[PROF{step:4d} {category}] "
-                  f"Data={data_load*1000:4.0f}ms "
-                  f"Total={total_time*1000:6.0f}ms "
-                  f"it/s={1/total_time:.2f}",
-                  flush=True)
-
-            if step == 119:
-                # Print summary statistics
-                import numpy as np
-                print("\n" + "="*80)
-                print("PROFILING SUMMARY (steps 20-119):")
-                print("="*80)
-
-                # Analyze variance
-                all_times = []
-                opt_times = []
-                reg_times = []
-
-                for s in range(20, 120):
-                    if s in prof_step_times_global:
-                        if s not in prof_step_times_global:
-                            continue
-                        step_start = prof_iter_start  # This is wrong but approximate
-                        # Actually we can't calculate this easily, skip detailed analysis
-                        pass
-
-                print("✅ Profiling complete. Check [PROF] lines above for per-step timing.")
-                print("="*80)
+        # === PROFILING: End iteration + Report === (DISABLED)
+        # if global_rank == 0 and step >= 20 and step < 120:
+        #     prof_iter_end = prof_time()
+        #     total_time = prof_iter_end - prof_iter_start
+        #     times = prof_step_times_global[step]
+        #
+        #     # Calculate data load time
+        #     data_load = times.get('data_load', 0)
+        #
+        #     # Categorize step type
+        #     is_opt_step = (accumulated_steps == 0)  # Just did optimizer
+        #     category = "OPT" if is_opt_step else "REG"
+        #
+        #     print(f"[PROF{step:4d} {category}] "
+        #           f"Data={data_load*1000:4.0f}ms "
+        #           f"Total={total_time*1000:6.0f}ms "
+        #           f"it/s={1/total_time:.2f}",
+        #           flush=True)
+        #
+        #     if step == 119:
+        #         # Print summary statistics
+        #         import numpy as np
+        #         print("\n" + "="*80)
+        #         print("PROFILING SUMMARY (steps 20-119):")
+        #         print("="*80)
+        #
+        #         # Analyze variance
+        #         all_times = []
+        #         opt_times = []
+        #         reg_times = []
+        #
+        #         for s in range(20, 120):
+        #             if s in prof_step_times_global:
+        #                 if s not in prof_step_times_global:
+        #                     continue
+        #                 step_start = prof_iter_start  # This is wrong but approximate
+        #                 # Actually we can't calculate this easily, skip detailed analysis
+        #                 pass
+        #
+        #         print("✅ Profiling complete. Check [PROF] lines above for per-step timing.")
+        #         print("="*80)
 
         step += 1
 
