@@ -94,9 +94,9 @@ echo "Optimizations: NCCL backend, z_bias=0.0, checkpoints 1/1000 steps, milesto
   --z_bias_hidden 0.0 \
   --fused_gru \
   \
-  `# SEQUENCES (512 tokens, reduce batch for CuDNN memory)` \
+  `# SEQUENCES (512 tokens, 737K tokens per update per GPU, 5.9M across 8 GPUs)` \
   --chunk_size 512 \
-  --batch_size 64 \
+  --batch_size 90 \
   --grad_accum 16 \
   \
   `# TRAINING` \
@@ -125,7 +125,8 @@ echo "Optimizations: NCCL backend, z_bias=0.0, checkpoints 1/1000 steps, milesto
   `# FLAGS` \
   --ddp \
   --ddp-find-unused \
-  --cuda
+  --cuda \
+  --bf16
 
 echo "Training finished."
 
