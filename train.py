@@ -1728,19 +1728,19 @@ def main():
         gossip_world_size = world_size
         
     evolutionary_node = EvolutionaryTrainingNode(
-        node_id=f"node_{global_rank}", 
+        node_id=f"node_{global_rank}",
         model=base_model if args.ddp else model,  # Use base_model for DDP, model otherwise
-        optimizer=optimizer, 
+        optimizer=optimizer,
         global_rank=gossip_rank if is_ddp_primary else -1,  # -1 disables gossip for non-primary
-        local_rank=local_rank, 
-        world_size=gossip_world_size, 
+        local_rank=local_rank,
+        world_size=gossip_world_size,
         data_parallel_rank=ddp_rank if args.ddp else global_rank,
-        tp_size=1, 
+        tp_size=1,
         mixing_probability=args.gossip_mixing_rate if is_ddp_primary else 0.0,
         output_dir=checkpoint_dir,
-        merge_method=args.gossip_merge_method, 
+        merge_method=args.gossip_merge_method,
         recombination_alpha=args.gossip_recombination_alpha,
-        optimizer_recombination=args.gossip_optimizer_recombination, 
+        optimizer_recombination=args.gossip_optimizer_recombination,
         gossip_temp_dir=args.gossip_temp_dir,
         fitness_window_size=args.gossip_fitness_window,
         use_node_local_lock=args.use_gossip_lock,
@@ -1752,7 +1752,8 @@ def main():
         p_value_threshold=args.gossip_p_value_threshold,
         validation_interval=args.validation_interval,
         validation_batches=args.validation_batches,
-        gossip_lock_timeout=args.gossip_lock_timeout
+        gossip_lock_timeout=args.gossip_lock_timeout,
+        tokenizer=tokenizer  # CRITICAL: Pass tokenizer so validation uses same tokenization as training!
     )
     
     # Only start gossip for primary ranks

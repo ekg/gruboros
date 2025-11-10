@@ -17,12 +17,14 @@ class ValidationTracker:
     def __init__(self, data_path: str, chunk_size: int, batch_size: int,
                  validation_interval: int = 10000,
                  validation_batches: int = 8,
-                 window_size: int = 10):
+                 window_size: int = 10,
+                 tokenizer=None):
         self.data_path = data_path
         self.chunk_size = chunk_size
         self.batch_size = batch_size
         self.validation_interval = validation_interval
         self.validation_batches = validation_batches
+        self.tokenizer = tokenizer  # CRITICAL: Store tokenizer to pass to validation dataset
         # Store validation results
         self.validation_losses = deque(maxlen=window_size)
         self.current_fitness = float('inf')
@@ -69,6 +71,7 @@ class ValidationTracker:
         
         # Create validation dataset using the same class as training
         # Each batch element gets a different random start position based on seed
+        # CRITICAL FIX: Pass tokenizer to ensure validation uses same tokenization as training!
         val_datasets = []
         for i in range(self.batch_size):
             dataset = SingleStreamDataset(
@@ -77,7 +80,8 @@ class ValidationTracker:
                 total_chunks=self.validation_batches,
                 rank=i,  # Use index as rank for different positions
                 seed=seed + i,  # Different seed per stream
-                shared_mmap=shared_mmap  # Share the mmap across all streams
+                shared_mmap=shared_mmap,  # Share the mmap across all streams
+                tokenizer=self.tokenizer  # FIX: Use same tokenizer as training!
             )
             val_datasets.append(dataset)
         

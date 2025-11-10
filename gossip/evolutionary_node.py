@@ -98,7 +98,7 @@ class WeightUpdate:
 class EvolutionaryTrainingNode:
     def __init__(self, node_id: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
                  global_rank: int, local_rank: int, world_size: int, data_parallel_rank: int,
-                 tp_size: int, mixing_probability: float = 0.01, 
+                 tp_size: int, mixing_probability: float = 0.01,
                  output_dir: Optional[str] = None,
                  merge_method: str = 'clonal',
                  recombination_alpha: float = 0.5,
@@ -114,7 +114,8 @@ class EvolutionaryTrainingNode:
                  p_value_threshold: float = 0.01,
                  validation_interval: int = 10000,
                  validation_batches: int = 8,
-                 gossip_lock_timeout: float = 2.0):
+                 gossip_lock_timeout: float = 2.0,
+                 tokenizer = None):
         
         self.node_id = node_id
         self.model = model
@@ -161,7 +162,8 @@ class EvolutionaryTrainingNode:
             batch_size=batch_size,
             validation_interval=validation_interval,
             validation_batches=validation_batches,
-            window_size=10
+            window_size=10,
+            tokenizer=tokenizer  # CRITICAL: Pass tokenizer to ensure validation matches training!
         )
         self.validation_lock = threading.Lock()
         self.current_step = 0
