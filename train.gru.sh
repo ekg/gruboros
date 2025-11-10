@@ -53,9 +53,9 @@ export RANKS_PER_NODE=8
 export MASTER_ADDR=127.0.0.1
 export MASTER_PORT=29500
 export TORCH_DISTRIBUTED_TIMEOUT=3600s
-# Use GLOO for peer discovery.
-export TORCH_DISTRIBUTED_BACKEND="gloo"
-echo "Using GLOO backend for initial process group."
+# Use NCCL for fast GPU-to-GPU communication
+export TORCH_DISTRIBUTED_BACKEND="nccl"
+echo "Using NCCL backend for GPU communication."
 NUM_GPUS=8
 
 # --- torch.compile Caching ---
@@ -69,7 +69,7 @@ echo "torch.compile cache: $TORCHINDUCTOR_CACHE_DIR"
 echo "Starting ~794M parameter HybridGRU training on 8 GPUs."
 echo "Architecture: depth=20, dim=2048, p50k_base tokenizer, 512 token chunks"
 echo "Batch size: 90 per GPU (max safe: 43.7GB/48GB), 5.9M tokens/update across 8 GPUs"
-echo "Optimizations: z_bias=0.0, DDP pipeline (static_graph, prefetch)"
+echo "Optimizations: NCCL backend, z_bias=0.0, checkpoints 1/1000 steps, milestones every 10k"
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
@@ -110,13 +110,14 @@ echo "Optimizations: z_bias=0.0, DDP pipeline (static_graph, prefetch)"
   `# DDP OPTIMIZATIONS` \
   --num_workers 4 \
   \
-  `# CHECKPOINTING` \
-  --save_every 500 \
-  --keep_checkpoints 5 \
+  `# CHECKPOINTING (1/1000 steps, keep 10 recent + milestones every 10k)` \
+  --save_every 1000 \
+  --keep_checkpoints 10 \
   --keep_elite 32 \
-  --archive_rate 0.0067 \
-  --validation_interval 2000 \
-  --validation_batches 32 \
+  --milestone_every 10000 \
+  --archive_rate 0.0 \
+  --validation_interval 1000000 \
+  --validation_batches 8 \
   \
   `# GOSSIP (evolutionary training - DISABLED for clean baseline)` \
   --gossip_mixing_rate 0.0 \
