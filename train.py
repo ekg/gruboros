@@ -2058,7 +2058,7 @@ def main():
 
                 # Scale loss for gradient accumulation
                 scaled_loss = loss / args.grad_accum
-                chunk_loss = loss.detach().item()
+                chunk_loss = loss.detach()  # Keep on GPU - avoid sync every step!
 
                 # Track accumulation progress
                 accumulated_steps += 1
@@ -2091,7 +2091,8 @@ def main():
         
         # --- KEY LOGIC: DYNAMIC HIDDEN STATE RESET (OPTIMIZED) ---
         # Count documents processed in main process
-        documents_processed_count += is_doc_end.sum().item()
+        # Defer doc count sync - keep on GPU
+        documents_processed_count += is_doc_end.sum()  # Accumulate on GPU
 
         # Create broadcastable masks for branchless execution
         reset_mask = is_doc_end.view(-1, 1)
@@ -2159,11 +2160,10 @@ def main():
             #         log_z_stats_to_tsv(model, chunk_data, hidden_state, step, z_stats_file, num_layers_to_log=4)
             #     except Exception as e:
             #         print(f"[Rank {global_rank}] Warning: Failed to log z-stats: {e}")
-            
-            # CRITICAL: Ensure optimizer updates are complete before gossip
-            if device.type == 'cuda':
-                torch.cuda.synchronize()
-            
+
+            # NO SYNC: DDP already syncs gradients at accumulation boundary
+            # Explicit sync forces GPU to idle every 16 steps, dropping utilization to 30%
+
             # SAFE GOSSIP SYNCHRONIZATION POINT - all updates happen here
             # First check and apply any pending model updates
             was_updated, needs_optimizer_reset = evolutionary_node.apply_pending_update()
