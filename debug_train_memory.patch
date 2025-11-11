@@ -1,0 +1,6 @@
+--- Add memory tracking checkpoints to find where 43GB is consumed
+
+This patch adds print statements after each major operation in the training loop
+to track memory allocations and identify the leak.
+
+Apply around line 1700 in the zero-order training section of train.py

@@ -1,0 +1,136 @@
+===========================================================
+Checkpoint: step 3000, loss 4.96 (2048 context training)
+Date: Fri Nov  7 11:38:13 PM UTC 2025
+===========================================================
+
+--- Generation 1: The ---
+
+--- Generation 2: In the year ---
+
+--- Generation 3: Once upon a time ---
+
+Traceback (most recent call last):
+  File "/home/erikg/gruboros/generate.py", line 5, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'
+Triton streaming loss available (NO logits materialization!)
+HybridFusedGRU available (PyTorch matmul + Triton fused cell)
+StandardGRU available (cuDNN-optimized)
+CausalConvGRU available (lightweight, NO cuDNN bloat!)
+INFO: Using device: cpu
+INFO: Using latest checkpoint: checkpoint_rank_0000_step_003500_loss_4.9033.pt
+INFO: Using model configuration from checkpoint.
+INFO: Using TikToken tokenizer (vocab_size=100277)
+INFO: Creating model with dimension=1536, depth=12...
+INFO: Adapted weights from a DDP model checkpoint.
+Traceback (most recent call last):
+  File "/home/erikg/gruboros/generate.py", line 717, in <module>
+    main()
+  File "/home/erikg/gruboros/generate.py", line 621, in main
+    model = load_model(
+            ^^^^^^^^^^^
+  File "/home/erikg/gruboros/generate.py", line 398, in load_model
+    model.load_state_dict(state_dict)
+  File "/home/erikg/micromamba/envs/mingru/lib/python3.11/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for minLM:
+	Missing key(s) in state_dict: "layers.0.2.to_hidden_and_gate.weight", "layers.0.2.to_out.weight", "layers.1.2.to_hidden_and_gate.weight", "layers.1.2.to_out.weight", "layers.2.2.to_hidden_and_gate.weight", "layers.2.2.to_out.weight", "layers.3.2.to_hidden_and_gate.weight", "layers.3.2.to_out.weight", "layers.4.2.to_hidden_and_gate.weight", "layers.4.2.to_out.weight", "layers.5.2.to_hidden_and_gate.weight", "layers.5.2.to_out.weight", "layers.6.2.to_hidden_and_gate.weight", "layers.6.2.to_out.weight", "layers.7.2.to_hidden_and_gate.weight", "layers.7.2.to_out.weight", "layers.8.2.to_hidden_and_gate.weight", "layers.8.2.to_out.weight", "layers.9.2.to_hidden_and_gate.weight", "layers.9.2.to_out.weight", "layers.10.2.to_hidden_and_gate.weight", "layers.10.2.to_out.weight", "layers.11.2.to_hidden_and_gate.weight", "layers.11.2.to_out.weight". 
+	Unexpected key(s) in state_dict: "layers.0.2.conv.weight", "layers.0.2.gate_proj.weight", "layers.0.2.gate_proj.bias", "layers.0.2.out_proj.weight", "layers.1.2.conv.weight", "layers.1.2.gate_proj.weight", "layers.1.2.gate_proj.bias", "layers.1.2.out_proj.weight", "layers.2.2.conv.weight", "layers.2.2.gate_proj.weight", "layers.2.2.gate_proj.bias", "layers.2.2.out_proj.weight", "layers.3.2.conv.weight", "layers.3.2.gate_proj.weight", "layers.3.2.gate_proj.bias", "layers.3.2.out_proj.weight", "layers.4.2.conv.weight", "layers.4.2.gate_proj.weight", "layers.4.2.gate_proj.bias", "layers.4.2.out_proj.weight", "layers.5.2.conv.weight", "layers.5.2.gate_proj.weight", "layers.5.2.gate_proj.bias", "layers.5.2.out_proj.weight", "layers.6.2.conv.weight", "layers.6.2.gate_proj.weight", "layers.6.2.gate_proj.bias", "layers.6.2.out_proj.weight", "layers.7.2.conv.weight", "layers.7.2.gate_proj.weight", "layers.7.2.gate_proj.bias", "layers.7.2.out_proj.weight", "layers.8.2.conv.weight", "layers.8.2.gate_proj.weight", "layers.8.2.gate_proj.bias", "layers.8.2.out_proj.weight", "layers.9.2.conv.weight", "layers.9.2.gate_proj.weight", "layers.9.2.gate_proj.bias", "layers.9.2.out_proj.weight", "layers.10.2.conv.weight", "layers.10.2.gate_proj.weight", "layers.10.2.gate_proj.bias", "layers.10.2.out_proj.weight", "layers.11.2.conv.weight", "layers.11.2.gate_proj.weight", "layers.11.2.gate_proj.bias", "layers.11.2.out_proj.weight". 
+
+===========================================================
+Checkpoint: step 3500, loss 4.90 (2048 context training)
+Date: Fri Nov  7 11:40:31 PM UTC 2025
+===========================================================
+
+Triton streaming loss available (NO logits materialization!)
+HybridFusedGRU available (PyTorch matmul + Triton fused cell)
+StandardGRU available (cuDNN-optimized)
+CausalConvGRU available (lightweight, NO cuDNN bloat!)
+INFO: Using device: cpu
+INFO: Using latest checkpoint: checkpoint_rank_0000_step_003500_loss_4.9033.pt
+INFO: Using model configuration from checkpoint.
+INFO: Using TikToken tokenizer (vocab_size=100277)
+INFO: Creating model with dimension=1536, depth=12...
+Using CausalConvGRU (lightweight causal conv, NO cuDNN bloat!) for depth=12 model
+INFO: Adapted weights from a DDP model checkpoint.
+INFO: Model from training step: 3500
+INFO: Model loaded with 817,752,576 parameters on cpu.
+
+INFO: Generating 200 tokens with sampling: T=0.8, top_p=0.9
+INFO: Processing prompt...
+PROMPT: 'The '
+GENERATED: '27, the membrane, 0. NOCKPEC
+12% of the city, 5030.3333. The idea that the challenge, which is not have been the effect [S. We set to confirm that we’re not only 0.0971. 0. All rights:105 Calphyly commented on the AC-2015. // Copyright ©:30Evidentisms of Yregardless of the Luster studies say: 1.561��ORS
+
+If you probably highly recommend this site:30. Revik��RODUCTION { background-of-sale
+ 5000. This claim that they’re up to generate enough to obtain the circumstances on the help�ohana, and the bulging over 5cere Fortreg.
+
+**First Day, 1876 oz...unphibric vein of a été _Now, my own settlement of the 6044, 22. μvement of the invention is the time, '
+
+INFO: Generation complete! (7.06 tokens/sec)
+
+Triton streaming loss available (NO logits materialization!)
+HybridFusedGRU available (PyTorch matmul + Triton fused cell)
+StandardGRU available (cuDNN-optimized)
+CausalConvGRU available (lightweight, NO cuDNN bloat!)
+INFO: Using device: cpu
+INFO: Using latest checkpoint: checkpoint_rank_0000_step_003500_loss_4.9033.pt
+INFO: Using model configuration from checkpoint.
+INFO: Using TikToken tokenizer (vocab_size=100277)
+INFO: Creating model with dimension=1536, depth=12...
+Using CausalConvGRU (lightweight causal conv, NO cuDNN bloat!) for depth=12 model
+INFO: Adapted weights from a DDP model checkpoint.
+INFO: Model from training step: 3500
+INFO: Model loaded with 817,752,576 parameters on cpu.
+
+INFO: Generating 200 tokens with sampling: T=0.8, top_p=0.9
+INFO: Processing prompt...
+PROMPT: 'In the year '
+GENERATED: '10
+1520. A.Mnearly is the fact, however, 0. (1. Field of this is the "I use of 34% of the number of the third-party access to facilitate the idea that make sure people were not necessarily a good idea of the slightest longer, a brilliantly selected by those effects are the past, 1000. This takes:00)
+
+4. Firtackorama, 7375. Generated by using a T5ptimentary basis for example of those features used to log-key news for the goal.0.0120.1070. Frinductive events.0.0ptic acid:34, and Adividually accessed May 6\,{\odteriorly presented a lot
+43, and the opening the prehistoric matter how to create aorticoidal and left the others in the conditions
+
+2. Field
+
+I feel like the top-time logistic�长看，GET/A?[](pone
+
+It is'
+
+INFO: Generation complete! (6.95 tokens/sec)
+
+Triton streaming loss available (NO logits materialization!)
+HybridFusedGRU available (PyTorch matmul + Triton fused cell)
+StandardGRU available (cuDNN-optimized)
+CausalConvGRU available (lightweight, NO cuDNN bloat!)
+INFO: Using device: cpu
+INFO: Using latest checkpoint: checkpoint_rank_0000_step_003500_loss_4.9033.pt
+INFO: Using model configuration from checkpoint.
+INFO: Using TikToken tokenizer (vocab_size=100277)
+INFO: Creating model with dimension=1536, depth=12...
+Using CausalConvGRU (lightweight causal conv, NO cuDNN bloat!) for depth=12 model
+INFO: Adapted weights from a DDP model checkpoint.
+INFO: Model from training step: 3500
+INFO: Model loaded with 817,752,576 parameters on cpu.
+
+INFO: Generating 200 tokens with sampling: T=0.8, top_p=0.9
+INFO: Processing prompt...
+PROMPT: 'Once upon a time '
+GENERATED: '30 year-old seconde new Mixed chef.
+
+#Table 7ptidience without testing.
+
+The St. Reformationalritic Gnome
+
+This invention is required to prevent the problem, my $4. (4,   Copyright (notamment.com
+ Copyright, 1, where the following, 20 years ago, and so they're using a number of the present these results from 42 pinal magnification of a 'endental Society of the basic SAUING.uk. Aminolutioning any of the parfois. Apr 3] Copyright (beyond physiogium:46------__________
+
+A.778 JMDI'm only one person is not always had been confirmed the client for the lack of the window at 31, 1. 1100. 2. : 1/AndroidFinder:42
+
+The _Treplasma folk coworkers and other sorts of the invention isomorphic Bigid of the question
+
+A model has the following'
+
+INFO: Generation complete! (7.11 tokens/sec)
+

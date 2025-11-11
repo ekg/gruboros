@@ -21,12 +21,14 @@ class StandardGRU(nn.Module):
         dim,
         expansion_factor=1.0,
         use_gradient_checkpointing=False,
+        recurrence_chunk_size=64,  # Process sequence in chunks to save memory
         **kwargs  # Ignore other minGRU-specific args
     ):
         super().__init__()
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.recurrence_chunk_size = recurrence_chunk_size
 
         # Standard GRU: hidden_size = dim_inner
         # Input projection: dim -> dim_inner
@@ -56,7 +58,7 @@ class StandardGRU(nn.Module):
             prev_conv_buffers: Unused (kept for API compatibility with conv layers)
             return_hiddens: Whether to return hidden states
             actual_length: Unused (kept for API compatibility)
-            doc_boundaries: Unused (cuDNN GRU doesn't support in-place resets, kept for API compatibility)
+            doc_boundaries: (batch, seq_len) bool tensor - True where document boundaries occur
 
         Returns:
             output: (batch, seq_len, dim)
@@ -70,24 +72,39 @@ class StandardGRU(nn.Module):
 
         # Prepare initial hidden state
         if prev_hiddens is not None:
-            # prev_hiddens is (batch, dim_inner), GRU expects (1, batch, dim_inner)
             h0 = prev_hiddens.unsqueeze(0)  # (1, batch, dim_inner)
         else:
             h0 = torch.zeros(1, batch, self.dim_inner, device=x.device, dtype=x.dtype)
 
-        # Run GRU with optional gradient checkpointing
-        if self.use_gradient_checkpointing and self.training:
-            # Gradient checkpointing: recompute forward during backward to save memory
-            gru_out, hn = checkpoint(
-                self._gru_forward,
-                x_proj,
-                h0,
-                use_reentrant=False  # Use new non-reentrant checkpointing
-            )
-        else:
-            gru_out, hn = self.gru(x_proj, h0)
-        # gru_out: (batch, seq_len, dim_inner)
-        # hn: (1, batch, dim_inner)
+        # CHUNKED PROCESSING: Process in fixed recurrence_chunk_size chunks
+        # Document boundaries handled OUTSIDE this function via hidden state resets
+        # between chunks in the training loop
+        chunk_size = self.recurrence_chunk_size
+
+        gru_outputs = []
+        h = h0
+
+        # Process sequence in fixed-size chunks
+        num_chunks = (seq_len + chunk_size - 1) // chunk_size
+
+        for chunk_idx in range(num_chunks):
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min(chunk_start + chunk_size, seq_len)
+
+            # Extract chunk
+            x_chunk = x_proj[:, chunk_start:chunk_end]  # (batch, chunk_len, dim_inner)
+
+            # Run cuDNN GRU on this chunk (optimized!)
+            if self.use_gradient_checkpointing and self.training:
+                chunk_out, h = checkpoint(self._gru_forward, x_chunk, h, use_reentrant=False)
+            else:
+                chunk_out, h = self.gru(x_chunk, h)
+
+            gru_outputs.append(chunk_out)
+
+        # Concatenate all chunk outputs
+        gru_out = torch.cat(gru_outputs, dim=1)  # (batch, seq_len, dim_inner)
+        hn = h  # Final hidden state
 
         # Project output
         output = self.output_proj(gru_out)  # (batch, seq_len, dim)

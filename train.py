@@ -1029,6 +1029,8 @@ def get_args():
                         help='Initial bias for z-gates on input projection (overrides z_bias_init)')
     parser.add_argument('--z_bias_hidden', type=float, default=None,
                         help='Initial bias for z-gates on hidden projection (overrides z_bias_init)')
+    parser.add_argument('--recurrence_chunk_size', type=int, default=64,
+                        help='Chunk size for GRU recurrence processing (trade-off: fewer kernel launches vs memory). Default=64 means 512/64=8 kernel launches instead of 512')
     parser.add_argument('--keep_checkpoints', type=int, default=3, help='number of recent checkpoints to keep')
     parser.add_argument('--keep_elite', type=int, default=10, help='number of elite models to preserve')
     parser.add_argument('--archive_rate', type=float, default=0.0, help='probability (0.0-1.0) of archiving checkpoints before deletion')
@@ -1434,7 +1436,8 @@ def main():
             "use_flash_gru": args.use_flash_gru,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
             "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
-            "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init
+            "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init,
+            "recurrence_chunk_size": args.recurrence_chunk_size
         }
 
     # Initialize tokenizer BEFORE creating model (vocab size needed for model config)
@@ -2036,11 +2039,19 @@ def main():
             else:
                 # Standard backpropagation
                 # Forward pass with both RNN hidden states and conv buffers
-                # Create doc_boundaries tensor: [B, T] where True = reset hidden state at this token
-                # For now, mark only the LAST token of chunks that end documents
-                B, T = chunk.shape
-                doc_boundaries = torch.zeros(B, T, dtype=torch.bool, device=chunk.device)
-                doc_boundaries[:, -1] = is_doc_end  # Reset at last token for streams ending documents
+
+                # === CHUNKED cuDNN APPROACH: Reset hidden states BEFORE forward pass ===
+                # Apply resets from previous chunk's document endings
+                if hidden_state is not None and 'reset_next' in locals():
+                    if reset_next.any():
+                        # Reset hidden states for batch elements that ended docs in PREVIOUS chunk
+                        hidden_state = [
+                            h.masked_fill(reset_next.unsqueeze(-1), 0.0) if h is not None else None
+                            for h in hidden_state
+                        ]
+
+                # Save is_doc_end for next chunk's reset
+                reset_next = is_doc_end  # [B] bool - will be used BEFORE next chunk
 
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
                     result = model(
@@ -2050,7 +2061,7 @@ def main():
                         prev_hiddens=hidden_state,
                         prev_conv_buffers=conv_buffers,
                         actual_length=actual_lengths,
-                        doc_boundaries=doc_boundaries
+                        doc_boundaries=None  # Not needed - resets handled above
                     )
 
                 # Unpack the result - could be just loss or loss + (hiddens, buffers)

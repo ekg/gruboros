@@ -1,2 +1,12 @@
 *__pycache__*
 .aider*
+good/
+*.log
+*.pt
+*.pdf
+*.png
+*.tsv
+*.txt
+gossip/
+gossip_logs/
+logs/

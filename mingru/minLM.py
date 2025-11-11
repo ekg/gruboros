@@ -150,7 +150,8 @@ class minLM(Module):
         use_flash_gru = False,  # Use FlashRNN GRU (50x faster, hardware-optimized!)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
         z_bias_input = -2.0,  # Initial bias for z-gates on input projection
-        z_bias_hidden = -2.0  # Initial bias for z-gates on hidden projection
+        z_bias_hidden = -2.0,  # Initial bias for z-gates on hidden projection
+        recurrence_chunk_size = 64  # Chunk size for GRU recurrence (reduces kernel launches)
     ):
         super().__init__()
         
@@ -186,21 +187,23 @@ class minLM(Module):
         elif use_standard_gru:
             min_rnn_klass = StandardGRU
             checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
-            print(f"Using StandardGRU (cuDNN-optimized, gold standard{checkpoint_str}) for depth={depth} model")
+            print(f"Using StandardGRU (cuDNN-optimized{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
-                'use_gradient_checkpointing': use_gradient_checkpointing
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
             }
         elif use_fused_gru:
             # Use HybridFusedGRU (Triton fused kernel)
             # Note: CuDNNFusedGRU is 3× faster but materializes all timesteps → OOM for large models
             min_rnn_klass = HybridFusedGRU
-            print(f"Using HybridFusedGRU (Triton fused kernel) for depth={depth} model")
+            print(f"Using HybridFusedGRU (Triton fused kernel, chunk_size={recurrence_chunk_size}) for depth={depth} model")
 
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'z_bias_input': z_bias_input,
-                'z_bias_hidden': z_bias_hidden
+                'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
             }
         else:
             min_rnn_klass = minGRU

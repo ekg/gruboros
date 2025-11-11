@@ -1,0 +1,36 @@
+# Memory leak fixes for gossip protocol
+
+## 1. Fix hidden state cleanup in validation_tracker.py
+# Around line 107 and 122, replace:
+# hidden_state = None
+# With:
+if hidden_state is not None:
+    del hidden_state
+    hidden_state = None
+
+## 2. Clear optimizer state before loading new one
+# In evolutionary_node.py, before line 380, add:
+# Clear existing optimizer state first
+for state in self.optimizer.state.values():
+    for k, v in list(state.items()):
+        if isinstance(v, torch.Tensor):
+            del state[k]
+self.optimizer.state.clear()
+torch.cuda.empty_cache()
+
+## 3. Bound the update queue
+# Line 144, replace:
+# self.incoming_updates = queue.Queue()
+# With:
+self.incoming_updates = queue.Queue(maxsize=2)
+
+## 4. More aggressive memory cleanup
+# After line 411 in optimizer recombination:
+torch.cuda.synchronize()
+gc.collect()
+torch.cuda.empty_cache()
+
+## 5. Add memory monitoring
+# Add this to the mixing loop to track memory:
+if step % 100 == 0:
+    log_memory_usage(self.global_rank, f"Step {step}")
