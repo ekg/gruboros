@@ -374,12 +374,16 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
         "depth": config.get("depth"),
         "ff_mult": config.get("ff_mult", 4.0),
         "expansion": config.get("expansion", 1.5),
-        "enable_conv": config.get("enable_conv", False),
+        "conv_kernel_size": config.get("conv_kernel_size", None),
         "dropout": config.get("dropout", 0.0),
         "use_hybrid_gru": config.get("use_hybrid_gru", False),
         "use_test_gru": config.get("use_test_gru", False),
         "use_standard_gru": config.get("use_standard_gru", False),
-        "use_causal_conv_gru": config.get("use_causal_conv_gru", False)
+        "use_local_conv": config.get("use_local_conv", False),
+        "use_flash_gru": config.get("use_flash_gru", False),
+        "use_gradient_checkpointing": config.get("use_gradient_checkpointing", False),
+        "z_bias_input": config.get("z_bias_input", -2.0),
+        "z_bias_hidden": config.get("z_bias_hidden", -2.0)
     }
     
     print(f"INFO: Creating model with dimension={model_params['dim']}, depth={model_params['depth']}...")

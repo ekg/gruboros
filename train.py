@@ -1092,6 +1092,12 @@ def get_args():
                         help='Use simple test GRU implementation for debugging')
     parser.add_argument('--use_standard_gru', action='store_true',
                         help='Use PyTorch nn.GRU (cuDNN-optimized, gold standard nonlinear GRU)')
+    parser.add_argument('--use_persistent_gru', action='store_true',
+                        help='Use PersistentGRU (optimized persistent-T kernel, matches HybridGRU speed)')
+    parser.add_argument('--use_projected_gru', action='store_true',
+                        help='Use ProjectedGRU (reduced recurrent dim, 10%% faster + 67%% larger batch!)')
+    parser.add_argument('--h_recurrent', type=int, default=None,
+                        help='Recurrent dimension for ProjectedGRU (default: dim*0.625, e.g., 1280 for dim=2048)')
     parser.add_argument('--use_local_conv', action='store_true',
                         help='Use LocalConvGRU (local conv window, NOT recurrent!)')
     parser.add_argument('--use_flash_gru', action='store_true',
@@ -1432,6 +1438,9 @@ def main():
             "use_fused_gru": args.fused_gru,
             "use_test_gru": args.use_test_gru,
             "use_standard_gru": args.use_standard_gru,
+            "use_persistent_gru": args.use_persistent_gru,
+            "use_projected_gru": args.use_projected_gru,
+            "h_recurrent": args.h_recurrent,
             "use_local_conv": args.use_local_conv,
             "use_flash_gru": args.use_flash_gru,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,

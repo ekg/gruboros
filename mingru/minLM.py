@@ -46,6 +46,22 @@ except ImportError as e:
     print(f"Failed to import StandardGRU: {e}")
     StandardGRU = None
 
+# Import persistent GRU (optimized persistent-T kernel)
+try:
+    from mingru.persistent_gru import PersistentGRU
+    print("PersistentGRU available (optimized persistent-T kernel)")
+except ImportError as e:
+    print(f"Failed to import PersistentGRU: {e}")
+    PersistentGRU = None
+
+# Import projected GRU (reduced recurrent dimension for 10% speedup + 67% larger batch)
+try:
+    from mingru.projected_gru import ProjectedGRU
+    print("ProjectedGRU available (H_rec<D optimization, 10% faster + 40% fewer params)")
+except ImportError as e:
+    print(f"Failed to import ProjectedGRU: {e}")
+    ProjectedGRU = None
+
 # Import local conv window (NOT recurrent - limited receptive field!)
 try:
     from mingru.local_conv_gru import LocalConvGRU
@@ -146,6 +162,9 @@ class minLM(Module):
         use_hybrid_gru = False,  # Backwards compat alias for use_fused_gru
         use_test_gru = False,  # Use simple test GRU
         use_standard_gru = False,  # Use PyTorch nn.GRU (cuDNN, gold standard)
+        use_persistent_gru = False,  # Use PersistentGRU (optimized persistent-T kernel)
+        use_projected_gru = False,  # Use ProjectedGRU (10% faster + 67% larger batch!)
+        h_recurrent = None,  # Recurrent dimension for ProjectedGRU (default: dim*0.625)
         use_local_conv = False,  # Use LocalConvGRU (local window, NOT recurrent!)
         use_flash_gru = False,  # Use FlashRNN GRU (50x faster, hardware-optimized!)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
@@ -192,6 +211,21 @@ class minLM(Module):
                 'expansion_factor': expansion,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
                 'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_persistent_gru:
+            min_rnn_klass = PersistentGRU
+            print(f"Using PersistentGRU (optimized persistent-T kernel) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion
+            }
+        elif use_projected_gru:
+            min_rnn_klass = ProjectedGRU
+            # Default H_rec = 0.625 * dim (optimal from benchmarks: 1280 for dim=2048)
+            h_rec_actual = h_recurrent if h_recurrent is not None else int(dim * 0.625)
+            print(f"Using ProjectedGRU (H_rec={h_rec_actual}, 10% faster + 67% larger batch!) for depth={depth} model")
+            rnn_kwargs = {
+                'h_recurrent': h_rec_actual,
+                'expansion_factor': expansion
             }
         elif use_fused_gru:
             # Use HybridFusedGRU (Triton fused kernel)
