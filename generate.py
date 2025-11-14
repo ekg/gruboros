@@ -376,12 +376,16 @@ def load_model(checkpoint_path, config_path=None, use_bf16=False, use_fp16=False
         "expansion": config.get("expansion", 1.5),
         "conv_kernel_size": config.get("conv_kernel_size", None),
         "dropout": config.get("dropout", 0.0),
-        "use_hybrid_gru": config.get("use_hybrid_gru", False),
+        "use_fused_gru": config.get("use_fused_gru", False),
         "use_test_gru": config.get("use_test_gru", False),
         "use_standard_gru": config.get("use_standard_gru", False),
+        "use_persistent_gru": config.get("use_persistent_gru", False),
+        "use_projected_gru": config.get("use_projected_gru", False),
+        "h_recurrent": config.get("h_recurrent", None),
         "use_local_conv": config.get("use_local_conv", False),
         "use_flash_gru": config.get("use_flash_gru", False),
         "use_gradient_checkpointing": config.get("use_gradient_checkpointing", False),
+        "recurrence_chunk_size": config.get("recurrence_chunk_size", 64),
         "z_bias_input": config.get("z_bias_input", -2.0),
         "z_bias_hidden": config.get("z_bias_hidden", -2.0)
     }

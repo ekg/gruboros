@@ -50,7 +50,7 @@ class minGRU(Module):
         self.to_hidden_and_gate = Linear(dim, dim_inner * 2, bias = False)
         self.to_out = Linear(dim_inner, dim, bias = False) if proj_out else Identity()
 
-    def forward(self, x, prev_hidden = None, return_next_prev_hidden = False):
+    def forward(self, x, prev_hidden = None, return_next_prev_hidden = False, doc_boundaries = None):
         """
         Args:
             x: Input tensor [batch, seq_len, dim]
