@@ -1661,11 +1661,12 @@ def main():
 
     # Create batched document streaming dataset
     # For DDP, ensure each rank gets different data
+    # IMPORTANT: Incorporate resume_step to avoid data repetition when resuming!
     if args.ddp:
-        # Each rank should see different data
-        dataset_seed = SEED + global_rank * 1000
+        # Each rank should see different data, offset by resume_step to avoid repetition
+        dataset_seed = SEED + global_rank * 1000 + resume_step
     else:
-        dataset_seed = SEED + global_rank * 1000
+        dataset_seed = SEED + global_rank * 1000 + resume_step
 
     # DEBUG: Verify tokenizer before passing
     print(f"[RANK {global_rank}] Creating dataset with tokenizer: {tokenizer}")
