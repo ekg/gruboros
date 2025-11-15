@@ -1799,7 +1799,8 @@ def main():
     total_tokens_processed = 0  # Now per-GPU, not global!
     total_tokens_since_reset = 0  # Track tokens for T/s calculation
     last_step_time = start_time  # Track time for it/s calculation
-    warmup_complete = False  # Track if we've reset timers after torch.compile
+    # When resuming, skip warmup (already compiled in checkpoint)
+    warmup_complete = resuming  # True if resuming, False if starting fresh
     bytes_at_reset = 0  # Track bytes processed at time of reset
 
     # --- 4. UNIFIED TRAINING LOOP ---
