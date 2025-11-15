@@ -1606,7 +1606,13 @@ def main():
     scaler = torch.amp.GradScaler('cuda') if args.bf16 else None
     
     if resuming and checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # Handle DDP module. prefix mismatch
+        # Checkpoint might have been saved with DDP (module. prefix), but we load before wrapping
+        state_dict = checkpoint['model_state_dict']
+        if any(k.startswith('module.') for k in state_dict.keys()):
+            # Strip module. prefix
+            state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}
+        model.load_state_dict(state_dict)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if scaler is not None and 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict'] is not None:
             scaler.load_state_dict(checkpoint['scaler_state_dict'])

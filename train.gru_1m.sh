@@ -18,8 +18,8 @@ set -e -x
 # - DDP pipeline optimizations (static_graph, prefetch, persistent workers)
 
 # --- CHECKPOINT TO RESUME FROM ---
-# Update this path to your 100k checkpoint:
-RESUME_CHECKPOINT="/mnt/nvme2n1/erikg/minlms/20251111_031220_700m_gru_deep_1a521a5/step_100000.pt"
+# Using latest.pt (currently at step ~99k)
+RESUME_CHECKPOINT="/mnt/nvme2n1/erikg/minlms/20251111_031220_700m_gru_deep_1a521a5/latest.pt"
 
 # --- Increase File Descriptor Limit ---
 ulimit -n 65536
