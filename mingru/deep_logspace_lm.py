@@ -82,11 +82,8 @@ class DeepLogSpaceGRULM(Module):
         # Final normalization before output
         self.final_norm = nn.LayerNorm(dim)
 
-        # Output projection
-        self.to_logits = nn.Linear(dim, num_tokens, bias=False)
-
-        # Tie embedding and output weights (standard LM practice)
-        self.to_logits.weight = self.token_emb.weight
+        # No separate output layer - we'll use tied weights with embedding
+        # This avoids DDP issues with weight tying
 
         print(f"\n=== DeepLogSpaceGRULM ===")
         print(f"Depth: {depth} layers")
@@ -136,7 +133,8 @@ class DeepLogSpaceGRULM(Module):
         x = self.token_emb(x)  # [B, T, D]
 
         # Initialize hidden states if needed
-        if prev_hiddens is None:
+        # Handle both None and empty list (train.py initializes as [])
+        if prev_hiddens is None or len(prev_hiddens) == 0:
             prev_hiddens = [None] * self.depth
 
         next_hiddens = []
@@ -172,8 +170,8 @@ class DeepLogSpaceGRULM(Module):
         # Final normalization
         x = self.final_norm(x)
 
-        # Project to vocabulary
-        logits = self.to_logits(x)  # [B, T, V]
+        # Project to vocabulary using tied embedding weights
+        logits = F.linear(x, self.token_emb.weight)  # [B, T, V]
 
         if return_loss:
             # Compute cross-entropy loss
@@ -218,7 +216,7 @@ class DeepLogSpaceGRULM(Module):
         print(f"  Embedding: {emb_params:,} ({emb_params/1e6:.1f}M)")
         print(f"  GRU layers: {gru_params:,} ({gru_params/1e6:.1f}M)")
         print(f"  LayerNorms: {ln_params:,} ({ln_params/1e6:.1f}M)")
-        print(f"  Output: {self.to_logits.weight.numel():,} ({self.to_logits.weight.numel()/1e6:.1f}M) [tied]")
+        print(f"  Output: tied with embedding ({emb_params/1e6:.1f}M)")
         print(f"=======================\n")
 
         return total
