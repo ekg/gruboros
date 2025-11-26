@@ -53,6 +53,10 @@ class DeepLogSpaceGRULM(Module):
         # Token embedding
         self.token_emb = nn.Embedding(num_tokens, dim)
 
+        # Initialize embeddings with proper scale (used for both input AND output!)
+        # For tied weights, use std = 1/sqrt(dim) so logits don't explode
+        nn.init.normal_(self.token_emb.weight, mean=0.0, std=1.0 / (dim ** 0.5))
+
         # GRU layers with pre-normalization and residuals
         self.gru_layers = ModuleList([])
         self.layer_norms = ModuleList([])
