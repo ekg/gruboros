@@ -349,7 +349,7 @@ class LogSpaceHybridGRU(nn.Module):
 
             # Exponentiate for output projection (back to normal space)
             h_new = torch.exp(log_h_new).to(dtype)
-            out = self.to_out(h_new.unsqueeze(1)) + x
+            out = self.to_out(h_new.unsqueeze(1))  # No internal residual - handled at outer level!
 
             if return_next_prev_hidden:
                 return out, log_h_new
@@ -398,7 +398,7 @@ class LogSpaceHybridGRU(nn.Module):
 
         # Stack and project
         h_seq = torch.stack(outputs, dim=1)
-        out = self.to_out(h_seq) + x
+        out = self.to_out(h_seq)  # No internal residual - handled at outer level!
 
         if return_next_prev_hidden:
             return out, log_h
