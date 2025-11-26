@@ -2,22 +2,22 @@
 set -e -x
 
 # =============================================================================
-# 1B LOG-SPACE TRAINING - Full Scale Deep GRU
+# 700M LOG-SPACE TEST - Prove We Can Train Where We Failed Before
 # =============================================================================
 #
-# Scaled up configuration with Mamba-inspired architecture
-# 24 layers (vs 20), wider (dim=1920), higher expansion (1.5)
-# Dropout added (0.2) for regularization at scale
+# SAME configuration as the failing run (20 layers, dim=2048)
+# BUT with log-space + residuals + LayerNorm
 #
-# Batch size reduced to fit 1B model in memory
+# Original run: Stuck at loss 4.7-4.8, gradients died to 0.06-0.07
+# Expected now: Loss improves, gradients stay >0.1
 #
-# Configuration: 24 layers, dim=1920, expansion=1.5, ~1.2B params
+# Configuration: 20 layers, dim=2048, expansion=1.0, ~700M params
 # =============================================================================
 
 ulimit -n 65536
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_logspace_1b"
+OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_logspace_700m"
 DATA_PATH="/mnt/nvme2n1/erikg/pile.txt"
 
 mkdir -p logs
@@ -29,15 +29,14 @@ export MASTER_PORT=29500
 NUM_GPUS=8
 
 echo "======================================================================="
-echo "=== 1B LOG-SPACE TRAINING ==="
+echo "=== 700M LOG-SPACE TEST - REDEMPTION RUN ==="
 echo "======================================================================="
-echo "Architecture: 24 layers × (LayerNorm → LogSpaceGRU → Residual)"
-echo "Dim: 1920, Expansion: 1.5, Inner: 2880"
-echo "Dropout: 0.2"
-echo "Parameters: ~1.2B total (1.1B GRU + 96M embeddings)"
+echo "Architecture: 20 layers × (LayerNorm → LogSpaceGRU → Residual)"
+echo "Dim: 2048, Expansion: 1.0, Dropout: 0.0"
+echo "Parameters: ~700M (SAME as failed run)"
 echo ""
-echo "Batch size: 64 per GPU (reduced from 114 to fit memory)"
-echo "Gradient accumulation: 16 (effective batch = 64×8×16 = 8192)"
+echo "Previous failure: Loss stuck at 4.7-4.8, gradients 0.06-0.07"
+echo "Expected now: Loss decreases, gradients stay >0.1"
 echo "======================================================================="
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun --nproc_per_node=$NUM_GPUS \
@@ -51,21 +50,21 @@ echo "======================================================================="
   --tokenizer tiktoken \
   --tiktoken_encoding p50k_base \
   \
-  `# 1B MODEL CONFIGURATION` \
-  --dim 1920 \
-  --depth 24 \
-  --expansion_factor 1.5 \
-  --dropout 0.2 \
+  `# SAME AS FAILED RUN` \
+  --dim 2048 \
+  --depth 20 \
+  --expansion_factor 1.0 \
+  --dropout 0.0 \
   \
-  `# USE LOG-SPACE GRU` \
+  `# KEY DIFFERENCE: USE LOG-SPACE GRU` \
   --use_logspace_gru \
   \
-  `# SEQUENCES - adjusted batch for memory` \
+  `# SEQUENCES - same as before` \
   --chunk_size 512 \
-  --batch_size 64 \
+  --batch_size 114 \
   --grad_accum 16 \
   \
-  `# TRAINING` \
+  `# TRAINING - same optimizer config` \
   --train_steps 1000000 \
   --lr 0.001 \
   --sf_beta 0.9 \
@@ -85,4 +84,4 @@ echo "======================================================================="
   --cuda \
   --bf16
 
-echo "✅ 1B log-space training complete!"
+echo "✅ 700M log-space training complete!"
