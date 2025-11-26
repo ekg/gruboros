@@ -289,9 +289,16 @@ class LogSpaceHybridGRU(nn.Module):
                 else:
                     lin.bias[H:2*H].fill_(self.z_bias_hidden)
 
-        # Residual projection starts as identity
+        # Initialize to_out close to identity for immediate gradient flow
+        # This ensures gradients flow through the recurrent path from step 1,
+        # not just through residuals!
         if not isinstance(self.to_out, nn.Identity):
-            nn.init.constant_(self.to_out.weight, 0.0)
+            # If dim_inner == dim: pure identity
+            # If dim_inner != dim: zero-padded or truncated identity
+            nn.init.eye_(self.to_out.weight)
+            # Add small noise to break symmetry
+            with torch.no_grad():
+                self.to_out.weight.add_(torch.randn_like(self.to_out.weight) * 0.01)
 
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False, doc_boundaries=None):
         """Forward pass with log-space hidden states.
