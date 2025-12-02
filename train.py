@@ -1705,13 +1705,17 @@ def main():
                 print(f"Gossip participants: rank 0 from each node")
                 print("=========================\n")
 
+            # Check if using FlashRNN which requires simpler DDP settings
+            use_flashrnn = getattr(args, 'use_flash_gru', False) or getattr(args, 'use_flash_ema_gru', False)
+
             model = DDP(
                 model,
                 device_ids=[device_id] if device.type == 'cuda' else None,
                 process_group=ddp_group,
                 find_unused_parameters=args.ddp_find_unused,
-                gradient_as_bucket_view=True,  # Memory optimization
-                static_graph=args.ddp_find_unused  # Enable pipelining when using find_unused
+                # Disable optimizations for FlashRNN compatibility - its JIT kernels conflict with these
+                gradient_as_bucket_view=not use_flashrnn,
+                static_graph=args.ddp_find_unused and not use_flashrnn
             )
 
             # For DDP, we need to access the underlying module for gossip

@@ -14,6 +14,7 @@ This gives us:
 import torch
 import torch.nn as nn
 import math
+from torch.utils.checkpoint import checkpoint
 
 try:
     from flashrnn import flashrnn, FlashRNNConfig
@@ -208,18 +209,39 @@ class FlashGRU_EMA(nn.Module):
             dtype_a=dtype_str,
         )
 
-        # Run FlashRNN
-        states, last_states = flashrnn(
-            Wx=Wx,
-            R=self.recurrent_weights,
-            b=self.bias,
-            states=states_initial,
-            config=config
-        )
+        # Run FlashRNN with gradient checkpointing for DDP compatibility
+        # This forces recomputation during backward, avoiding tensor lifetime issues
+        def _flashrnn_forward(Wx, R, b, states_init, config):
+            states, last_states = flashrnn(
+                Wx=Wx,
+                R=R,
+                b=b,
+                states=states_init,
+                config=config
+            )
+            # Return as tuple for checkpoint
+            return states[0], last_states
 
-        # Extract hidden sequence: [1, B, T, N, D] -> [B, T, dim_inner]
-        h_fast_seq = states[0].view(B, T, self.dim_inner)
-        h_fast_final = last_states[0, :, 0, :, :].reshape(B, self.dim_inner)
+        if self.training:
+            # Use checkpointing during training for DDP compatibility
+            h_fast_raw, last_states = checkpoint(
+                _flashrnn_forward,
+                Wx, self.recurrent_weights, self.bias, states_initial, config,
+                use_reentrant=False
+            )
+        else:
+            states, last_states = flashrnn(
+                Wx=Wx,
+                R=self.recurrent_weights,
+                b=self.bias,
+                states=states_initial,
+                config=config
+            )
+            h_fast_raw = states[0]
+
+        # Extract hidden sequence: [B, T, N, D] -> [B, T, dim_inner]
+        h_fast_seq = h_fast_raw.view(B, T, self.dim_inner).contiguous()
+        h_fast_final = last_states[0, :, 0, :, :].reshape(B, self.dim_inner).contiguous()
 
         # === Parallel EMA (slow path) ===
         x_ema = self.ema_in_proj(x)
