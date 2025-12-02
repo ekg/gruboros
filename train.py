@@ -1689,21 +1689,6 @@ def main():
 
     if args.schedulefree and not args.zero_order and not args.sgd: optimizer.train()
 
-    # Pre-compile FlashRNN kernels before DDP wrapping
-    # This prevents JIT compilation race conditions across GPUs
-    if args.use_flash_ema_gru and args.ddp:
-        if global_rank == 0:
-            print("Pre-compiling FlashRNN kernels...")
-        # Dummy forward pass to trigger JIT compilation
-        with torch.no_grad():
-            dummy_input = torch.randint(100, (int(args.batch_size), 64)).to(device)
-            _ = model(dummy_input)
-        # Synchronize all processes after compilation
-        if dist.is_initialized():
-            dist.barrier()
-        if global_rank == 0:
-            print("FlashRNN kernels compiled successfully!")
-
     # Setup DDP if enabled
     if args.ddp:
         # Setup DDP groups (needed for process group initialization)
