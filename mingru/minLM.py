@@ -36,6 +36,14 @@ except ImportError as e:
         print(f"Failed to import EMA GRU: {e}")
         HybridFusedGRU_EMA = None
 
+# Import FlashGRU_EMA (FlashRNN + parallel EMA - 60x faster!)
+try:
+    from mingru.flash_gru_ema import FlashGRU_EMA
+    print("FlashGRU_EMA available (FlashRNN + parallel EMA, 60x faster!)")
+except ImportError as e:
+    print(f"FlashGRU_EMA not available: {e}")
+    FlashGRU_EMA = None
+
 # Import cuDNN Fused GRU (3× faster than Hybrid!)
 try:
     from mingru.cudnn_fused_gru import CuDNNFusedGRU
@@ -180,6 +188,7 @@ class minLM(Module):
         h_recurrent = None,  # Recurrent dimension for ProjectedGRU (default: dim*0.625)
         use_local_conv = False,  # Use LocalConvGRU (local window, NOT recurrent!)
         use_flash_gru = False,  # Use FlashRNN GRU (50x faster, hardware-optimized!)
+        use_flash_ema_gru = False,  # Use FlashRNN GRU + EMA (60x faster + long-range memory!)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
@@ -218,6 +227,20 @@ class minLM(Module):
             min_rnn_klass = FlashGRU
             print(f"Using FlashGRU (FlashRNN optimized, 50x speedup!) for depth={depth} model")
             rnn_kwargs = {'expansion_factor': expansion}
+        elif use_flash_ema_gru:
+            # FlashRNN GRU + parallel EMA for fast recurrence with long-range memory
+            if FlashGRU_EMA is None:
+                raise ImportError("FlashGRU_EMA not available. Install flashrnn: pip install flashrnn")
+            min_rnn_klass = FlashGRU_EMA
+            half_life = int(0.693 / ema_alpha) if ema_alpha > 0 else float('inf')
+            print(f"Using FlashGRU_EMA (FlashRNN + parallel EMA, 60x faster, half-life={half_life} tokens) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'ema_alpha': ema_alpha,
+                'z_bias_input': z_bias_input,
+                'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
         elif use_standard_gru:
             min_rnn_klass = StandardGRU
             checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""

@@ -1,7 +1,7 @@
 import os, random, numpy as np
 import torch, torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
+from torch.optim import AdamW, SGD
 from torch.utils.data import Dataset, DataLoader, IterableDataset
 import time
 import argparse
@@ -983,7 +983,38 @@ class DocumentStreamWrapper(IterableDataset):
             self.data_file.close()
 
 def get_model(model_config):
-    return minLM(**model_config)
+    # Use deep normal-space GRU model if requested (RECOMMENDED!)
+    if model_config.get('use_deep_normal_gru', False):
+        from mingru.deep_normal_gru_lm import DeepNormalGRULM
+        deep_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion': model_config['expansion'],
+            'dropout': model_config['dropout'],
+            'recurrence_chunk_size': model_config.get('recurrence_chunk_size', 64)
+        }
+        return DeepNormalGRULM(**deep_config)
+
+    # Use log-space deep GRU model if requested (experimental, unstable)
+    if model_config.get('use_logspace_gru', False):
+        from mingru.deep_logspace_lm import DeepLogSpaceGRULM
+        logspace_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion': model_config['expansion'],
+            'dropout': model_config['dropout'],
+            'z_bias_input': model_config.get('z_bias_input', -2.0),
+            'z_bias_hidden': model_config.get('z_bias_hidden', -2.0),
+            'recurrence_chunk_size': model_config.get('recurrence_chunk_size', 64)
+        }
+        return DeepLogSpaceGRULM(**logspace_config)
+
+    # Filter out deep model keys that minLM doesn't understand
+    minlm_config = {k: v for k, v in model_config.items()
+                    if k not in ('use_deep_normal_gru', 'use_logspace_gru')}
+    return minLM(**minlm_config)
 
 def parse_size_with_suffix(size_str):
     if not isinstance(size_str, str): return size_str
@@ -1004,6 +1035,7 @@ def get_args():
     parser.add_argument('--data', type=str, required=True, help='path to training data file')
     parser.add_argument('--output', type=str, default=None, help='directory to save checkpoints')
     parser.add_argument('--resume', type=str, default=None, help='path to checkpoint to resume')
+    parser.add_argument('--fresh_optimizer', action='store_true', help='skip loading optimizer state when resuming (resets Adam momentum/variance)')
     parser.add_argument('--save_every', type=int, default=2000, help='Target average interval (in steps) for one checkpoint to be saved across the entire population.')
     parser.add_argument('--batches_per_epoch', type=str, default="100", help='batches per epoch for dataloader length')
     parser.add_argument('--params', type=str, default="100m", help='target parameter count (e.g., 15m, 1g)')
@@ -1036,6 +1068,8 @@ def get_args():
     parser.add_argument('--archive_rate', type=float, default=0.0, help='probability (0.0-1.0) of archiving checkpoints before deletion')
     parser.add_argument('--milestone_every', type=int, default=0, help='save permanent milestone checkpoint every N steps (0=disabled)')
     parser.add_argument('--no-schedulefree', dest='schedulefree', action='store_false', default=True)
+    parser.add_argument('--sgd', action='store_true', help='use SGD with momentum instead of AdamW (simpler, no adaptive LR)')
+    parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SGD optimizer')
     parser.add_argument('--sf_beta', type=float, default=0.9)
     parser.add_argument('--sf_beta2', type=float, default=0.999)
     parser.add_argument('--gossip_merge_method', type=str, default='recombination', choices=['clonal', 'recombination'],
@@ -1102,6 +1136,16 @@ def get_args():
                         help='Use LocalConvGRU (local conv window, NOT recurrent!)')
     parser.add_argument('--use_flash_gru', action='store_true',
                         help='Use FlashRNN GRU (hardware-optimized, 50x speedup!)')
+    parser.add_argument('--use_flash_ema_gru', action='store_true',
+                        help='Use FlashRNN GRU + parallel EMA (60x faster + long-range memory!)')
+    parser.add_argument('--use_ema_gru', action='store_true',
+                        help='Use EMA GRU (GRU + EMA for long-range memory)')
+    parser.add_argument('--ema_alpha', type=float, default=0.01,
+                        help='EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)')
+    parser.add_argument('--use_deep_normal_gru', action='store_true',
+                        help='Use DeepNormalGRULM (RECOMMENDED: normal-space + residuals + LayerNorm + identity init for deep 20-32 layer networks)')
+    parser.add_argument('--use_logspace_gru', action='store_true',
+                        help='Use DeepLogSpaceGRULM (EXPERIMENTAL: log-space hidden states, unstable training)')
     parser.add_argument('--use_gradient_checkpointing', action='store_true',
                         help='Use gradient checkpointing to reduce memory (trades compute for memory)')
 
@@ -1443,6 +1487,11 @@ def main():
             "h_recurrent": args.h_recurrent,
             "use_local_conv": args.use_local_conv,
             "use_flash_gru": args.use_flash_gru,
+            "use_flash_ema_gru": args.use_flash_ema_gru,
+            "use_ema_gru": args.use_ema_gru,
+            "ema_alpha": args.ema_alpha,
+            "use_deep_normal_gru": args.use_deep_normal_gru,
+            "use_logspace_gru": args.use_logspace_gru,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
             "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
             "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init,
@@ -1600,7 +1649,16 @@ def main():
             print(f"Probe distribution: {args.zo_probe_distribution}")
             print("=========================================\n")
     else:
-        optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay) if args.schedulefree else AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+        if args.sgd:
+            # Simple SGD with momentum - no adaptive learning rate, what you set is what you get
+            optimizer = SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            if global_rank == 0: print(f"Using SGD optimizer (lr={args.lr}, momentum={args.momentum}, weight_decay={args.weight_decay})")
+        elif args.schedulefree:
+            optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+            if global_rank == 0: print(f"Using Schedule-Free AdamW optimizer")
+        else:
+            optimizer = AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
+            if global_rank == 0: print(f"Using AdamW optimizer")
     
     # Initialize GradScaler for mixed precision training
     scaler = torch.amp.GradScaler('cuda') if args.bf16 else None
@@ -1613,12 +1671,16 @@ def main():
             # Strip module. prefix
             state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}
         model.load_state_dict(state_dict)
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if scaler is not None and 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict'] is not None:
-            scaler.load_state_dict(checkpoint['scaler_state_dict'])
-        if global_rank == 0: print(f"Resumed model and optimizer from step {resume_step}")
+        if args.fresh_optimizer:
+            # Skip loading optimizer state - start with fresh Adam momentum/variance
+            if global_rank == 0: print(f"Resumed model from step {resume_step} with FRESH optimizer (momentum/variance reset)")
+        else:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if scaler is not None and 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict'] is not None:
+                scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            if global_rank == 0: print(f"Resumed model and optimizer from step {resume_step}")
 
-    if args.schedulefree and not args.zero_order: optimizer.train()
+    if args.schedulefree and not args.zero_order and not args.sgd: optimizer.train()
 
     # Setup DDP if enabled
     if args.ddp:
@@ -2062,10 +2124,16 @@ def main():
                 if hidden_state is not None and 'reset_next' in locals():
                     if reset_next.any():
                         # Reset hidden states for batch elements that ended docs in PREVIOUS chunk
-                        hidden_state = [
-                            h.masked_fill(reset_next.unsqueeze(-1), 0.0) if h is not None else None
-                            for h in hidden_state
-                        ]
+                        # Handle both flat tensors and tuples (legacy EMA GRU format)
+                        def masked_fill_hidden(h, mask):
+                            if h is None:
+                                return None
+                            if isinstance(h, tuple):
+                                return tuple(x.masked_fill(mask, 0.0) for x in h)
+                            return h.masked_fill(mask, 0.0)
+
+                        mask = reset_next.unsqueeze(-1)
+                        hidden_state = [masked_fill_hidden(h, mask) for h in hidden_state]
 
                 # Save is_doc_end for next chunk's reset
                 reset_next = is_doc_end  # [B] bool - will be used BEFORE next chunk
@@ -2130,8 +2198,13 @@ def main():
 
         # Hidden states are now reset IN-PLACE during forward pass (no allocation needed!)
         # Just detach and pass through for next iteration
+        # Handle both flat tensors and tuples (e.g., EMA GRU returns (h_fast, h_slow))
         if next_hidden_state and next_hidden_state[0] is not None:
-            hidden_state = [h.detach() for h in next_hidden_state]
+            def detach_hidden(h):
+                if isinstance(h, tuple):
+                    return tuple(x.detach() for x in h)
+                return h.detach()
+            hidden_state = [detach_hidden(h) for h in next_hidden_state]
         else:
             hidden_state = []  # No hidden state (e.g., CausalConvGRU)
 
