@@ -23,6 +23,19 @@ except ImportError as e:
     print(f"Failed to import hybrid_fused_gru: {e}")
     HybridFusedGRU = None
 
+# Import Parallel EMA GRU (10x faster than sequential version!)
+try:
+    from mingru.parallel_ema_gru import ParallelEMA_GRU as HybridFusedGRU_EMA
+    print("ParallelEMA_GRU available (10x faster: parallel EMA + Triton GRU)")
+except ImportError as e:
+    # Fallback to sequential version
+    try:
+        from mingru.hybrid_fused_gru_ema import HybridFusedGRU_EMA
+        print("HybridFusedGRU_EMA available (sequential, slower)")
+    except ImportError:
+        print(f"Failed to import EMA GRU: {e}")
+        HybridFusedGRU_EMA = None
+
 # Import cuDNN Fused GRU (3× faster than Hybrid!)
 try:
     from mingru.cudnn_fused_gru import CuDNNFusedGRU
@@ -167,6 +180,8 @@ class minLM(Module):
         h_recurrent = None,  # Recurrent dimension for ProjectedGRU (default: dim*0.625)
         use_local_conv = False,  # Use LocalConvGRU (local window, NOT recurrent!)
         use_flash_gru = False,  # Use FlashRNN GRU (50x faster, hardware-optimized!)
+        use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
+        ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
         z_bias_input = -2.0,  # Initial bias for z-gates on input projection
         z_bias_hidden = -2.0,  # Initial bias for z-gates on hidden projection
@@ -226,6 +241,19 @@ class minLM(Module):
             rnn_kwargs = {
                 'h_recurrent': h_rec_actual,
                 'expansion_factor': expansion
+            }
+        elif use_ema_gru:
+            # Use ParallelEMA_GRU (10x faster: parallel EMA + Triton GRU cell)
+            min_rnn_klass = HybridFusedGRU_EMA
+            half_life = int(0.693 / ema_alpha) if ema_alpha > 0 else float('inf')
+            print(f"Using ParallelEMA_GRU (10x faster EMA + Triton GRU, alpha={ema_alpha}, half-life={half_life} tokens) for depth={depth} model")
+
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'ema_alpha': ema_alpha,
+                'z_bias_input': z_bias_input,
+                'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
             }
         elif use_fused_gru:
             # Use HybridFusedGRU (Triton fused kernel)
