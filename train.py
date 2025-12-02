@@ -1696,7 +1696,7 @@ def main():
             print("Pre-compiling FlashRNN kernels...")
         # Dummy forward pass to trigger JIT compilation
         with torch.no_grad():
-            dummy_input = torch.randint(100, (args.batch_size, 64)).to(device)
+            dummy_input = torch.randint(100, (int(args.batch_size), 64)).to(device)
             _ = model(dummy_input)
         # Synchronize all processes after compilation
         if dist.is_initialized():
