@@ -2,10 +2,11 @@
 set -e -x
 
 # =============================================================================
-# PARALLEL EMA GRU TEST - 10x faster than sequential EMA!
+# PARALLEL EMA GRU 1B TEST - Triton-based (DDP-compatible)
 # =============================================================================
 # Uses parallel scan for EMA + Triton kernel for GRU cell
-# Expected throughput: ~100k+ tok/s (vs 15k for sequential)
+# ~1B params: dim=2048, depth=23, ff_mult=0, expansion=1.0
+# Fallback from FlashRNN (which has DDP issues)
 # =============================================================================
 
 ulimit -n 65536
@@ -41,7 +42,7 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 20 \
+  --depth 23 \
   --expansion_factor 1.0 \
   --ff_mult 0.0 \
   --dropout 0.0 \
@@ -52,8 +53,8 @@ echo "======================================================================="
   --z_bias_hidden 0.0 \
   \
   --chunk_size 512 \
-  --batch_size 32 \
-  --grad_accum 8 \
+  --batch_size 8 \
+  --grad_accum 32 \
   \
   --train_steps 1000 \
   --lr 0.001 \
