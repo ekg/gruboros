@@ -1542,6 +1542,13 @@ def main():
 
     model = get_model(model_config).to(device)
 
+    # Convert model to bf16 if using mixed precision
+    # This is required for FlashRNN which JIT compiles based on weight dtype
+    if args.bf16:
+        model = model.bfloat16()
+        if global_rank == 0:
+            print("Model converted to bfloat16 for FlashRNN compatibility")
+
     # Print ACTUAL parameter count (not estimated!)
     if global_rank == 0:
         actual_params = sum(p.numel() for p in model.parameters())
@@ -1681,6 +1688,21 @@ def main():
             if global_rank == 0: print(f"Resumed model and optimizer from step {resume_step}")
 
     if args.schedulefree and not args.zero_order and not args.sgd: optimizer.train()
+
+    # Pre-compile FlashRNN kernels before DDP wrapping
+    # This prevents JIT compilation race conditions across GPUs
+    if args.use_flash_ema_gru and args.ddp:
+        if global_rank == 0:
+            print("Pre-compiling FlashRNN kernels...")
+        # Dummy forward pass to trigger JIT compilation
+        with torch.no_grad():
+            dummy_input = torch.randint(0, 100, (args.batch_size, 64), device=device)
+            _ = model(dummy_input)
+        # Synchronize all processes after compilation
+        if dist.is_initialized():
+            dist.barrier()
+        if global_rank == 0:
+            print("FlashRNN kernels compiled successfully!")
 
     # Setup DDP if enabled
     if args.ddp:

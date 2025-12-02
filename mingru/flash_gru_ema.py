@@ -162,7 +162,11 @@ class FlashGRU_EMA(nn.Module):
 
         B, T, D = x.shape
         device = x.device
-        dtype = x.dtype
+        # Use model weight dtype (not input dtype) for FlashRNN config
+        # This ensures correct kernel compilation under autocast
+        dtype = self.input_proj.weight.dtype
+        if x.dtype != dtype:
+            x = x.to(dtype)
 
         # Parse hidden states: [h_fast | h_slow]
         if prev_hidden is None:
