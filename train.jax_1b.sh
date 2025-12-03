@@ -27,7 +27,7 @@ echo "======================================================================="
 echo "=== JAX GRU+EMA 1B Training ==="
 echo "======================================================================="
 
-/home/erikg/micromamba/envs/mingru/bin/python jax_gru_ema/train_1b.py \
+/home/erikg/micromamba/envs/mingru/bin/python -u jax_gru_ema/train_1b.py \
   --data "$DATA_PATH" \
   --output "$OUTPUT_DIR" \
   \
@@ -41,13 +41,13 @@ echo "======================================================================="
   --tokenizer tiktoken \
   --tiktoken_encoding p50k_base \
   \
-  --batch_size 8 \
+  --batch_size 16 \
   --chunk_size 512 \
   \
   --lr 0.001 \
   --weight_decay 0.033 \
   --warmup_steps 100 \
-  --train_steps 200 \
+  --train_steps 100000 \
   --grad_clip 1.0 \
   \
   --log_every 10 \

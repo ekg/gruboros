@@ -385,6 +385,8 @@ def main():
     step = 0
     total_tokens = 0
     start_time = time.time()
+    last_log_time = start_time
+    last_log_step = 0
 
     with mesh:
         for batch in batch_iter:
@@ -398,11 +400,20 @@ def main():
 
             if step % args.log_every == 0:
                 jax.block_until_ready(loss)
-                elapsed = time.time() - start_time
-                tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
+                now = time.time()
+                elapsed = now - start_time
+                # Calculate instantaneous rate (excluding step 0 JIT)
+                if step > 0:
+                    interval = now - last_log_time
+                    interval_tokens = (step - last_log_step) * total_batch * seq_len
+                    tokens_per_sec = interval_tokens / interval if interval > 0 else 0
+                else:
+                    tokens_per_sec = 0
                 print(f"Step {step}: loss={float(loss):.4f}, "
-                      f"tokens/sec={tokens_per_sec/1e6:.2f}M, "
-                      f"elapsed={elapsed:.1f}s")
+                      f"tok/s={tokens_per_sec:,.0f}, "
+                      f"elapsed={elapsed:.1f}s", flush=True)
+                last_log_time = now
+                last_log_step = step
 
             step += 1
 

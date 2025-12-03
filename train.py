@@ -1138,6 +1138,8 @@ def get_args():
                         help='Use FlashRNN GRU (hardware-optimized, 50x speedup!)')
     parser.add_argument('--use_flash_ema_gru', action='store_true',
                         help='Use FlashRNN GRU + parallel EMA (60x faster + long-range memory!)')
+    parser.add_argument('--use_cudnn_ema_gru', action='store_true',
+                        help='Use cuDNN GRU + parallel EMA (DDP-compatible + long-range memory!)')
     parser.add_argument('--use_ema_gru', action='store_true',
                         help='Use EMA GRU (GRU + EMA for long-range memory)')
     parser.add_argument('--ema_alpha', type=float, default=0.01,
@@ -1488,6 +1490,7 @@ def main():
             "use_local_conv": args.use_local_conv,
             "use_flash_gru": args.use_flash_gru,
             "use_flash_ema_gru": args.use_flash_ema_gru,
+            "use_cudnn_ema_gru": args.use_cudnn_ema_gru,
             "use_ema_gru": args.use_ema_gru,
             "ema_alpha": args.ema_alpha,
             "use_deep_normal_gru": args.use_deep_normal_gru,
@@ -1667,8 +1670,12 @@ def main():
             optimizer = AdamW(model.parameters(), lr=args.lr, betas=(args.sf_beta, args.sf_beta2), weight_decay=args.weight_decay)
             if global_rank == 0: print(f"Using AdamW optimizer")
     
-    # Initialize GradScaler for mixed precision training
-    scaler = torch.amp.GradScaler('cuda') if args.bf16 else None
+    # FlashRNN workaround: Scale loss to avoid bias gradient kernel bug in backward pass
+    # The bug only triggers with certain gradient magnitude ranges
+    # We scale the loss, then manually divide gradients before optimizer step
+    use_flashrnn = getattr(args, 'use_flash_gru', False) or getattr(args, 'use_flash_ema_gru', False)
+    flashrnn_loss_scale = 65536.0 if use_flashrnn and args.bf16 else 1.0
+    scaler = None  # Don't use GradScaler (it doesn't support bf16 unscale)
     
     if resuming and checkpoint:
         # Handle DDP module. prefix mismatch
@@ -2179,19 +2186,23 @@ def main():
                 # Backward pass with conditional DDP sync
                 # Only sync gradients on the final accumulation step
                 should_sync_now = (accumulated_steps >= args.grad_accum)
+
+                # FlashRNN workaround: scale loss to avoid bias gradient kernel bug
+                backward_loss = scaled_loss * flashrnn_loss_scale
+
                 if args.ddp and not should_sync_now:
                     # Skip gradient sync during accumulation (steps 1-15 of 16)
                     with model.no_sync():
-                        if scaler is not None:
-                            scaler.scale(scaled_loss).backward()
-                        else:
-                            scaled_loss.backward()
+                        backward_loss.backward()
                 else:
                     # Allow DDP sync on final step (step 16 of 16), or always if not DDP
-                    if scaler is not None:
-                        scaler.scale(scaled_loss).backward()
-                    else:
-                        scaled_loss.backward()
+                    # FlashRNN workaround: Sync CUDA before DDP gradient sync
+                    if flashrnn_loss_scale != 1.0 and args.ddp:
+                        torch.cuda.synchronize()
+                    backward_loss.backward()
+                    # FlashRNN workaround: Ensure all CUDA work complete after backward
+                    if flashrnn_loss_scale != 1.0:
+                        torch.cuda.synchronize()
 
             # Mark that we've exited forward pass - safe for weight updates
             evolutionary_node.exit_forward_pass()
@@ -2240,9 +2251,14 @@ def main():
                 accumulated_steps = 0
             else:
                 # Standard backpropagation: handle gradients
-                # Unscale gradients first if using scaler
-                if scaler is not None:
-                    scaler.unscale_(optimizer)
+                # FlashRNN workaround: Sync CUDA streams before gradient handling
+                # This ensures all FlashRNN JIT kernels are complete before NCCL
+                if flashrnn_loss_scale != 1.0:
+                    torch.cuda.synchronize()
+                    inv_scale = 1.0 / flashrnn_loss_scale
+                    for param in model.parameters():
+                        if param.grad is not None:
+                            param.grad.data.mul_(inv_scale)
 
                 # Calculate gradient norm for logging
                 total_norm = 0.0
@@ -2258,11 +2274,7 @@ def main():
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
                 # The optimizer step proceeds as usual, operating on the (now clipped) gradients
-                if scaler is not None:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
+                optimizer.step()
 
                 optimizer.zero_grad()
                 accumulated_steps = 0

@@ -44,6 +44,14 @@ except ImportError as e:
     print(f"FlashGRU_EMA not available: {e}")
     FlashGRU_EMA = None
 
+# Import CuDNNGRU_EMA (cuDNN GRU + parallel EMA - DDP-compatible!)
+try:
+    from mingru.cudnn_gru_ema import CuDNNGRU_EMA
+    print("CuDNNGRU_EMA available (cuDNN GRU + parallel EMA, DDP-compatible!)")
+except ImportError as e:
+    print(f"CuDNNGRU_EMA not available: {e}")
+    CuDNNGRU_EMA = None
+
 # Import cuDNN Fused GRU (3× faster than Hybrid!)
 try:
     from mingru.cudnn_fused_gru import CuDNNFusedGRU
@@ -189,6 +197,7 @@ class minLM(Module):
         use_local_conv = False,  # Use LocalConvGRU (local window, NOT recurrent!)
         use_flash_gru = False,  # Use FlashRNN GRU (50x faster, hardware-optimized!)
         use_flash_ema_gru = False,  # Use FlashRNN GRU + EMA (60x faster + long-range memory!)
+        use_cudnn_ema_gru = False,  # Use cuDNN GRU + EMA (DDP-compatible + long-range memory!)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
@@ -234,6 +243,20 @@ class minLM(Module):
             min_rnn_klass = FlashGRU_EMA
             half_life = int(0.693 / ema_alpha) if ema_alpha > 0 else float('inf')
             print(f"Using FlashGRU_EMA (FlashRNN + parallel EMA, 60x faster, half-life={half_life} tokens) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'ema_alpha': ema_alpha,
+                'z_bias_input': z_bias_input,
+                'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_cudnn_ema_gru:
+            # cuDNN GRU + parallel EMA - DDP-compatible alternative to FlashGRU_EMA
+            if CuDNNGRU_EMA is None:
+                raise ImportError("CuDNNGRU_EMA not available")
+            min_rnn_klass = CuDNNGRU_EMA
+            half_life = int(0.693 / ema_alpha) if ema_alpha > 0 else float('inf')
+            print(f"Using CuDNNGRU_EMA (cuDNN + parallel EMA, DDP-compatible, half-life={half_life} tokens) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'ema_alpha': ema_alpha,
