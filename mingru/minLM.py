@@ -46,11 +46,12 @@ except ImportError as e:
 
 # Import CuDNNGRU_EMA (cuDNN GRU + parallel EMA - DDP-compatible!)
 try:
-    from mingru.cudnn_gru_ema import CuDNNGRU_EMA
+    from mingru.cudnn_gru_ema import CuDNNGRU_EMA, CuDNNGRU_MultiScaleEMA
     print("CuDNNGRU_EMA available (cuDNN GRU + parallel EMA, DDP-compatible!)")
 except ImportError as e:
     print(f"CuDNNGRU_EMA not available: {e}")
     CuDNNGRU_EMA = None
+    CuDNNGRU_MultiScaleEMA = None
 
 # Import cuDNN Fused GRU (3× faster than Hybrid!)
 try:
@@ -198,6 +199,8 @@ class minLM(Module):
         use_flash_gru = False,  # Use FlashRNN GRU (50x faster, hardware-optimized!)
         use_flash_ema_gru = False,  # Use FlashRNN GRU + EMA (60x faster + long-range memory!)
         use_cudnn_ema_gru = False,  # Use cuDNN GRU + EMA (DDP-compatible + long-range memory!)
+        use_cudnn_multiscale_ema_gru = False,  # Use cuDNN GRU + Multi-Scale EMA (3 timescales!)
+        per_layer_alpha = False,  # Initialize each layer with different EMA alpha (fast→slow)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
@@ -250,13 +253,32 @@ class minLM(Module):
                 'z_bias_hidden': z_bias_hidden,
                 'recurrence_chunk_size': recurrence_chunk_size
             }
+        elif use_cudnn_multiscale_ema_gru:
+            # cuDNN GRU + multi-scale parallel EMA - captures multiple timescales
+            if CuDNNGRU_MultiScaleEMA is None:
+                raise ImportError("CuDNNGRU_MultiScaleEMA not available")
+            min_rnn_klass = CuDNNGRU_MultiScaleEMA
+            print(f"Using CuDNNGRU_MultiScaleEMA (cuDNN + 3-scale EMA: 0.1/0.01/0.001, DDP-compatible) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'num_scales': 3,
+                'init_alphas': (0.1, 0.01, 0.001),
+                'z_bias_input': z_bias_input,
+                'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+            # Always pass layer info for multi-scale (beneficial for depth-aware timescales)
+            rnn_kwargs['_per_layer'] = True
         elif use_cudnn_ema_gru:
             # cuDNN GRU + parallel EMA - DDP-compatible alternative to FlashGRU_EMA
             if CuDNNGRU_EMA is None:
                 raise ImportError("CuDNNGRU_EMA not available")
             min_rnn_klass = CuDNNGRU_EMA
             half_life = int(0.693 / ema_alpha) if ema_alpha > 0 else float('inf')
-            print(f"Using CuDNNGRU_EMA (cuDNN + parallel EMA, DDP-compatible, half-life={half_life} tokens) for depth={depth} model")
+            if per_layer_alpha:
+                print(f"Using CuDNNGRU_EMA with per-layer alpha (layer 0: α≈0.05 → layer {depth-1}: α≈0.005) for depth={depth} model")
+            else:
+                print(f"Using CuDNNGRU_EMA (cuDNN + parallel EMA, DDP-compatible, half-life={half_life} tokens) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'ema_alpha': ema_alpha,
@@ -264,6 +286,8 @@ class minLM(Module):
                 'z_bias_hidden': z_bias_hidden,
                 'recurrence_chunk_size': recurrence_chunk_size
             }
+            if per_layer_alpha:
+                rnn_kwargs['_per_layer'] = True
         elif use_standard_gru:
             min_rnn_klass = StandardGRU
             checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
@@ -317,11 +341,20 @@ class minLM(Module):
             min_rnn_klass = minGRU
             rnn_kwargs = {'expansion_factor': expansion}
 
-        for _ in range(depth):
+        # Check if per-layer alpha initialization is needed
+        use_per_layer_init = rnn_kwargs.pop('_per_layer', False)
+
+        for layer_idx in range(depth):
+            # Add layer info if per-layer alpha is enabled
+            layer_rnn_kwargs = rnn_kwargs.copy()
+            if use_per_layer_init:
+                layer_rnn_kwargs['layer_idx'] = layer_idx
+                layer_rnn_kwargs['num_layers'] = depth
+
             self.layers.append(ModuleList([
                 CausalConv1d(dim, conv_kernel_size) if conv_kernel_size else None,
                 RMSNorm(dim),
-                min_rnn_klass(dim, **rnn_kwargs),
+                min_rnn_klass(dim, **layer_rnn_kwargs),
                 RMSNorm(dim) if ff_mult > 0 else None,
                 FeedForward(dim, mult = ff_mult) if ff_mult > 0 else None,
                 nn.Dropout(dropout) if dropout > 0. else None

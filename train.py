@@ -1140,6 +1140,10 @@ def get_args():
                         help='Use FlashRNN GRU + parallel EMA (60x faster + long-range memory!)')
     parser.add_argument('--use_cudnn_ema_gru', action='store_true',
                         help='Use cuDNN GRU + parallel EMA (DDP-compatible + long-range memory!)')
+    parser.add_argument('--use_cudnn_multiscale_ema_gru', action='store_true',
+                        help='Use cuDNN GRU + Multi-Scale EMA (3 timescales: 0.1/0.01/0.001)')
+    parser.add_argument('--per_layer_alpha', action='store_true',
+                        help='Initialize each layer with different EMA alpha (fast→slow with depth)')
     parser.add_argument('--use_ema_gru', action='store_true',
                         help='Use EMA GRU (GRU + EMA for long-range memory)')
     parser.add_argument('--ema_alpha', type=float, default=0.01,
@@ -1491,6 +1495,8 @@ def main():
             "use_flash_gru": args.use_flash_gru,
             "use_flash_ema_gru": args.use_flash_ema_gru,
             "use_cudnn_ema_gru": args.use_cudnn_ema_gru,
+            "use_cudnn_multiscale_ema_gru": args.use_cudnn_multiscale_ema_gru,
+            "per_layer_alpha": args.per_layer_alpha,
             "use_ema_gru": args.use_ema_gru,
             "ema_alpha": args.ema_alpha,
             "use_deep_normal_gru": args.use_deep_normal_gru,
