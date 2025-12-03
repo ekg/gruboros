@@ -4,7 +4,7 @@ set -e -x
 # =============================================================================
 # PyTorch cuDNN GRU + EMA: CUMULATIVE Experiment 2 (ff4 + per-layer alpha)
 # =============================================================================
-# Builds on ff4: ff_mult=4, depth=14 for ~1B params
+# Builds on ff4: ff_mult=4, depth=16 for ~1B params
 # PLUS: Per-layer EMA alpha initialization:
 # - Early layers: fast (high α ~ 0.05) - capture local patterns
 # - Deep layers: slow (low α ~ 0.005) - capture long-range dependencies
@@ -40,7 +40,7 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 14 \
+  --depth 16 \
   --expansion_factor 1.0 \
   --ff_mult 4.0 \
   --dropout 0.0 \

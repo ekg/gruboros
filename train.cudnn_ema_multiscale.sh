@@ -4,7 +4,7 @@ set -e -x
 # =============================================================================
 # PyTorch cuDNN GRU + Multi-Scale EMA: CUMULATIVE Experiment 3 (ff4 + multiscale)
 # =============================================================================
-# Builds on ff4: ff_mult=4, depth=11 for ~1B params (3 EMA tracks add params)
+# Builds on ff4: ff_mult=4, depth=12 for ~1B params (3 EMA tracks add params)
 # PLUS: 3 EMA tracks at different timescales per layer:
 # - Fast EMA (α ~ 0.1): captures short-range patterns (~7 token half-life)
 # - Medium EMA (α ~ 0.01): captures medium-range patterns (~70 token half-life)
@@ -41,7 +41,7 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 11 \
+  --depth 12 \
   --expansion_factor 1.0 \
   --ff_mult 4.0 \
   --dropout 0.0 \

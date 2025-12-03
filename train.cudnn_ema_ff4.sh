@@ -4,7 +4,7 @@ set -e -x
 # =============================================================================
 # PyTorch cuDNN GRU + EMA: CUMULATIVE Experiment 1 (ff4 baseline)
 # =============================================================================
-# Baseline for cumulative experiments: ff_mult=4, depth=14 for ~1B params
+# Baseline for cumulative experiments: ff_mult=4, depth=16 for ~1B params
 # Adding feedforward network to see if per-token transformation
 # capacity improves language modeling.
 # =============================================================================
@@ -38,7 +38,7 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 14 \
+  --depth 16 \
   --expansion_factor 1.0 \
   --ff_mult 4.0 \
   --dropout 0.0 \
@@ -47,7 +47,7 @@ echo "======================================================================="
   --ema_alpha 0.01 \
   \
   --chunk_size 512 \
-  --batch_size 16 \
+  --batch_size 28 \
   --grad_accum 1 \
   \
   --train_steps 10000 \
