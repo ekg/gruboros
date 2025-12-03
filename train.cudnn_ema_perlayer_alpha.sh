@@ -2,9 +2,10 @@
 set -e -x
 
 # =============================================================================
-# PyTorch cuDNN GRU + EMA Training with Per-Layer Alpha Initialization
+# PyTorch cuDNN GRU + EMA: CUMULATIVE Experiment 2 (ff4 + per-layer alpha)
 # =============================================================================
-# Test: Initialize each layer with different EMA alpha values:
+# Builds on ff4: ff_mult=4, depth=14 for ~1B params
+# PLUS: Per-layer EMA alpha initialization:
 # - Early layers: fast (high α ~ 0.05) - capture local patterns
 # - Deep layers: slow (low α ~ 0.005) - capture long-range dependencies
 # Formula: init_alpha = 0.05 * (0.1 ** (layer_idx / (num_layers - 1)))
@@ -39,9 +40,9 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 24 \
+  --depth 14 \
   --expansion_factor 1.0 \
-  --ff_mult 0.0 \
+  --ff_mult 4.0 \
   --dropout 0.0 \
   \
   --use_cudnn_ema_gru \
