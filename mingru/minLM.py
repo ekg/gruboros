@@ -53,6 +53,14 @@ except ImportError as e:
     CuDNNGRU_EMA = None
     CuDNNGRU_MultiScaleEMA = None
 
+# Import CuDNNGRU_SSM (cuDNN GRU + Selective SSM - advanced memory!)
+try:
+    from mingru.cudnn_gru_ssm import CuDNNGRU_SSM
+    print("CuDNNGRU_SSM available (cuDNN GRU + Selective SSM, DDP-compatible!)")
+except ImportError as e:
+    print(f"CuDNNGRU_SSM not available: {e}")
+    CuDNNGRU_SSM = None
+
 # Import cuDNN Fused GRU (3× faster than Hybrid!)
 try:
     from mingru.cudnn_fused_gru import CuDNNFusedGRU
@@ -200,6 +208,7 @@ class minLM(Module):
         use_flash_ema_gru = False,  # Use FlashRNN GRU + EMA (60x faster + long-range memory!)
         use_cudnn_ema_gru = False,  # Use cuDNN GRU + EMA (DDP-compatible + long-range memory!)
         use_cudnn_multiscale_ema_gru = False,  # Use cuDNN GRU + Multi-Scale EMA (3 timescales!)
+        use_cudnn_ssm_gru = False,  # Use cuDNN GRU + Selective SSM (learned decay, input-dependent!)
         per_layer_alpha = False,  # Initialize each layer with different EMA alpha (fast→slow)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
@@ -251,6 +260,17 @@ class minLM(Module):
                 'ema_alpha': ema_alpha,
                 'z_bias_input': z_bias_input,
                 'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_cudnn_ssm_gru:
+            # cuDNN GRU + Selective SSM - advanced memory with learned decay
+            if CuDNNGRU_SSM is None:
+                raise ImportError("CuDNNGRU_SSM not available")
+            min_rnn_klass = CuDNNGRU_SSM
+            print(f"Using CuDNNGRU_SSM (cuDNN + Selective SSM, learned decay, DDP-compatible) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'selective': True,
                 'recurrence_chunk_size': recurrence_chunk_size
             }
         elif use_cudnn_multiscale_ema_gru:
