@@ -61,6 +61,14 @@ except ImportError as e:
     print(f"CuDNNGRU_SSM not available: {e}")
     CuDNNGRU_SSM = None
 
+# Import CuDNNGRU_SSM_Series (cuDNN GRU → Selective SSM in series!)
+try:
+    from mingru.cudnn_gru_ssm_series import CuDNNGRU_SSM_Series
+    print("CuDNNGRU_SSM_Series available (GRU→SSM series, DDP-compatible!)")
+except ImportError as e:
+    print(f"CuDNNGRU_SSM_Series not available: {e}")
+    CuDNNGRU_SSM_Series = None
+
 # Import cuDNN Fused GRU (3× faster than Hybrid!)
 try:
     from mingru.cudnn_fused_gru import CuDNNFusedGRU
@@ -209,6 +217,7 @@ class minLM(Module):
         use_cudnn_ema_gru = False,  # Use cuDNN GRU + EMA (DDP-compatible + long-range memory!)
         use_cudnn_multiscale_ema_gru = False,  # Use cuDNN GRU + Multi-Scale EMA (3 timescales!)
         use_cudnn_ssm_gru = False,  # Use cuDNN GRU + Selective SSM (learned decay, input-dependent!)
+        use_cudnn_ssm_series_gru = False,  # Use cuDNN GRU → SSM in series (GRU extracts, SSM tracks!)
         per_layer_alpha = False,  # Initialize each layer with different EMA alpha (fast→slow)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
@@ -260,6 +269,17 @@ class minLM(Module):
                 'ema_alpha': ema_alpha,
                 'z_bias_input': z_bias_input,
                 'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_cudnn_ssm_series_gru:
+            # cuDNN GRU → Selective SSM in series - GRU extracts features, SSM tracks state
+            if CuDNNGRU_SSM_Series is None:
+                raise ImportError("CuDNNGRU_SSM_Series not available")
+            min_rnn_klass = CuDNNGRU_SSM_Series
+            print(f"Using CuDNNGRU_SSM_Series (GRU→SSM series, DDP-compatible) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'selective': True,
                 'recurrence_chunk_size': recurrence_chunk_size
             }
         elif use_cudnn_ssm_gru:

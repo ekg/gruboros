@@ -983,6 +983,72 @@ class DocumentStreamWrapper(IterableDataset):
             self.data_file.close()
 
 def get_model(model_config):
+    # Use Mamba SSM if requested (gold standard RNN)
+    if model_config.get('use_mamba', False):
+        from mingru.mamba_lm import MambaLM
+        mamba_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'd_state': model_config.get('mamba_d_state', 16),
+            'expand': model_config.get('mamba_expand', 2),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using MambaLM: dim={mamba_config['dim']}, depth={mamba_config['depth']}, d_state={mamba_config['d_state']}, expand={mamba_config['expand']}")
+        return MambaLM(**mamba_config)
+
+    # Use Mamba2 SSM with SSD if requested (faster parallel training)
+    if model_config.get('use_mamba2', False):
+        from mingru.mamba_lm import Mamba2LM
+        mamba2_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'd_state': model_config.get('mamba_d_state', 64),  # Mamba2 uses larger state by default
+            'expand': model_config.get('mamba_expand', 2),
+            'headdim': 64,  # Standard Mamba2 headdim
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using Mamba2LM: dim={mamba2_config['dim']}, depth={mamba2_config['depth']}, d_state={mamba2_config['d_state']}, expand={mamba2_config['expand']}")
+        return Mamba2LM(**mamba2_config)
+
+    # Use Hybrid Mamba2 + cuDNN GRU with parallel paths and learned mixing
+    if model_config.get('use_hybrid_mamba2_gru', False):
+        from mingru.hybrid_mamba2_gru import HybridMamba2GRULM
+        hybrid_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'mamba_d_state': model_config.get('mamba_d_state', 64),
+            'mamba_expand': model_config.get('mamba_expand', 2),
+            'mamba_headdim': 64,
+            'gru_expansion': 1.0,  # Match dim for fair comparison
+            'ff_mult': 0.0,  # No FFN to match Mamba2 structure
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using HybridMamba2GRULM: dim={hybrid_config['dim']}, depth={hybrid_config['depth']}, d_state={hybrid_config['mamba_d_state']}, expand={hybrid_config['mamba_expand']}")
+        return HybridMamba2GRULM(**hybrid_config)
+
+    # Use Mamba2 + 3-layer FFN (based on arXiv:2505.06633)
+    if model_config.get('use_mamba2_ffn3', False):
+        from mingru.mamba2_ffn3 import Mamba2FFN3LM
+        ffn3_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'mamba_d_state': model_config.get('mamba_d_state', 64),
+            'mamba_expand': model_config.get('mamba_expand', 2),
+            'mamba_headdim': 64,
+            'ff_expansion': 4,  # 3-layer FFN: d → 4d → 4d → d
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using Mamba2FFN3LM: dim={ffn3_config['dim']}, depth={ffn3_config['depth']}, d_state={ffn3_config['mamba_d_state']}, ff_expansion={ffn3_config['ff_expansion']}")
+        return Mamba2FFN3LM(**ffn3_config)
+
     # Use deep normal-space GRU model if requested (RECOMMENDED!)
     if model_config.get('use_deep_normal_gru', False):
         from mingru.deep_normal_gru_lm import DeepNormalGRULM
@@ -1144,6 +1210,8 @@ def get_args():
                         help='Use cuDNN GRU + Multi-Scale EMA (3 timescales: 0.1/0.01/0.001)')
     parser.add_argument('--use_cudnn_ssm_gru', action='store_true',
                         help='Use cuDNN GRU + Selective Diagonal SSM (learned decay, input-dependent like Mamba)')
+    parser.add_argument('--use_cudnn_ssm_series_gru', action='store_true',
+                        help='Use cuDNN GRU -> SSM in series (GRU extracts features, SSM tracks state)')
     parser.add_argument('--per_layer_alpha', action='store_true',
                         help='Initialize each layer with different EMA alpha (fast→slow with depth)')
     parser.add_argument('--use_ema_gru', action='store_true',
@@ -1154,6 +1222,18 @@ def get_args():
                         help='Use DeepNormalGRULM (RECOMMENDED: normal-space + residuals + LayerNorm + identity init for deep 20-32 layer networks)')
     parser.add_argument('--use_logspace_gru', action='store_true',
                         help='Use DeepLogSpaceGRULM (EXPERIMENTAL: log-space hidden states, unstable training)')
+    parser.add_argument('--use_mamba', action='store_true',
+                        help='Use Mamba SSM (gold standard for RNNs, requires mamba-ssm package)')
+    parser.add_argument('--use_mamba2', action='store_true',
+                        help='Use Mamba2 SSM with SSD (faster parallel training, requires mamba-ssm package)')
+    parser.add_argument('--use_hybrid_mamba2_gru', action='store_true',
+                        help='Use Hybrid Mamba2+cuDNN GRU (parallel paths with learned mixing, no TBPTT)')
+    parser.add_argument('--use_mamba2_ffn3', action='store_true',
+                        help='Use Mamba2 + 3-layer FFN (arXiv:2505.06633: d→4d→4d→d with GELU, no TBPTT)')
+    parser.add_argument('--mamba_d_state', type=int, default=16,
+                        help='Mamba SSM state dimension (default 16 for Mamba, 64 for Mamba2)')
+    parser.add_argument('--mamba_expand', type=int, default=2,
+                        help='Mamba expansion factor (default 2)')
     parser.add_argument('--use_gradient_checkpointing', action='store_true',
                         help='Use gradient checkpointing to reduce memory (trades compute for memory)')
 
@@ -1499,11 +1579,18 @@ def main():
             "use_cudnn_ema_gru": args.use_cudnn_ema_gru,
             "use_cudnn_multiscale_ema_gru": args.use_cudnn_multiscale_ema_gru,
             "use_cudnn_ssm_gru": args.use_cudnn_ssm_gru,
+            "use_cudnn_ssm_series_gru": args.use_cudnn_ssm_series_gru,
             "per_layer_alpha": args.per_layer_alpha,
             "use_ema_gru": args.use_ema_gru,
             "ema_alpha": args.ema_alpha,
             "use_deep_normal_gru": args.use_deep_normal_gru,
             "use_logspace_gru": args.use_logspace_gru,
+            "use_mamba": args.use_mamba,
+            "use_mamba2": args.use_mamba2,
+            "use_hybrid_mamba2_gru": args.use_hybrid_mamba2_gru,
+            "use_mamba2_ffn3": args.use_mamba2_ffn3,
+            "mamba_d_state": args.mamba_d_state,
+            "mamba_expand": args.mamba_expand,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
             "z_bias_input": args.z_bias_input if args.z_bias_input is not None else args.z_bias_init,
             "z_bias_hidden": args.z_bias_hidden if args.z_bias_hidden is not None else args.z_bias_init,
