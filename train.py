@@ -1049,6 +1049,24 @@ def get_model(model_config):
         print(f"Using Mamba2FFN3LM: dim={ffn3_config['dim']}, depth={ffn3_config['depth']}, d_state={ffn3_config['mamba_d_state']}, ff_expansion={ffn3_config['ff_expansion']}")
         return Mamba2FFN3LM(**ffn3_config)
 
+    # Use cuDNN GRU + Multiplicative Gating (for testing nonlinearity hypothesis)
+    if model_config.get('use_cudnn_mult_gru', False):
+        from mingru.cudnn_gru_mult import CuDNNGRU_MultLM
+        mult_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'gate_expansion': 1.0,  # Gate matches hidden dim
+            'use_input_gate': True,  # Gate depends on input x
+            'use_hidden_gate': True,  # Gate depends on hidden h
+            'ff_mult': model_config.get('ff_mult', 0.0),  # Optional FFN
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using CuDNNGRU_MultLM: dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}")
+        return CuDNNGRU_MultLM(**mult_config)
+
     # Use deep normal-space GRU model if requested (RECOMMENDED!)
     if model_config.get('use_deep_normal_gru', False):
         from mingru.deep_normal_gru_lm import DeepNormalGRULM
@@ -1230,6 +1248,8 @@ def get_args():
                         help='Use Hybrid Mamba2+cuDNN GRU (parallel paths with learned mixing, no TBPTT)')
     parser.add_argument('--use_mamba2_ffn3', action='store_true',
                         help='Use Mamba2 + 3-layer FFN (arXiv:2505.06633: d→4d→4d→d with GELU, no TBPTT)')
+    parser.add_argument('--use_cudnn_mult_gru', action='store_true',
+                        help='Use cuDNN GRU + Multiplicative Gating (adds h*f(x,h) nonlinearity after GRU)')
     parser.add_argument('--mamba_d_state', type=int, default=16,
                         help='Mamba SSM state dimension (default 16 for Mamba, 64 for Mamba2)')
     parser.add_argument('--mamba_expand', type=int, default=2,
@@ -1589,6 +1609,7 @@ def main():
             "use_mamba2": args.use_mamba2,
             "use_hybrid_mamba2_gru": args.use_hybrid_mamba2_gru,
             "use_mamba2_ffn3": args.use_mamba2_ffn3,
+            "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
             "mamba_d_state": args.mamba_d_state,
             "mamba_expand": args.mamba_expand,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
