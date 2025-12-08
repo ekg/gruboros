@@ -28,13 +28,13 @@ echo "Log file: $LOG_FILE"
     --tokenizer tiktoken \
     --tiktoken_encoding p50k_base \
     --dim 2048 \
-    --depth 28 \
+    --depth 27 \
     --expansion_factor 1.0 \
     --ff_mult 0.0 \
     --dropout 0.0 \
     --use_cudnn_mult_gru \
-    --chunk_size 512 \
-    --batch_size 64 \
+    --chunk_size 256 \
+    --batch_size 48 \
     --grad_accum 1 \
     --train_steps 10000 \
     --lr 0.001 \

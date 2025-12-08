@@ -1084,6 +1084,21 @@ def get_model(model_config):
         print(f"Using CuDNNGRU_BilinearLM: dim={bilinear_config['dim']}, depth={bilinear_config['depth']}, bilinear_rank={bilinear_config['bilinear_rank']}")
         return CuDNNGRU_BilinearLM(**bilinear_config)
 
+    # Use plain cuDNN GRU (no modifications - pure baseline)
+    if model_config.get('use_cudnn_plain_gru', False):
+        from mingru.cudnn_gru_plain import PlainCuDNNGRU_LM
+        plain_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'ff_mult': model_config.get('ff_mult', 0.0),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using PlainCuDNNGRU_LM: dim={plain_config['dim']}, depth={plain_config['depth']} (no modifications, pure GRU baseline)")
+        return PlainCuDNNGRU_LM(**plain_config)
+
     # Use deep normal-space GRU model if requested (RECOMMENDED!)
     if model_config.get('use_deep_normal_gru', False):
         from mingru.deep_normal_gru_lm import DeepNormalGRULM
@@ -1269,6 +1284,8 @@ def get_args():
                         help='Use cuDNN GRU + Multiplicative Gating (adds h*f(x,h) nonlinearity after GRU)')
     parser.add_argument('--use_cudnn_bilinear_gru', action='store_true',
                         help='Use cuDNN GRU + Bilinear interactions (true second-order h×x terms)')
+    parser.add_argument('--use_cudnn_plain_gru', action='store_true',
+                        help='Use plain cuDNN GRU baseline (no modifications, pure GRU + residual)')
     parser.add_argument('--mamba_d_state', type=int, default=16,
                         help='Mamba SSM state dimension (default 16 for Mamba, 64 for Mamba2)')
     parser.add_argument('--mamba_expand', type=int, default=2,
@@ -1630,6 +1647,7 @@ def main():
             "use_mamba2_ffn3": args.use_mamba2_ffn3,
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
             "use_cudnn_bilinear_gru": args.use_cudnn_bilinear_gru,
+            "use_cudnn_plain_gru": args.use_cudnn_plain_gru,
             "mamba_d_state": args.mamba_d_state,
             "mamba_expand": args.mamba_expand,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,

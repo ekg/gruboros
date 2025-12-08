@@ -1049,9 +1049,17 @@ class EvolutionaryTrainingNode:
             if self.forward_pass_count == 1:
                 self.in_forward_pass.set()
         # Save hidden states for potential restoration (only from training thread)
+        # Handle both flat tensors and tuples (e.g., EMA GRU returns (h_fast, h_slow))
+        def clone_hidden(h):
+            if h is None:
+                return None
+            if isinstance(h, tuple):
+                return tuple(x.clone() for x in h)
+            return h.clone()
+
         if hidden_states is not None:
             self.hidden_state_cache = {
-                'hidden': [h.clone() if h is not None else None for h in hidden_states],
+                'hidden': [clone_hidden(h) for h in hidden_states],
                 'conv': [b.clone() if b is not None else None for b in (conv_buffers or [])]
             }
     

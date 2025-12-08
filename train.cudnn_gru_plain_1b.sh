@@ -1,25 +1,25 @@
 #!/bin/bash
-# cuDNN GRU + Bilinear (true second-order h×x interactions) 1B training
-# Tests the multiplicative RNN hypothesis: bilinear terms (W_x·x) ⊙ (W_h·h)
-# enable XOR-like reasoning that first-order models cannot do
+# Plain cuDNN GRU baseline 1B training
+# No modifications - pure GRU + residual + LayerNorm
+# This establishes a clean baseline for comparison with Mamba2 and other models
 #
-# References:
-# - Sutskever 2011 "Generating Text with RNNs" (MRNN)
-# - Krause 2016 "Multiplicative LSTM"
-# - Wu 2016 "On Multiplicative Integration with RNNs"
+# Key settings:
+# - 512 chunk size (matching Mamba2 config)
+# - depth=36 for ~1.01B params
+# - No EMA, no bilinear, no multiplicative modifications
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_cudnn_bilinear_gru_1b"
-LOG_FILE="logs/cudnn_bilinear_gru_1b_${TIMESTAMP}.log"
+OUTPUT_DIR="/mnt/nvme2n1/erikg/minlms/${TIMESTAMP}_cudnn_plain_gru_1b"
+LOG_FILE="logs/cudnn_plain_gru_1b_${TIMESTAMP}.log"
 
 mkdir -p "$OUTPUT_DIR"
 mkdir -p logs
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MASTER_ADDR=127.0.0.1
-export MASTER_PORT=29511
+export MASTER_PORT=29512
 
-echo "Starting cuDNN GRU + Bilinear 1B training at $(date)"
+echo "Starting plain cuDNN GRU 1B baseline training at $(date)"
 echo "Output dir: $OUTPUT_DIR"
 echo "Log file: $LOG_FILE"
 
@@ -33,13 +33,13 @@ echo "Log file: $LOG_FILE"
     --tokenizer tiktoken \
     --tiktoken_encoding p50k_base \
     --dim 2048 \
-    --depth 22 \
+    --depth 36 \
     --expansion_factor 1.0 \
     --ff_mult 0.0 \
     --dropout 0.0 \
-    --use_cudnn_bilinear_gru \
+    --use_cudnn_plain_gru \
     --chunk_size 256 \
-    --batch_size 48 \
+    --batch_size 32 \
     --grad_accum 1 \
     --train_steps 10000 \
     --lr 0.001 \

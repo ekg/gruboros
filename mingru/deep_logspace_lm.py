@@ -150,6 +150,12 @@ class DeepLogSpaceGRULM(Module):
             # Save input for residual
             residual = x
 
+            # DEBUG: First 3 steps, first 3 layers
+            if not hasattr(self, '_debug_layer_step'):
+                self._debug_layer_step = 0
+            if self._debug_layer_step < 3 and i < 3 and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+                print(f"[DEBUG L{i}] residual: mean={residual.mean().item():.4f}, std={residual.std().item():.4f}")
+
             # Pre-normalization
             x_norm = ln(x)
 
@@ -161,6 +167,10 @@ class DeepLogSpaceGRULM(Module):
                 doc_boundaries=doc_boundaries
             )
 
+            # DEBUG: Check GRU output
+            if self._debug_layer_step < 3 and i < 3 and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+                print(f"[DEBUG L{i}] x_out: mean={x_out.mean().item():.4f}, std={x_out.std().item():.4f}, max={x_out.abs().max().item():.4f}")
+
             # Residual connection (KEY for deep networks!)
             x = residual + x_out
 
@@ -171,11 +181,31 @@ class DeepLogSpaceGRULM(Module):
             # Save hidden state for next iteration
             next_hiddens.append(log_h)
 
+        # Increment debug counter after all layers
+        if hasattr(self, '_debug_layer_step') and self._debug_layer_step < 3:
+            self._debug_layer_step += 1
+
+        # DEBUG: Log before final norm
+        if not hasattr(self, '_debug_step'):
+            self._debug_step = 0
+        if self._debug_step < 3 and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+            print(f"[DEBUG FWD {self._debug_step}] x pre-final-norm: mean={x.mean().item():.4f}, std={x.std().item():.4f}")
+
         # Final normalization
         x = self.final_norm(x)
 
+        # DEBUG: Log after final norm
+        if self._debug_step < 3 and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+            print(f"[DEBUG FWD {self._debug_step}] x post-final-norm: mean={x.mean().item():.4f}, std={x.std().item():.4f}")
+
         # Project to vocabulary using tied embedding weights
         logits = F.linear(x, self.token_emb.weight)  # [B, T, V]
+
+        # DEBUG: Log logits
+        if self._debug_step < 3 and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+            self._debug_step += 1
+            print(f"[DEBUG FWD {self._debug_step-1}] logits: mean={logits.mean().item():.4f}, std={logits.std().item():.4f}, max={logits.max().item():.4f}")
+            print(f"[DEBUG FWD {self._debug_step-1}] emb_weight: mean={self.token_emb.weight.mean().item():.6f}, std={self.token_emb.weight.std().item():.6f}")
 
         if return_loss:
             # Compute cross-entropy loss

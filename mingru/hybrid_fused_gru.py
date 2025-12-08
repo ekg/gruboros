@@ -210,13 +210,14 @@ class HybridFusedGRU(nn.Module):
     This should be faster than pure Triton but with fusion benefits.
     """
     
-    def __init__(self, dim: int, expansion_factor: float = 1.5, z_bias_input: float = -2.0, z_bias_hidden: float = -2.0, recurrence_chunk_size: int = 64, **kwargs):
+    def __init__(self, dim: int, expansion_factor: float = 1.5, z_bias_input: float = -2.0, z_bias_hidden: float = -2.0, recurrence_chunk_size: int = 64, use_identity_init: bool = False, **kwargs):
         super().__init__()
         self.recurrence_chunk_size = recurrence_chunk_size
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
         self.z_bias_input = z_bias_input
         self.z_bias_hidden = z_bias_hidden
+        self.use_identity_init = use_identity_init
         
         # Standard GRU weights
         self.input_projection = nn.Linear(dim, 3 * self.dim_inner)
@@ -248,9 +249,16 @@ class HybridFusedGRU(nn.Module):
                 else:  # hidden_projection
                     lin.bias[H:2*H].fill_(self.z_bias_hidden)  # bias the update gate z on hidden
         
-        # Residual projection should start as identity
+        # Residual projection initialization
         if not isinstance(self.to_out, nn.Identity):
-            nn.init.constant_(self.to_out.weight, 0.0)
+            if self.use_identity_init:
+                # Small random init for deep networks (NOT identity - too strong with residuals!)
+                # Identity would create passthrough, amplifying signal through deep residual stack
+                # Use small init scaled for deep networks
+                nn.init.normal_(self.to_out.weight, mean=0.0, std=0.01)
+            else:
+                # Zero init (default, relies on residuals for gradient flow)
+                nn.init.constant_(self.to_out.weight, 0.0)
     
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False, doc_boundaries=None):
         if x.dim() == 4 and x.size(2) == 1:
