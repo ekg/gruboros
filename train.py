@@ -1067,6 +1067,23 @@ def get_model(model_config):
         print(f"Using CuDNNGRU_MultLM: dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}")
         return CuDNNGRU_MultLM(**mult_config)
 
+    # Use cuDNN GRU + Bilinear (true second-order h×x interactions)
+    if model_config.get('use_cudnn_bilinear_gru', False):
+        from mingru.cudnn_gru_bilinear import CuDNNGRU_BilinearLM
+        bilinear_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'bilinear_rank': model_config['dim'],  # Full rank bilinear
+            'use_gated_bilinear': True,  # Gate the bilinear term
+            'ff_mult': model_config.get('ff_mult', 0.0),  # Optional FFN
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using CuDNNGRU_BilinearLM: dim={bilinear_config['dim']}, depth={bilinear_config['depth']}, bilinear_rank={bilinear_config['bilinear_rank']}")
+        return CuDNNGRU_BilinearLM(**bilinear_config)
+
     # Use deep normal-space GRU model if requested (RECOMMENDED!)
     if model_config.get('use_deep_normal_gru', False):
         from mingru.deep_normal_gru_lm import DeepNormalGRULM
@@ -1250,6 +1267,8 @@ def get_args():
                         help='Use Mamba2 + 3-layer FFN (arXiv:2505.06633: d→4d→4d→d with GELU, no TBPTT)')
     parser.add_argument('--use_cudnn_mult_gru', action='store_true',
                         help='Use cuDNN GRU + Multiplicative Gating (adds h*f(x,h) nonlinearity after GRU)')
+    parser.add_argument('--use_cudnn_bilinear_gru', action='store_true',
+                        help='Use cuDNN GRU + Bilinear interactions (true second-order h×x terms)')
     parser.add_argument('--mamba_d_state', type=int, default=16,
                         help='Mamba SSM state dimension (default 16 for Mamba, 64 for Mamba2)')
     parser.add_argument('--mamba_expand', type=int, default=2,
@@ -1610,6 +1629,7 @@ def main():
             "use_hybrid_mamba2_gru": args.use_hybrid_mamba2_gru,
             "use_mamba2_ffn3": args.use_mamba2_ffn3,
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
+            "use_cudnn_bilinear_gru": args.use_cudnn_bilinear_gru,
             "mamba_d_state": args.mamba_d_state,
             "mamba_expand": args.mamba_expand,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
