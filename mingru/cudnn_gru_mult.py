@@ -42,6 +42,7 @@ class CuDNNGRU_Mult(nn.Module):
         gate_expansion: float = 1.0,  # How big is the gate hidden dim
         use_input_gate: bool = True,  # Gate depends on input x
         use_hidden_gate: bool = True,  # Gate depends on hidden h
+        use_glu_gate: bool = False,  # GLU-style: split h into h1 and gate
         layer_idx: int = None,
         num_layers: int = None,
         **kwargs  # Ignore other params for API compat
@@ -53,6 +54,7 @@ class CuDNNGRU_Mult(nn.Module):
         self.gate_dim = int(self.dim_inner * gate_expansion)
         self.use_input_gate = use_input_gate
         self.use_hidden_gate = use_hidden_gate
+        self.use_glu_gate = use_glu_gate
 
         # === cuDNN GRU ===
         self.gru = nn.GRU(
@@ -63,27 +65,38 @@ class CuDNNGRU_Mult(nn.Module):
             bidirectional=False
         )
 
-        # === Multiplicative Gate ===
-        # gate = σ(W_x @ x + W_h @ h + b)
-        # This creates x-dependent and h-dependent gating
-
-        if use_input_gate:
-            self.gate_x = nn.Linear(dim, self.gate_dim, bias=False)
-        else:
+        if use_glu_gate:
+            # === GLU-style Gate (Option 3) ===
+            # Project h to 2x, split, apply GLU: out = h1 * σ(h2)
+            # This tests: is x-dependence in gate critical, or is h-dependent enough?
+            self.glu_proj = nn.Linear(self.dim_inner, 2 * self.dim_inner, bias=True)
             self.gate_x = None
-
-        if use_hidden_gate:
-            self.gate_h = nn.Linear(self.dim_inner, self.gate_dim, bias=False)
-        else:
             self.gate_h = None
-
-        self.gate_bias = nn.Parameter(torch.zeros(self.gate_dim))
-
-        # If gate_dim != dim_inner, need projection
-        if self.gate_dim != self.dim_inner:
-            self.gate_proj = nn.Linear(self.gate_dim, self.dim_inner, bias=False)
-        else:
+            self.gate_bias = None
             self.gate_proj = None
+        else:
+            # === Multiplicative Gate ===
+            # gate = σ(W_x @ x + W_h @ h + b)
+            # This creates x-dependent and h-dependent gating
+            self.glu_proj = None
+
+            if use_input_gate:
+                self.gate_x = nn.Linear(dim, self.gate_dim, bias=False)
+            else:
+                self.gate_x = None
+
+            if use_hidden_gate:
+                self.gate_h = nn.Linear(self.dim_inner, self.gate_dim, bias=False)
+            else:
+                self.gate_h = None
+
+            self.gate_bias = nn.Parameter(torch.zeros(self.gate_dim))
+
+            # If gate_dim != dim_inner, need projection
+            if self.gate_dim != self.dim_inner:
+                self.gate_proj = nn.Linear(self.gate_dim, self.dim_inner, bias=False)
+            else:
+                self.gate_proj = None
 
         # === Output projection ===
         if expansion_factor != 1.0:
@@ -96,17 +109,20 @@ class CuDNNGRU_Mult(nn.Module):
     def _init_weights(self):
         # Initialize gate projections with small values
         # Bias at 0 means gate starts at 0.5 (neutral)
-        if self.gate_x is not None:
-            nn.init.normal_(self.gate_x.weight, std=0.02)
-        if self.gate_h is not None:
-            nn.init.normal_(self.gate_h.weight, std=0.02)
+        if self.use_glu_gate:
+            nn.init.normal_(self.glu_proj.weight, std=0.02)
+            nn.init.zeros_(self.glu_proj.bias)
+        else:
+            if self.gate_x is not None:
+                nn.init.normal_(self.gate_x.weight, std=0.02)
+            if self.gate_h is not None:
+                nn.init.normal_(self.gate_h.weight, std=0.02)
+            if self.gate_proj is not None:
+                nn.init.normal_(self.gate_proj.weight, std=0.02)
 
         # Output projection: small init for residual learning
         if not isinstance(self.to_out, nn.Identity):
             nn.init.normal_(self.to_out.weight, std=0.02 / math.sqrt(2))
-
-        if self.gate_proj is not None:
-            nn.init.normal_(self.gate_proj.weight, std=0.02)
 
     def forward(self, x, prev_hidden=None, return_next_prev_hidden=False, doc_boundaries=None):
         """
@@ -149,25 +165,32 @@ class CuDNNGRU_Mult(nn.Module):
         h_seq = h_seq.to(dtype)
         h_final = h_final.squeeze(0).to(dtype)
 
-        # === Multiplicative Gate ===
-        # gate = σ(W_x @ x + W_h @ h + b)
-        gate_logits = self.gate_bias.view(1, 1, -1)
+        if self.use_glu_gate:
+            # === GLU-style Gate (Option 3) ===
+            # Project h to 2x, split, apply GLU: out = h1 * σ(h2)
+            proj = self.glu_proj(h_seq)  # [B, T, 2*dim_inner]
+            h1, h2 = proj.chunk(2, dim=-1)  # Each: [B, T, dim_inner]
+            h_gated = h1 * torch.sigmoid(h2)  # GLU gating
+        else:
+            # === Multiplicative Gate ===
+            # gate = σ(W_x @ x + W_h @ h + b)
+            gate_logits = self.gate_bias.view(1, 1, -1)
 
-        if self.gate_x is not None:
-            gate_logits = gate_logits + self.gate_x(x)  # [B, T, gate_dim]
+            if self.gate_x is not None:
+                gate_logits = gate_logits + self.gate_x(x)  # [B, T, gate_dim]
 
-        if self.gate_h is not None:
-            gate_logits = gate_logits + self.gate_h(h_seq)  # [B, T, gate_dim]
+            if self.gate_h is not None:
+                gate_logits = gate_logits + self.gate_h(h_seq)  # [B, T, gate_dim]
 
-        gate = torch.sigmoid(gate_logits)  # [B, T, gate_dim]
+            gate = torch.sigmoid(gate_logits)  # [B, T, gate_dim]
 
-        # Project gate to match h_seq dim if needed
-        if self.gate_proj is not None:
-            gate = self.gate_proj(gate)
+            # Project gate to match h_seq dim if needed
+            if self.gate_proj is not None:
+                gate = self.gate_proj(gate)
 
-        # Apply multiplicative gating: h' = h * gate
-        # This is the key nonlinear interaction!
-        h_gated = h_seq * gate  # [B, T, dim_inner]
+            # Apply multiplicative gating: h' = h * gate
+            # This is the key nonlinear interaction!
+            h_gated = h_seq * gate  # [B, T, dim_inner]
 
         # === Output ===
         out = self.to_out(h_gated)
@@ -194,6 +217,7 @@ class CuDNNGRU_MultLM(nn.Module):
         gate_expansion: float = 1.0,
         use_input_gate: bool = True,
         use_hidden_gate: bool = True,
+        use_glu_gate: bool = False,  # GLU-style: split h into h1 and gate
         ff_mult: float = 0.0,  # Optional FFN (0 = disabled)
         dropout: float = 0.0,
         tie_weights: bool = True,
@@ -221,6 +245,7 @@ class CuDNNGRU_MultLM(nn.Module):
                     gate_expansion=gate_expansion,
                     use_input_gate=use_input_gate,
                     use_hidden_gate=use_hidden_gate,
+                    use_glu_gate=use_glu_gate,
                     layer_idx=i,
                     num_layers=depth,
                 )
