@@ -1059,7 +1059,7 @@ def get_model(model_config):
             'expansion_factor': model_config['expansion'],
             'gate_expansion': 1.0,  # Gate matches hidden dim
             'use_input_gate': True,  # Gate depends on input x
-            'use_hidden_gate': True,  # Gate depends on hidden h
+            'use_hidden_gate': not model_config.get('input_only_gate', False),  # Gate depends on hidden h (disabled for ablation)
             'ff_mult': model_config.get('ff_mult', 0.0),  # Optional FFN
             'dropout': model_config['dropout'],
             'tie_weights': True,
@@ -1098,6 +1098,21 @@ def get_model(model_config):
         }
         print(f"Using PlainCuDNNGRU_LM: dim={plain_config['dim']}, depth={plain_config['depth']} (no modifications, pure GRU baseline)")
         return PlainCuDNNGRU_LM(**plain_config)
+
+    # Use EMA + Input Gate (Option 2: minimal architecture testing selectivity hypothesis)
+    if model_config.get('use_ema_input_gate', False):
+        from mingru.ema_input_gate import EMAInputGateLM
+        ema_gate_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'ema_alpha': model_config.get('ema_alpha', 0.01),
+            'ff_mult': model_config.get('ff_mult', 4.0),  # Need FFN for params
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using EMAInputGateLM: dim={ema_gate_config['dim']}, depth={ema_gate_config['depth']}, ff_mult={ema_gate_config['ff_mult']} (EMA + input-dependent gate)")
+        return EMAInputGateLM(**ema_gate_config)
 
     # Use deep normal-space GRU model if requested (RECOMMENDED!)
     if model_config.get('use_deep_normal_gru', False):
@@ -1286,6 +1301,10 @@ def get_args():
                         help='Use cuDNN GRU + Bilinear interactions (true second-order h×x terms)')
     parser.add_argument('--use_cudnn_plain_gru', action='store_true',
                         help='Use plain cuDNN GRU baseline (no modifications, pure GRU + residual)')
+    parser.add_argument('--use_ema_input_gate', action='store_true',
+                        help='Use EMA + input-dependent gate (minimal selectivity test)')
+    parser.add_argument('--input_only_gate', action='store_true',
+                        help='For Mult GRU: gate depends only on input x, not hidden h (ablation test)')
     parser.add_argument('--mamba_d_state', type=int, default=16,
                         help='Mamba SSM state dimension (default 16 for Mamba, 64 for Mamba2)')
     parser.add_argument('--mamba_expand', type=int, default=2,
@@ -1648,6 +1667,8 @@ def main():
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
             "use_cudnn_bilinear_gru": args.use_cudnn_bilinear_gru,
             "use_cudnn_plain_gru": args.use_cudnn_plain_gru,
+            "use_ema_input_gate": args.use_ema_input_gate,
+            "input_only_gate": args.input_only_gate,
             "mamba_d_state": args.mamba_d_state,
             "mamba_expand": args.mamba_expand,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
