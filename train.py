@@ -1049,6 +1049,25 @@ def get_model(model_config):
         print(f"Using Mamba2FFN3LM: dim={ffn3_config['dim']}, depth={ffn3_config['depth']}, d_state={ffn3_config['mamba_d_state']}, ff_expansion={ffn3_config['ff_expansion']}")
         return Mamba2FFN3LM(**ffn3_config)
 
+    # Use cuDNN GRU + Conv1d + Multiplicative Gating (Mamba2-style local context)
+    if model_config.get('use_cudnn_conv_gru', False):
+        from mingru.cudnn_gru_conv import CuDNNGRU_ConvLM
+        conv_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'gate_expansion': 1.0,
+            'conv_kernel': 4,  # Like Mamba2
+            'use_input_gate': True,
+            'use_hidden_gate': True,
+            'ff_mult': model_config.get('ff_mult', 0.0),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using CuDNNGRU_ConvLM: dim={conv_config['dim']}, depth={conv_config['depth']}, conv_kernel={conv_config['conv_kernel']}")
+        return CuDNNGRU_ConvLM(**conv_config)
+
     # Use cuDNN GRU + Multiplicative Gating (for testing nonlinearity hypothesis)
     if model_config.get('use_cudnn_mult_gru', False):
         from mingru.cudnn_gru_mult import CuDNNGRU_MultLM
@@ -1296,6 +1315,8 @@ def get_args():
                         help='Use Hybrid Mamba2+cuDNN GRU (parallel paths with learned mixing, no TBPTT)')
     parser.add_argument('--use_mamba2_ffn3', action='store_true',
                         help='Use Mamba2 + 3-layer FFN (arXiv:2505.06633: d→4d→4d→d with GELU, no TBPTT)')
+    parser.add_argument('--use_cudnn_conv_gru', action='store_true',
+                        help='Use cuDNN GRU + Causal Conv1d (Mamba2-style 4-wide local context before GRU)')
     parser.add_argument('--use_cudnn_mult_gru', action='store_true',
                         help='Use cuDNN GRU + Multiplicative Gating (adds h*f(x,h) nonlinearity after GRU)')
     parser.add_argument('--use_cudnn_bilinear_gru', action='store_true',
@@ -1667,6 +1688,7 @@ def main():
             "use_mamba2": args.use_mamba2,
             "use_hybrid_mamba2_gru": args.use_hybrid_mamba2_gru,
             "use_mamba2_ffn3": args.use_mamba2_ffn3,
+            "use_cudnn_conv_gru": args.use_cudnn_conv_gru,
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
             "use_cudnn_bilinear_gru": args.use_cudnn_bilinear_gru,
             "use_cudnn_plain_gru": args.use_cudnn_plain_gru,
