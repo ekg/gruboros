@@ -1119,6 +1119,22 @@ def get_model(model_config):
         print(f"Using PlainCuDNNGRU_LM: dim={plain_config['dim']}, depth={plain_config['depth']} (no modifications, pure GRU baseline)")
         return PlainCuDNNGRU_LM(**plain_config)
 
+    # Use cuDNN GRU + 3-layer FFN Gate (deep selectivity mechanism)
+    if model_config.get('use_cudnn_ffn3_gru', False):
+        from mingru.cudnn_gru_ffn3 import CuDNNGRU_FFN3_LM
+        ffn3_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'ffn_expand': model_config.get('ffn_expand', 2.0),  # FFN hidden dim multiplier
+            'ff_mult': model_config.get('ff_mult', 0.0),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using CuDNNGRU_FFN3_LM: dim={ffn3_config['dim']}, depth={ffn3_config['depth']}, ffn_expand={ffn3_config['ffn_expand']} (3-layer FFN selectivity gate on concat[x,h])")
+        return CuDNNGRU_FFN3_LM(**ffn3_config)
+
     # Use EMA + Input Gate (Option 2: minimal architecture testing selectivity hypothesis)
     if model_config.get('use_ema_input_gate', False):
         from mingru.ema_input_gate import EMAInputGateLM
@@ -1323,6 +1339,10 @@ def get_args():
                         help='Use cuDNN GRU + Bilinear interactions (true second-order h×x terms)')
     parser.add_argument('--use_cudnn_plain_gru', action='store_true',
                         help='Use plain cuDNN GRU baseline (no modifications, pure GRU + residual)')
+    parser.add_argument('--use_cudnn_ffn3_gru', action='store_true',
+                        help='Use cuDNN GRU + 3-layer FFN selectivity gate (deep selectivity on concat[x,h])')
+    parser.add_argument('--ffn_expand', type=float, default=2.0,
+                        help='For FFN3 GRU: hidden dim multiplier for FFN gate (default 2.0)')
     parser.add_argument('--use_ema_input_gate', action='store_true',
                         help='Use EMA + input-dependent gate (minimal selectivity test)')
     parser.add_argument('--input_only_gate', action='store_true',
@@ -1692,6 +1712,8 @@ def main():
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
             "use_cudnn_bilinear_gru": args.use_cudnn_bilinear_gru,
             "use_cudnn_plain_gru": args.use_cudnn_plain_gru,
+            "use_cudnn_ffn3_gru": args.use_cudnn_ffn3_gru,
+            "ffn_expand": args.ffn_expand,
             "use_ema_input_gate": args.use_ema_input_gate,
             "input_only_gate": args.input_only_gate,
             "use_glu_gate": args.use_glu_gate,
