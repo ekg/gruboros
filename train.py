@@ -1083,8 +1083,11 @@ def get_model(model_config):
             'ff_mult': model_config.get('ff_mult', 0.0),  # Optional FFN
             'dropout': model_config['dropout'],
             'tie_weights': True,
+            'use_checkpointing': model_config.get('use_checkpointing', False),
+            'inner_chunk_size': model_config.get('inner_chunk_size', 128),
         }
-        print(f"Using CuDNNGRU_MultLM: dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}")
+        ckpt_str = f", checkpointing={mult_config['inner_chunk_size']}" if mult_config['use_checkpointing'] else ""
+        print(f"Using CuDNNGRU_MultLM: dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}{ckpt_str}")
         return CuDNNGRU_MultLM(**mult_config)
 
     # Use cuDNN GRU + Bilinear (true second-order h×x interactions)
@@ -1349,6 +1352,10 @@ def get_args():
                         help='For Mult GRU: gate depends only on input x, not hidden h (ablation test)')
     parser.add_argument('--use_glu_gate', action='store_true',
                         help='For Mult GRU: use GLU-style gate (split h, gate with itself, no x dependence)')
+    parser.add_argument('--use_checkpointing', action='store_true',
+                        help='Enable gradient checkpointing for CuDNN Mult GRU (trades compute for memory)')
+    parser.add_argument('--inner_chunk_size', type=int, default=128,
+                        help='Chunk size for gradient checkpointing in Mult GRU (default 128)')
     parser.add_argument('--mamba_d_state', type=int, default=16,
                         help='Mamba SSM state dimension (default 16 for Mamba, 64 for Mamba2)')
     parser.add_argument('--mamba_expand', type=int, default=2,
@@ -1717,6 +1724,8 @@ def main():
             "use_ema_input_gate": args.use_ema_input_gate,
             "input_only_gate": args.input_only_gate,
             "use_glu_gate": args.use_glu_gate,
+            "use_checkpointing": args.use_checkpointing,
+            "inner_chunk_size": args.inner_chunk_size,
             "mamba_d_state": args.mamba_d_state,
             "mamba_expand": args.mamba_expand,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
@@ -2722,6 +2731,32 @@ def main():
     if args.filesystem_coordinator:
         evolutionary_node.stop_gossip_protocol()
     # checkpoint_manager.stop()  # DISABLED - no background thread
+
+    # Save final checkpoint if not already saved at this step
+    final_step = step - 1  # The last completed step
+    if global_rank == 0 and args.save_every > 0 and final_step % args.save_every != 0:
+        print(f"Rank 0: Saving final checkpoint at step {final_step}, loss {chunk_loss:.4f}")
+
+        checkpoint_data_cpu = {
+            'step': final_step,
+            'model_state_dict': {k: v.cpu() for k, v in model.state_dict().items()},
+            'optimizer_state_dict': {
+                k: {k2: v2.cpu() if torch.is_tensor(v2) else v2 for k2, v2 in v.items()}
+                if isinstance(v, dict) else v
+                for k, v in optimizer.state_dict().items()
+            },
+            'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+            'training_loss': chunk_loss,
+            'validation_fitness': current_validation_fitness,
+            'model_config': model_config
+        }
+
+        # Save synchronously since training is complete
+        save_checkpoint_atomic(checkpoint_data_cpu, checkpoint_dir, final_step, global_rank, chunk_loss)
+        update_symlinks_and_cleanup(checkpoint_dir, args.keep_checkpoints,
+                                    args.keep_elite, args.milestone_every)
+        print(f"Rank 0: Final checkpoint saved.")
+
     if global_rank == 0: print("\nTraining complete.")
 
 if __name__ == "__main__":
