@@ -229,10 +229,19 @@ class FlashGRU(nn.Module):
         self.input_proj = nn.Linear(dim, self.num_gates * self.num_heads * self.head_dim, bias=False)
 
         # Recurrent weights: [3, N, D, D] for all 3 GRU gates
+        # Initialize each head's weight matrix independently with orthogonal init
+        # and scale to prevent gradient explosion with deep networks
         self.recurrent_weights = nn.Parameter(
-            torch.randn(self.num_gates, self.num_heads, self.head_dim, self.head_dim)
+            torch.zeros(self.num_gates, self.num_heads, self.head_dim, self.head_dim)
         )
-        nn.init.orthogonal_(self.recurrent_weights.view(self.num_gates, -1))
+        # Initialize each (gate, head) combination with orthogonal weights
+        with torch.no_grad():
+            for g in range(self.num_gates):
+                for h in range(self.num_heads):
+                    nn.init.orthogonal_(self.recurrent_weights[g, h])
+            # Scale down aggressively for stability with deep networks (50+ layers)
+            # FlashRNN bf16 is numerically sensitive - use very conservative 0.01 scaling
+            self.recurrent_weights.mul_(0.01)
 
         # Bias: [4, N, D] - 4 gates for kernel, but gate 0 is unused (set to 0)
         self.bias = nn.Parameter(torch.zeros(self.num_gates, self.num_heads, self.head_dim))
