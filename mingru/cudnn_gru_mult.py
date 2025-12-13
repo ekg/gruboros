@@ -19,6 +19,7 @@ can implement XOR-like operations that pure linear recurrences cannot.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as ckpt
 import math
 
 
@@ -206,6 +207,14 @@ class CuDNNGRU_MultLM(nn.Module):
 
     This is a minimal test of whether multiplicative gating after GRU
     improves language modeling compared to standard GRU.
+
+    Gradient Checkpointing:
+        When use_checkpointing=True, the sequence is processed in chunks of
+        inner_chunk_size tokens. Hidden states are saved at chunk boundaries
+        and activations are recomputed during backward pass.
+
+        Memory: O(T/K + K) instead of O(T) where K = inner_chunk_size
+        Compute: ~2x forward passes (recompute during backward)
     """
 
     def __init__(
@@ -221,11 +230,15 @@ class CuDNNGRU_MultLM(nn.Module):
         ff_mult: float = 0.0,  # Optional FFN (0 = disabled)
         dropout: float = 0.0,
         tie_weights: bool = True,
+        use_checkpointing: bool = False,  # Enable gradient checkpointing
+        inner_chunk_size: int = 128,  # Chunk size for checkpointing
     ):
         super().__init__()
 
         self.dim = dim
         self.depth = depth
+        self.use_checkpointing = use_checkpointing
+        self.inner_chunk_size = inner_chunk_size
 
         # Token embedding
         self.token_emb = nn.Embedding(num_tokens, dim)
@@ -276,6 +289,66 @@ class CuDNNGRU_MultLM(nn.Module):
                 nn.init.normal_(ff[0].weight, std=0.02)
                 nn.init.normal_(ff[2].weight, std=0.02 / math.sqrt(2 * self.depth))
 
+    def _process_chunk(self, h_chunk, layer_hiddens):
+        """
+        Process a single chunk through all layers.
+
+        Args:
+            h_chunk: [B, chunk_len, D] embedded input chunk
+            layer_hiddens: list of [B, dim_inner] hidden states per layer
+
+        Returns:
+            h_chunk: [B, chunk_len, D] output
+            new_hiddens: list of updated hidden states
+        """
+        new_hiddens = []
+        for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
+            prev_h = layer_hiddens[i] if layer_hiddens else None
+            layer_out, next_h = layer(norm(h_chunk), prev_hidden=prev_h,
+                                       return_next_prev_hidden=True)
+            h_chunk = h_chunk + layer_out
+            new_hiddens.append(next_h)
+
+            if self.ff_layers is not None:
+                h_chunk = h_chunk + self.ff_layers[i](self.ff_norms[i](h_chunk))
+
+        return h_chunk, new_hiddens
+
+    def _checkpointed_chunk(self, h_chunk, layer_hiddens):
+        """Wrapper for checkpointing that handles hidden states."""
+        # torch.utils.checkpoint requires all inputs to be tensors
+        # Pack hiddens into a single tensor for checkpointing
+        if layer_hiddens:
+            packed_hiddens = torch.stack(layer_hiddens, dim=0)  # [depth, B, dim_inner]
+        else:
+            packed_hiddens = None
+
+        def inner_fn(h_chunk, packed_hiddens):
+            if packed_hiddens is not None:
+                hiddens = [packed_hiddens[i] for i in range(packed_hiddens.size(0))]
+            else:
+                hiddens = None
+            out, new_hiddens = self._process_chunk(h_chunk, hiddens)
+            new_packed = torch.stack(new_hiddens, dim=0)
+            return out, new_packed
+
+        if packed_hiddens is not None:
+            out, new_packed = ckpt.checkpoint(inner_fn, h_chunk, packed_hiddens,
+                                               use_reentrant=False)
+        else:
+            # First chunk - no hidden state yet
+            # Create dummy packed_hiddens for checkpoint signature consistency
+            B = h_chunk.size(0)
+            device = h_chunk.device
+            dtype = h_chunk.dtype
+            dummy_hiddens = torch.zeros(self.depth, B, self.layers[0].dim_inner,
+                                        device=device, dtype=dtype)
+            out, new_packed = ckpt.checkpoint(inner_fn, h_chunk, dummy_hiddens,
+                                               use_reentrant=False)
+
+        new_hiddens = [new_packed[i] for i in range(new_packed.size(0))]
+        return out, new_hiddens
+
     def forward(
         self,
         x,
@@ -290,19 +363,42 @@ class CuDNNGRU_MultLM(nn.Module):
     ):
         """
         Forward pass matching train.py interface.
+
+        When use_checkpointing=True:
+            - Processes sequence in chunks of inner_chunk_size
+            - Saves hidden states at boundaries, recomputes activations in backward
+            - Memory: O(depth * B * D + T/K * B * D) instead of O(T * B * D)
         """
+        B, T = x.shape
+
         # Embed
         h = self.token_emb(x)
         h = self.drop(h)
 
-        # Process through layers
-        for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
-            # GRU + Mult with residual
-            h = h + layer(norm(h))
+        if self.use_checkpointing and T > self.inner_chunk_size:
+            # === Chunked processing with gradient checkpointing ===
+            num_chunks = (T + self.inner_chunk_size - 1) // self.inner_chunk_size
+            outputs = []
+            layer_hiddens = prev_hiddens  # List of [B, dim_inner] per layer or None
 
-            # Optional FFN
-            if self.ff_layers is not None:
-                h = h + self.ff_layers[i](self.ff_norms[i](h))
+            for chunk_idx in range(num_chunks):
+                start = chunk_idx * self.inner_chunk_size
+                end = min(start + self.inner_chunk_size, T)
+                h_chunk = h[:, start:end, :]
+
+                # Process chunk with checkpointing
+                h_out, layer_hiddens = self._checkpointed_chunk(h_chunk, layer_hiddens)
+                outputs.append(h_out)
+
+            # Concatenate all chunks
+            h = torch.cat(outputs, dim=1)
+        else:
+            # === Standard processing (no checkpointing) ===
+            for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
+                h = h + layer(norm(h))
+
+                if self.ff_layers is not None:
+                    h = h + self.ff_layers[i](self.ff_norms[i](h))
 
         # Output
         h = self.norm_f(h)
@@ -319,7 +415,9 @@ class CuDNNGRU_MultLM(nn.Module):
         if not return_prev_hiddens and not return_next_prev_hidden:
             return loss
 
-        # No TBPTT state for now
+        # Return hidden states for TBPTT if requested
+        if self.use_checkpointing and T > self.inner_chunk_size:
+            return loss, (layer_hiddens, None)
         return loss, (None, None)
 
 
@@ -410,5 +508,67 @@ if __name__ == "__main__":
 
     loss.backward()
     print("Backward succeeded!")
+
+    # Test gradient checkpointing
+    print("\n" + "=" * 60)
+    print("Testing gradient checkpointing...")
+
+    # Small model for checkpointing test
+    model_ckpt = CuDNNGRU_MultLM(
+        num_tokens=50280,
+        dim=512,
+        depth=8,
+        expansion_factor=1.0,
+        gate_expansion=1.0,
+        use_input_gate=True,
+        use_hidden_gate=True,
+        ff_mult=0.0,
+        use_checkpointing=True,
+        inner_chunk_size=64,  # Small chunks for testing
+    ).cuda().bfloat16()
+
+    counts = count_parameters(model_ckpt)
+    print(f"Checkpointed model: {counts['total']:,} params")
+
+    # Test with sequence > inner_chunk_size to trigger checkpointing
+    x = torch.randint(0, 50280, (2, 256), device='cuda')
+    loss = model_ckpt(x)
+    print(f"Forward (checkpointed): loss={loss.item():.4f}")
+
+    loss.backward()
+    print("Backward (checkpointed) succeeded!")
+
+    # Verify outputs match between checkpointed and non-checkpointed
+    print("\n" + "=" * 60)
+    print("Verifying checkpointed vs non-checkpointed outputs match...")
+
+    model_no_ckpt = CuDNNGRU_MultLM(
+        num_tokens=50280,
+        dim=512,
+        depth=8,
+        expansion_factor=1.0,
+        gate_expansion=1.0,
+        use_input_gate=True,
+        use_hidden_gate=True,
+        ff_mult=0.0,
+        use_checkpointing=False,  # No checkpointing
+    ).cuda().bfloat16()
+
+    # Copy weights
+    model_no_ckpt.load_state_dict(model_ckpt.state_dict())
+
+    # Same input
+    torch.manual_seed(42)
+    x = torch.randint(0, 50280, (2, 256), device='cuda')
+
+    loss_ckpt = model_ckpt(x)
+    loss_no_ckpt = model_no_ckpt(x)
+
+    diff = abs(loss_ckpt.item() - loss_no_ckpt.item())
+    print(f"Loss (checkpointed): {loss_ckpt.item():.6f}")
+    print(f"Loss (no checkpoint): {loss_no_ckpt.item():.6f}")
+    print(f"Difference: {diff:.6f}")
+    assert diff < 1e-3, f"Loss mismatch! diff={diff}"
+    print("Verification passed!")
 
     print("\nDone!")
