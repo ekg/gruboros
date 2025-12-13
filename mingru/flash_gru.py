@@ -1,8 +1,146 @@
 """FlashRNN GRU wrapper for minLM compatibility"""
 
+import os
+import time
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from flashrnn import flashrnn, FlashRNNConfig
+
+# Track which (head_dim, batch_size) combos have been JIT-compiled
+_FLASHRNN_JIT_COMPILED = set()
+
+
+def precompile_flashrnn_kernels(head_dim, batch_size, device='cuda', dtype=torch.bfloat16):
+    """
+    Pre-compile FlashRNN kernels BEFORE DDP initialization.
+
+    Call this function on ALL ranks BEFORE init_process_group().
+    Uses file-based synchronization instead of DDP barriers to avoid timeouts.
+
+    FlashRNN caches compiled kernels to disk, so only one process needs to compile.
+    Other processes will use the cached version.
+
+    Args:
+        head_dim: Hidden dimension (e.g., 2048)
+        batch_size: Batch size (e.g., 64)
+        device: CUDA device
+        dtype: Data type (typically torch.bfloat16)
+    """
+    global _FLASHRNN_JIT_COMPILED
+
+    # Defensive type conversion - ensure we have plain ints
+    head_dim = int(head_dim) if not isinstance(head_dim, int) else head_dim
+    batch_size = int(batch_size) if not isinstance(batch_size, int) else batch_size
+    print(f"[FlashRNN precompile] head_dim={head_dim} (type={type(head_dim)}), batch_size={batch_size} (type={type(batch_size)})", flush=True)
+
+    config_key = (head_dim, batch_size, dtype)
+    if config_key in _FLASHRNN_JIT_COMPILED:
+        return
+
+    # Get rank from environment (set by torchrun before init_process_group)
+    rank = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', '0')))
+    world_size = int(os.environ.get('WORLD_SIZE', '1'))
+
+    dtype_str = 'bfloat16' if dtype == torch.bfloat16 else 'float32' if dtype == torch.float32 else 'float16'
+
+    # File-based synchronization (works before DDP init)
+    lock_file = f"/tmp/flashrnn_jit_lock_{head_dim}_{batch_size}_{dtype_str}"
+    done_file = f"/tmp/flashrnn_jit_done_{head_dim}_{batch_size}_{dtype_str}"
+
+    # Clean up old done file on rank 0
+    if rank == 0 and os.path.exists(done_file):
+        os.remove(done_file)
+
+    # Small delay to ensure rank 0 cleans up first
+    time.sleep(0.5)
+
+    if rank == 0:
+        print(f"[FlashRNN] Rank 0 pre-compiling JIT for head_dim={head_dim}, batch={batch_size}...", flush=True)
+        print(f"[FlashRNN] This may take 10-15 minutes for large dimensions. Please wait.", flush=True)
+
+        start_time = time.time()
+
+        # Create lock file
+        with open(lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+
+        # Compile the kernel
+        seq_len = 16
+        num_heads, num_gates = 1, 3
+
+        Wx = torch.randn(batch_size, seq_len, num_gates, num_heads, head_dim, device=device, dtype=dtype)
+        R = torch.randn(num_gates, num_heads, head_dim, head_dim, device=device, dtype=dtype)
+        b = torch.zeros(num_gates, num_heads, head_dim, device=device, dtype=dtype)
+        states = torch.zeros(1, batch_size, 1, num_heads, head_dim, device=device, dtype=dtype)
+
+        config = FlashRNNConfig(
+            function='gru',
+            backend='cuda_fused',
+            hidden_dim=head_dim,
+            num_heads=num_heads,
+            batch_size=batch_size,
+            dtype=dtype_str,
+            dtype_b=dtype_str,
+            dtype_r=dtype_str,
+            dtype_w=dtype_str,
+            dtype_s=dtype_str,
+            dtype_a=dtype_str,
+        )
+
+        _ = flashrnn(Wx=Wx, R=R, b=b, states=states, config=config)
+        torch.cuda.synchronize()
+
+        elapsed = time.time() - start_time
+        print(f"[FlashRNN] Rank 0 JIT compilation complete! Took {elapsed:.1f}s", flush=True)
+
+        # Signal completion
+        with open(done_file, 'w') as f:
+            f.write('done')
+    else:
+        # Other ranks wait for done file
+        print(f"[FlashRNN] Rank {rank} waiting for JIT compilation to complete...", flush=True)
+        wait_start = time.time()
+        max_wait = 1800  # 30 minutes max
+
+        while not os.path.exists(done_file):
+            time.sleep(5)
+            elapsed = time.time() - wait_start
+            if elapsed > max_wait:
+                raise RuntimeError(f"[FlashRNN] Rank {rank}: Timeout waiting for JIT compilation")
+            if elapsed > 60 and int(elapsed) % 60 == 0:
+                print(f"[FlashRNN] Rank {rank}: Still waiting... ({elapsed:.0f}s)", flush=True)
+
+        print(f"[FlashRNN] Rank {rank} proceeding after JIT compilation", flush=True)
+
+        # Also run flashrnn once to load cached kernel
+        seq_len = 16
+        num_heads, num_gates = 1, 3
+
+        Wx = torch.randn(batch_size, seq_len, num_gates, num_heads, head_dim, device=device, dtype=dtype)
+        R = torch.randn(num_gates, num_heads, head_dim, head_dim, device=device, dtype=dtype)
+        b = torch.zeros(num_gates, num_heads, head_dim, device=device, dtype=dtype)
+        states = torch.zeros(1, batch_size, 1, num_heads, head_dim, device=device, dtype=dtype)
+
+        config = FlashRNNConfig(
+            function='gru',
+            backend='cuda_fused',
+            hidden_dim=head_dim,
+            num_heads=num_heads,
+            batch_size=batch_size,
+            dtype=dtype_str,
+            dtype_b=dtype_str,
+            dtype_r=dtype_str,
+            dtype_w=dtype_str,
+            dtype_s=dtype_str,
+            dtype_a=dtype_str,
+        )
+
+        _ = flashrnn(Wx=Wx, R=R, b=b, states=states, config=config)
+        torch.cuda.synchronize()
+
+    _FLASHRNN_JIT_COMPILED.add(config_key)
+    print(f"[FlashRNN] Rank {rank}: Kernel ready for head_dim={head_dim}, batch={batch_size}", flush=True)
 
 
 class FlashGRU(nn.Module):
@@ -52,7 +190,8 @@ class FlashGRU(nn.Module):
         prev_conv_buffers=None,  # Unused, for API compatibility
         return_hiddens=True,
         return_next_prev_hidden=True,
-        actual_length=None  # Unused, for API compatibility
+        actual_length=None,  # Unused, for API compatibility
+        doc_boundaries=None  # Unused for now, for API compatibility
     ):
         """
         Args:
@@ -67,6 +206,9 @@ class FlashGRU(nn.Module):
         batch, seq_len, _ = x.shape
         device = x.device
         dtype = x.dtype
+
+        # Note: JIT warmup should be done via precompile_flashrnn_kernels()
+        # BEFORE DDP initialization. The kernel should already be compiled.
 
         # Project input: [B, T, dim] -> [B, T, G*N*D]
         x_proj = self.input_proj(x)  # [B, T, G*N*D]

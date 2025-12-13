@@ -1181,9 +1181,18 @@ def get_model(model_config):
         }
         return DeepLogSpaceGRULM(**logspace_config)
 
-    # Filter out deep model keys that minLM doesn't understand
+    # Only pass keys that minLM actually accepts (whitelist approach)
+    minlm_valid_keys = {
+        'num_tokens', 'dim', 'depth', 'ff_mult', 'expansion', 'conv_kernel_size',
+        'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
+        'use_persistent_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
+        'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru',
+        'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
+        'recurrence_chunk_size'
+    }
     minlm_config = {k: v for k, v in model_config.items()
-                    if k not in ('use_deep_normal_gru', 'use_logspace_gru')}
+                    if k in minlm_valid_keys}
     return minLM(**minlm_config)
 
 def parse_size_with_suffix(size_str):
@@ -1929,6 +1938,27 @@ def main():
 
     if args.schedulefree and not args.zero_order and not args.sgd: optimizer.train()
 
+    # Pre-compile FlashRNN kernels BEFORE DDP init (avoids barrier timeout)
+    # FlashRNN JIT compilation can take 10-15 minutes for large dimensions,
+    # which exceeds NCCL timeout. We use file-based synchronization instead.
+    use_flashrnn = getattr(args, 'use_flash_gru', False) or getattr(args, 'use_flash_ema_gru', False)
+    if use_flashrnn and args.ddp:
+        from mingru.flash_gru import precompile_flashrnn_kernels
+        # dim/batch_size may be nested lists if specified as positional args, handle robustly
+        dim_val = args.dim
+        while isinstance(dim_val, (list, tuple)):
+            dim_val = dim_val[0]
+        dim_val = int(dim_val)
+        batch_val = args.batch_size
+        while isinstance(batch_val, (list, tuple)):
+            batch_val = batch_val[0]
+        batch_val = int(batch_val)
+        expansion = getattr(args, 'expansion_factor', 1.0)
+        head_dim = int(dim_val * expansion)
+        dtype = torch.bfloat16 if args.bf16 else torch.float32
+        print(f"[DEBUG] FlashRNN precompile: dim_val={dim_val} type={type(dim_val)}, batch_val={batch_val} type={type(batch_val)}, head_dim={head_dim} type={type(head_dim)}", flush=True)
+        precompile_flashrnn_kernels(head_dim=head_dim, batch_size=batch_val, device=device, dtype=dtype)
+
     # Setup DDP if enabled
     if args.ddp:
         # Setup DDP groups (needed for process group initialization)
@@ -2189,17 +2219,14 @@ def main():
         if global_rank == 0 and step >= 20 and step < 120:
             prof_step_times_global[step]['data_load'] = prof_time() - prof_data_start
 
-        # DEBUG: Check token range for first few steps
-        if step < 5 and global_rank == 0:
-            import sys
-            token_min = chunk_data.min().item()
-            token_max = chunk_data.max().item()
-            token_mean = chunk_data.float().mean().item()
-            print(f"[DEBUG STEP {step}] Token stats: min={token_min}, max={token_max}, mean={token_mean:.1f}", flush=True)
-            print(f"[DEBUG STEP {step}] First 20 tokens: {chunk_data[0, :20].tolist()}", flush=True)
-            print(f"[DEBUG STEP {step}] Model training mode: {model.training}", flush=True)
-            print(f"[DEBUG STEP {step}] Grad accumulation: {accumulated_steps}/{args.grad_accum}", flush=True)
-            sys.stdout.flush()
+        # DEBUG: Check token range - DISABLED to avoid GPU sync stalls
+        # The .item(), .tolist(), .min(), .max() calls all force CPU-GPU sync
+        # if step < 5 and global_rank == 0:
+        #     token_min = chunk_data.min().item()  # SYNC!
+        #     token_max = chunk_data.max().item()  # SYNC!
+        #     token_mean = chunk_data.float().mean().item()  # SYNC!
+        #     print(f"[DEBUG STEP {step}] Token stats: min={token_min}, max={token_max}, mean={token_mean:.1f}", flush=True)
+        #     print(f"[DEBUG STEP {step}] First 20 tokens: {chunk_data[0, :20].tolist()}", flush=True)  # SYNC!
 
         # Profiling disabled (was causing sync overhead)
         profile_this_step = False
@@ -2493,13 +2520,15 @@ def main():
                         if param.grad is not None:
                             param.grad.data.mul_(inv_scale)
 
-                # Calculate gradient norm for logging
-                total_norm = 0.0
-                for param in model.parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2)
-                        total_norm += param_norm.item() ** 2
-                grad_norm = total_norm ** 0.5
+                # Calculate gradient norm for logging - SINGLE SYNC instead of per-param
+                # Use torch.nn.utils.clip_grad_norm_ which computes norm efficiently on GPU
+                grads = [p.grad for p in model.parameters() if p.grad is not None]
+                if grads:
+                    # Stack all grads into a single tensor, compute norm, single .item() call
+                    total_norm_tensor = torch.norm(torch.stack([g.norm(2) for g in grads]), 2)
+                    grad_norm = total_norm_tensor.item()  # Single GPU sync!
+                else:
+                    grad_norm = 0.0
 
                 # Conditionally perform gradient clipping if args.grad_clip is set > 0
                 if args.grad_clip > 0.0:
@@ -2624,11 +2653,12 @@ def main():
         tokens_this_step = chunk_size * batch_size * world_size
         total_tokens_since_reset += tokens_this_step
 
-        # Calculate tok/s (only meaningful after warmup)
-        if warmup_complete:
-            tokens_per_sec = total_tokens_since_reset / elapsed if elapsed > 0 else 0
+        # Calculate tok/s per-step (more useful than cumulative average)
+        # Uses step_time instead of cumulative elapsed to show current throughput
+        if warmup_complete and step_time > 0.1:  # Only show after warmup, require >0.1s step time
+            tokens_per_sec = tokens_this_step / step_time
         else:
-            tokens_per_sec = 0  # Don't show during warmup
+            tokens_per_sec = 0  # Don't show during warmup or for very fast steps
         
         log_metrics(step, chunk_loss, current_validation_fitness, status, doc_stats, accumulated_steps, should_optimize, grad_norm, tokens_per_sec)
         
