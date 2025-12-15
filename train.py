@@ -1,4 +1,9 @@
-import os, random, numpy as np
+# CRITICAL: Set PATH before any torch imports for FlashRNN JIT compilation
+# ninja must be available when torch.utils.cpp_extension is loaded
+import os
+os.environ['PATH'] = '/home/erikg/micromamba/envs/mingru/bin:' + os.environ.get('PATH', '')
+
+import random, numpy as np
 import torch, torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW, SGD
@@ -1185,7 +1190,7 @@ def get_model(model_config):
     minlm_valid_keys = {
         'num_tokens', 'dim', 'depth', 'ff_mult', 'expansion', 'conv_kernel_size',
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
-        'use_persistent_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
+        'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
         'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
@@ -1307,6 +1312,10 @@ def get_args():
                         help='Use PyTorch nn.GRU (cuDNN-optimized, gold standard nonlinear GRU)')
     parser.add_argument('--use_persistent_gru', action='store_true',
                         help='Use PersistentGRU (optimized persistent-T kernel, matches HybridGRU speed)')
+    parser.add_argument('--use_sequential_triton_gru', action='store_true',
+                        help='Use SequentialTritonGRU (non-persistent, no data race, works at 2K chunks)')
+    parser.add_argument('--use_selective_gru', action='store_true',
+                        help='Use SelectiveGRU (input-dependent Δ and selection, inspired by Mamba)')
     parser.add_argument('--use_projected_gru', action='store_true',
                         help='Use ProjectedGRU (reduced recurrent dim, 10%% faster + 67%% larger batch!)')
     parser.add_argument('--h_recurrent', type=int, default=None,
@@ -1706,6 +1715,8 @@ def main():
             "use_test_gru": args.use_test_gru,
             "use_standard_gru": args.use_standard_gru,
             "use_persistent_gru": args.use_persistent_gru,
+            "use_sequential_triton_gru": args.use_sequential_triton_gru,
+            "use_selective_gru": args.use_selective_gru,
             "use_projected_gru": args.use_projected_gru,
             "h_recurrent": args.h_recurrent,
             "use_local_conv": args.use_local_conv,
@@ -1957,7 +1968,7 @@ def main():
         head_dim = int(dim_val * expansion)
         dtype = torch.bfloat16 if args.bf16 else torch.float32
         print(f"[DEBUG] FlashRNN precompile: dim_val={dim_val} type={type(dim_val)}, batch_val={batch_val} type={type(batch_val)}, head_dim={head_dim} type={type(head_dim)}", flush=True)
-        precompile_flashrnn_kernels(head_dim=head_dim, batch_size=batch_val, device=device, dtype=dtype)
+        precompile_flashrnn_kernels(dim_inner=head_dim, batch_size=batch_val, device=device, dtype=dtype)
 
     # Setup DDP if enabled
     if args.ddp:

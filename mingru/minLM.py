@@ -100,6 +100,22 @@ except ImportError as e:
     print(f"Failed to import PersistentGRU: {e}")
     PersistentGRU = None
 
+# Import sequential Triton GRU (non-persistent, eliminates data race)
+try:
+    from mingru.triton_gru_sequential import SequentialTritonGRU
+    print("SequentialTritonGRU available (non-persistent, no data race)")
+except ImportError as e:
+    print(f"Failed to import SequentialTritonGRU: {e}")
+    SequentialTritonGRU = None
+
+# Import selective GRU (input-dependent gating, inspired by Mamba)
+try:
+    from mingru.selective_gru import SelectiveGRU
+    print("SelectiveGRU available (input-dependent Δ and selection)")
+except ImportError as e:
+    print(f"Failed to import SelectiveGRU: {e}")
+    SelectiveGRU = None
+
 # Import projected GRU (reduced recurrent dimension for 10% speedup + 67% larger batch)
 try:
     from mingru.projected_gru import ProjectedGRU
@@ -209,6 +225,8 @@ class minLM(Module):
         use_test_gru = False,  # Use simple test GRU
         use_standard_gru = False,  # Use PyTorch nn.GRU (cuDNN, gold standard)
         use_persistent_gru = False,  # Use PersistentGRU (optimized persistent-T kernel)
+        use_sequential_triton_gru = False,  # Use SequentialTritonGRU (non-persistent, no data race)
+        use_selective_gru = False,  # Use SelectiveGRU (input-dependent Δ and selection)
         use_projected_gru = False,  # Use ProjectedGRU (10% faster + 67% larger batch!)
         h_recurrent = None,  # Recurrent dimension for ProjectedGRU (default: dim*0.625)
         use_local_conv = False,  # Use LocalConvGRU (local window, NOT recurrent!)
@@ -340,6 +358,18 @@ class minLM(Module):
         elif use_persistent_gru:
             min_rnn_klass = PersistentGRU
             print(f"Using PersistentGRU (optimized persistent-T kernel) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion
+            }
+        elif use_sequential_triton_gru:
+            min_rnn_klass = SequentialTritonGRU
+            print(f"Using SequentialTritonGRU (non-persistent, no data race) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion
+            }
+        elif use_selective_gru:
+            min_rnn_klass = SelectiveGRU
+            print(f"Using SelectiveGRU (input-dependent Δ, selection) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion
             }
