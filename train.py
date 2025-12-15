@@ -1284,6 +1284,8 @@ def get_args():
                         help='Enable DDP within nodes, gossip between nodes')
     parser.add_argument('--ddp-find-unused', action='store_true',
                         help='Enable find_unused_parameters in DDP (slower but safer)')
+    parser.add_argument('--no-tbptt', action='store_true',
+                        help='Disable TBPTT: reset hidden state each chunk (fair comparison with Mamba2)')
 
     # DataLoader configuration
     parser.add_argument('--num_workers', type=int, default=0,
@@ -2428,12 +2430,15 @@ def main():
                 reset_next = is_doc_end  # [B] bool - will be used BEFORE next chunk
 
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                    # No TBPTT mode: reset hidden state each chunk for fair comparison with Mamba2
+                    effective_hidden = None if getattr(args, 'no_tbptt', False) else hidden_state
+                    effective_conv = None if getattr(args, 'no_tbptt', False) else conv_buffers
                     result = model(
                         chunk,
                         return_loss=True,
                         return_prev_hiddens=True,
-                        prev_hiddens=hidden_state,
-                        prev_conv_buffers=conv_buffers,
+                        prev_hiddens=effective_hidden,
+                        prev_conv_buffers=effective_conv,
                         actual_length=actual_lengths,
                         doc_boundaries=None  # Not needed - resets handled above
                     )
