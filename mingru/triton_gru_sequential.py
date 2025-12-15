@@ -206,8 +206,8 @@ class SequentialTritonGRU(nn.Module):
         else:
             h = prev_hiddens.to(torch.float32)
 
-        # Output tensor
-        outputs = []
+        # Preallocate output tensor (MEMORY FIX: don't append+stack, write directly!)
+        h_all = torch.empty(B, T, H, device=device, dtype=torch.float32)
 
         # Grid configuration (OPTIMIZED: reduced from 128/128 to 32/64)
         # Tuning results: BLOCK_H=32, BLOCK_K=64, warps=2, stages=2
@@ -244,11 +244,8 @@ class SequentialTritonGRU(nn.Module):
                 num_stages=2,  # Reduced from 4
             )
 
-            # Save output for this timestep
-            outputs.append(h.clone())
-
-        # Stack outputs [B, T, H]
-        h_all = torch.stack(outputs, dim=1)
+            # Write output directly to preallocated tensor (no clone!)
+            h_all[:, t, :] = h
 
         # Project output (like StandardGRU's output_proj)
         output = self.output_proj(h_all.to(dtype))
