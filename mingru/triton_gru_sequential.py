@@ -146,20 +146,25 @@ class SequentialTritonGRU(nn.Module):
         self.dim = dim
         self.dim_inner = int(dim * expansion_factor)
 
-        # Input projection: dim -> 3*dim_inner
-        self.input_projection = nn.Linear(dim, 3 * self.dim_inner, bias=False)
+        # ARCHITECTURE MATCH: StandardGRU has input_proj (dim -> dim_inner) THEN GRU
+        # We need to match this to have same output scale!
+        self.input_proj = nn.Linear(dim, self.dim_inner, bias=False)
 
-        # Recurrent projection: dim_inner -> 3*dim_inner
+        # Gate projection: dim_inner -> 3*dim_inner (matches GRU's weight_ih)
+        self.input_projection = nn.Linear(self.dim_inner, 3 * self.dim_inner, bias=False)
+
+        # Recurrent projection: dim_inner -> 3*dim_inner (matches GRU's weight_hh)
         self.U_recurrent = nn.Linear(self.dim_inner, 3 * self.dim_inner, bias=False)
 
         # Biases matching PyTorch GRU
         self.bias_ih = nn.Parameter(torch.zeros(3 * self.dim_inner))
         self.bias_hh = nn.Parameter(torch.zeros(3 * self.dim_inner))
 
-        # Output projection
-        self.output_projection = nn.Linear(self.dim_inner, dim, bias=False)
+        # Output projection (matches StandardGRU's output_proj)
+        self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
 
         print(f"[SequentialTritonGRU] dim={dim}, dim_inner={self.dim_inner}")
+        print(f"[SequentialTritonGRU] Architecture matches StandardGRU (input_proj + GRU)")
         print(f"[SequentialTritonGRU] Non-persistent: separate kernel launch per timestep")
 
     def forward(self, x, prev_hiddens=None, return_next_prev_hidden=False, doc_boundaries=None):
@@ -178,8 +183,11 @@ class SequentialTritonGRU(nn.Module):
         device = x.device
         dtype = x.dtype
 
-        # Precompute input gates [B, T, 3*H]
-        input_gates = self.input_projection(x)
+        # ARCHITECTURE MATCH: First project input to hidden size (like StandardGRU)
+        x_proj = self.input_proj(x)  # [B, T, D] -> [B, T, H]
+
+        # Then compute input gates [B, T, 3*H] (like GRU's weight_ih)
+        input_gates = self.input_projection(x_proj)
 
         # Get recurrent weights [H, 3*H]
         U = self.U_recurrent.weight.t().contiguous()
@@ -242,8 +250,8 @@ class SequentialTritonGRU(nn.Module):
         # Stack outputs [B, T, H]
         h_all = torch.stack(outputs, dim=1)
 
-        # Project output
-        output = self.output_projection(h_all.to(dtype))
+        # Project output (like StandardGRU's output_proj)
+        output = self.output_proj(h_all.to(dtype))
 
         if return_next_prev_hidden:
             return output, h.to(dtype)
