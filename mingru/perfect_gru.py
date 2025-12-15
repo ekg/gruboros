@@ -9,9 +9,9 @@ import torch
 import torch.nn as nn
 
 
-class SequentialTritonGRU(nn.Module):
+class PerfectGRU(nn.Module):
     """
-    Sequential GRU with EXACT cuDNN mathematical equivalence.
+    GRU with EXACT cuDNN mathematical equivalence.
 
     Key: Match PyTorch nn.GRU equations EXACTLY:
     r_t = σ(W_ir @ x_t + b_ir + W_hr @ h_{t-1} + b_hr)
@@ -35,8 +35,8 @@ class SequentialTritonGRU(nn.Module):
 
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
 
-        print(f"[SequentialTritonGRU] dim={dim}, dim_inner={self.dim_inner}")
-        print(f"[SequentialTritonGRU] PERFECTED: EXACT cuDNN math equivalence!")
+        print(f"[PerfectGRU] dim={dim}, dim_inner={self.dim_inner}")
+        print(f"[PerfectGRU] EXACT cuDNN math - testing for perfect equivalence")
 
     def forward(self, x, prev_hiddens=None, prev_conv_buffers=None, return_hiddens=True,
                 return_next_prev_hidden=True, actual_length=None, doc_boundaries=None):
@@ -111,4 +111,4 @@ class SequentialTritonGRU(nn.Module):
             return output
 
     def __repr__(self):
-        return f"SequentialTritonGRU(dim={self.dim}, EXACT cuDNN math)"
+        return f"PerfectGRU(dim={self.dim}, EXACT cuDNN math)"
