@@ -349,11 +349,14 @@ class minLM(Module):
         elif use_standard_gru:
             min_rnn_klass = StandardGRU
             checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
-            print(f"Using StandardGRU (cuDNN-optimized{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            # Combine z_bias_input and z_bias_hidden (nn.GRU has single gate bias)
+            z_bias_combined = (z_bias_input + z_bias_hidden) / 2
+            print(f"Using StandardGRU (cuDNN-optimized{checkpoint_str}, chunk_size={recurrence_chunk_size}, z_bias={z_bias_combined}) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
-                'recurrence_chunk_size': recurrence_chunk_size
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'z_bias_init': z_bias_combined
             }
         elif use_persistent_gru:
             min_rnn_klass = PersistentGRU

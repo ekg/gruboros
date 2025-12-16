@@ -22,6 +22,7 @@ class StandardGRU(nn.Module):
         expansion_factor=1.0,
         use_gradient_checkpointing=False,
         recurrence_chunk_size=64,  # Process sequence in chunks to save memory
+        z_bias_init=0.0,  # Initialization for z-gate (update gate) bias
         **kwargs  # Ignore other minGRU-specific args
     ):
         super().__init__()
@@ -42,6 +43,15 @@ class StandardGRU(nn.Module):
             batch_first=True,  # (batch, seq, feature)
             bias=True
         )
+
+        # Initialize z-gate (update gate) bias if specified
+        # In nn.GRU, biases are [reset, update, new] each of size hidden_size
+        # Update gate = z-gate, at indices [hidden_size : 2*hidden_size]
+        if z_bias_init != 0.0:
+            with torch.no_grad():
+                # bias_ih_l0 and bias_hh_l0 both contribute to gates
+                self.gru.bias_ih_l0[self.dim_inner:2*self.dim_inner].fill_(z_bias_init / 2)
+                self.gru.bias_hh_l0[self.dim_inner:2*self.dim_inner].fill_(z_bias_init / 2)
 
         # Output projection: dim_inner -> dim
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)

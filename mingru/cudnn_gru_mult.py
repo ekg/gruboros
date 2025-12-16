@@ -44,6 +44,7 @@ class CuDNNGRU_Mult(nn.Module):
         use_input_gate: bool = True,  # Gate depends on input x
         use_hidden_gate: bool = True,  # Gate depends on hidden h
         use_glu_gate: bool = False,  # GLU-style: split h into h1 and gate
+        gate_activation: str = 'sigmoid',  # 'sigmoid' or 'silu' (like Mamba2)
         layer_idx: int = None,
         num_layers: int = None,
         **kwargs  # Ignore other params for API compat
@@ -56,6 +57,7 @@ class CuDNNGRU_Mult(nn.Module):
         self.use_input_gate = use_input_gate
         self.use_hidden_gate = use_hidden_gate
         self.use_glu_gate = use_glu_gate
+        self.gate_activation = gate_activation
 
         # === cuDNN GRU ===
         self.gru = nn.GRU(
@@ -183,7 +185,11 @@ class CuDNNGRU_Mult(nn.Module):
             if self.gate_h is not None:
                 gate_logits = gate_logits + self.gate_h(h_seq)  # [B, T, gate_dim]
 
-            gate = torch.sigmoid(gate_logits)  # [B, T, gate_dim]
+            # Apply gate activation (sigmoid default, silu like Mamba2)
+            if self.gate_activation == 'silu':
+                gate = F.silu(gate_logits)  # [B, T, gate_dim]
+            else:
+                gate = torch.sigmoid(gate_logits)  # [B, T, gate_dim]
 
             # Project gate to match h_seq dim if needed
             if self.gate_proj is not None:
@@ -227,6 +233,7 @@ class CuDNNGRU_MultLM(nn.Module):
         use_input_gate: bool = True,
         use_hidden_gate: bool = True,
         use_glu_gate: bool = False,  # GLU-style: split h into h1 and gate
+        gate_activation: str = 'sigmoid',  # 'sigmoid' or 'silu' (like Mamba2)
         ff_mult: float = 0.0,  # Optional FFN (0 = disabled)
         dropout: float = 0.0,
         tie_weights: bool = True,
@@ -259,6 +266,7 @@ class CuDNNGRU_MultLM(nn.Module):
                     use_input_gate=use_input_gate,
                     use_hidden_gate=use_hidden_gate,
                     use_glu_gate=use_glu_gate,
+                    gate_activation=gate_activation,
                     layer_idx=i,
                     num_layers=depth,
                 )
@@ -349,6 +357,40 @@ class CuDNNGRU_MultLM(nn.Module):
         new_hiddens = [new_packed[i] for i in range(new_packed.size(0))]
         return out, new_hiddens
 
+    def _checkpointed_chunk_fast(self, h_chunk, packed_hiddens):
+        """
+        Fast checkpointing that operates on packed tensors directly.
+        Eliminates Python list operations that cause CPU-GPU sync.
+
+        Args:
+            h_chunk: [B, chunk_len, D] embedded input chunk
+            packed_hiddens: [depth, B, dim_inner] packed hidden states
+
+        Returns:
+            h_out: [B, chunk_len, D] output
+            new_packed_hiddens: [depth, B, dim_inner] updated hidden states
+        """
+        def inner_fn(h_chunk, packed_hiddens):
+            # Process through all layers using tensor indexing (no Python lists)
+            new_hiddens = torch.empty_like(packed_hiddens)
+            h = h_chunk
+
+            for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
+                # Get hidden for this layer directly from tensor (no list conversion)
+                prev_h = packed_hiddens[i]
+                layer_out, next_h = layer(norm(h), prev_hidden=prev_h,
+                                           return_next_prev_hidden=True)
+                h = h + layer_out
+                new_hiddens[i] = next_h
+
+                if self.ff_layers is not None:
+                    h = h + self.ff_layers[i](self.ff_norms[i](h))
+
+            return h, new_hiddens
+
+        # Run with checkpointing
+        return ckpt.checkpoint(inner_fn, h_chunk, packed_hiddens, use_reentrant=False)
+
     def forward(
         self,
         x,
@@ -377,21 +419,33 @@ class CuDNNGRU_MultLM(nn.Module):
 
         if self.use_checkpointing and T > self.inner_chunk_size:
             # === Chunked processing with gradient checkpointing ===
+            # Pre-allocate output tensor to avoid Python list append + cat sync
             num_chunks = (T + self.inner_chunk_size - 1) // self.inner_chunk_size
-            outputs = []
-            layer_hiddens = prev_hiddens  # List of [B, dim_inner] per layer or None
+            output_buffer = torch.empty(B, T, self.dim, device=h.device, dtype=h.dtype)
+
+            # Pack layer hiddens as tensor once (not per-chunk)
+            # Check for truthy (not None and not empty list)
+            if prev_hiddens:
+                packed_hiddens = torch.stack(prev_hiddens, dim=0)  # [depth, B, dim_inner]
+            else:
+                packed_hiddens = torch.zeros(
+                    self.depth, B, self.layers[0].dim_inner,
+                    device=h.device, dtype=h.dtype
+                )
 
             for chunk_idx in range(num_chunks):
                 start = chunk_idx * self.inner_chunk_size
                 end = min(start + self.inner_chunk_size, T)
                 h_chunk = h[:, start:end, :]
 
-                # Process chunk with checkpointing
-                h_out, layer_hiddens = self._checkpointed_chunk(h_chunk, layer_hiddens)
-                outputs.append(h_out)
+                # Process chunk with checkpointing - pass packed tensor directly
+                h_out, packed_hiddens = self._checkpointed_chunk_fast(h_chunk, packed_hiddens)
 
-            # Concatenate all chunks
-            h = torch.cat(outputs, dim=1)
+                # Write directly to pre-allocated buffer (no Python list!)
+                output_buffer[:, start:end, :] = h_out
+
+            h = output_buffer
+            layer_hiddens = [packed_hiddens[i] for i in range(packed_hiddens.size(0))]
         else:
             # === Standard processing (no checkpointing) ===
             for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
