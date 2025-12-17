@@ -172,19 +172,19 @@ provides only smoothing---no content-dependent memory decisions. Even with perfe
 Training ~1B parameter models on The Pile dataset with 8× A100 GPUs (DDP), 512-token context. Loss values are averaged over the final 1,000 training steps for stability:
 
 #table(
-  columns: (auto, auto, auto, auto),
+  columns: (auto, auto, auto, auto, auto),
   inset: 8pt,
-  align: (left, center, center, center),
-  [*Configuration*], [*Associative*], [*Avg Loss (last 1k)*], [*vs Stock GRU*],
-  [Stock GRU (no selectivity)], [No], [3.76], [baseline],
-  [Mamba-2 SSD], [Yes], [2.88], [−23%],
-  [GRU + Selectivity (sigmoid)], [*No*], [2.99], [−20%],
-  [*GRU + Selectivity (SiLU)*], [*No*], [*2.82*], [*−25%*],
+  align: (left, center, center, center, center),
+  [*Configuration*], [*Params*], [*Associative*], [*Avg Loss (last 1k)*], [*vs Stock GRU*],
+  [Stock GRU (no selectivity)], [1.11B], [No], [3.76], [baseline],
+  [Mamba-2 SSD], [1.00B], [Yes], [2.88], [−23%],
+  [GRU + Selectivity (sigmoid)], [1.01B], [*No*], [2.99], [−20%],
+  [*GRU + Selectivity (SiLU)*], [1.01B], [*No*], [*2.82*], [*−25%*],
 )
 
 #v(0.5em)
 
-*Key finding:* Output selectivity accounts for *~0.8 nats* improvement over Stock GRU. Both Mamba-2 and GRUS achieve similar performance through different mechanisms:
+*Key finding:* Output selectivity accounts for *~0.8 nats* improvement over Stock GRU. All models have matched parameter counts (1.00--1.11B)---notably, Stock GRU has the *most* parameters (1.11B) yet performs worst, demonstrating that the improvement is due to architectural differences, not capacity. Both Mamba-2 and GRUS achieve similar performance through different mechanisms:
 - Mamba-2: Input-dependent $bold(C)$ matrix for output selection
 - GRUS: Multiplicative gate $bold(s)_t = sigma(bold(W)_h bold(h) + bold(W)_x bold(x))$
 
@@ -310,7 +310,7 @@ The empirical question: do practical tasks require this additional expressivity?
 
 = Conclusion
 
-Selective GRU demonstrates that adding input-dependent output gating to standard GRU *exceeds* the performance of state-of-the-art selective state space models. With SiLU activation, GRUS achieves 2.82 nats vs Mamba-2's 2.88 nats---a 2% improvement while using true (non-associative) recurrence.
+Selective GRU demonstrates that adding input-dependent output gating to standard GRU *exceeds* the performance of state-of-the-art selective state space models at matched parameter count (~1B). With SiLU activation, GRUS achieves 2.82 nats vs Mamba-2's 2.88 nats---a 2% improvement while using true (non-associative) recurrence.
 
 The ~0.9 nat improvement over Stock GRU (3.76 → 2.82) is attributable to:
 1. *Selectivity mechanism* (~0.8 nats): Input-dependent output gating
