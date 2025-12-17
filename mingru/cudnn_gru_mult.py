@@ -44,6 +44,7 @@ class CuDNNGRU_Mult(nn.Module):
         use_input_gate: bool = True,  # Gate depends on input x
         use_hidden_gate: bool = True,  # Gate depends on hidden h
         use_glu_gate: bool = False,  # GLU-style: split h into h1 and gate
+        use_swiglu: bool = False,  # SwiGLU-style: y = value * SiLU(gate + x)
         gate_activation: str = 'sigmoid',  # 'sigmoid' or 'silu' (like Mamba2)
         layer_idx: int = None,
         num_layers: int = None,
@@ -57,6 +58,7 @@ class CuDNNGRU_Mult(nn.Module):
         self.use_input_gate = use_input_gate
         self.use_hidden_gate = use_hidden_gate
         self.use_glu_gate = use_glu_gate
+        self.use_swiglu = use_swiglu
         self.gate_activation = gate_activation
 
         # === cuDNN GRU ===
@@ -68,10 +70,24 @@ class CuDNNGRU_Mult(nn.Module):
             bidirectional=False
         )
 
-        if use_glu_gate:
+        if use_swiglu:
+            # === SwiGLU-style Gate (like LLaMA/Mistral FFN) ===
+            # Project h to (value, gate_logits), add x directly to gate
+            # y = value * SiLU(gate_logits + x + b)
+            # Same params as standard mult gate: 2*dim^2 + dim
+            self.swiglu_proj = nn.Linear(self.dim_inner, 2 * self.dim_inner, bias=False)
+            self.swiglu_bias = nn.Parameter(torch.zeros(self.dim_inner))
+            self.glu_proj = None
+            self.gate_x = None
+            self.gate_h = None
+            self.gate_bias = None
+            self.gate_proj = None
+        elif use_glu_gate:
             # === GLU-style Gate (Option 3) ===
             # Project h to 2x, split, apply GLU: out = h1 * σ(h2)
             # This tests: is x-dependence in gate critical, or is h-dependent enough?
+            self.swiglu_proj = None
+            self.swiglu_bias = None
             self.glu_proj = nn.Linear(self.dim_inner, 2 * self.dim_inner, bias=True)
             self.gate_x = None
             self.gate_h = None
@@ -81,6 +97,8 @@ class CuDNNGRU_Mult(nn.Module):
             # === Multiplicative Gate ===
             # gate = σ(W_x @ x + W_h @ h + b)
             # This creates x-dependent and h-dependent gating
+            self.swiglu_proj = None
+            self.swiglu_bias = None
             self.glu_proj = None
 
             if use_input_gate:
@@ -112,7 +130,10 @@ class CuDNNGRU_Mult(nn.Module):
     def _init_weights(self):
         # Initialize gate projections with small values
         # Bias at 0 means gate starts at 0.5 (neutral)
-        if self.use_glu_gate:
+        if self.use_swiglu:
+            nn.init.normal_(self.swiglu_proj.weight, std=0.02)
+            nn.init.zeros_(self.swiglu_bias)
+        elif self.use_glu_gate:
             nn.init.normal_(self.glu_proj.weight, std=0.02)
             nn.init.zeros_(self.glu_proj.bias)
         else:
@@ -168,7 +189,17 @@ class CuDNNGRU_Mult(nn.Module):
         h_seq = h_seq.to(dtype)
         h_final = h_final.squeeze(0).to(dtype)
 
-        if self.use_glu_gate:
+        if self.use_swiglu:
+            # === SwiGLU-style Gate (like LLaMA/Mistral) ===
+            # Project h to (value, gate_logits), add x directly to gate
+            # y = value * SiLU(gate_logits + x + b)
+            proj = self.swiglu_proj(h_seq)  # [B, T, 2*dim_inner]
+            value, gate_logits = proj.chunk(2, dim=-1)  # Each: [B, T, dim_inner]
+            # Add x directly to gate (preserves x-dependence, no extra params)
+            gate_logits = gate_logits + x + self.swiglu_bias.view(1, 1, -1)
+            gate = F.silu(gate_logits)  # SwiGLU always uses SiLU
+            h_gated = value * gate
+        elif self.use_glu_gate:
             # === GLU-style Gate (Option 3) ===
             # Project h to 2x, split, apply GLU: out = h1 * σ(h2)
             proj = self.glu_proj(h_seq)  # [B, T, 2*dim_inner]
@@ -233,6 +264,7 @@ class CuDNNGRU_MultLM(nn.Module):
         use_input_gate: bool = True,
         use_hidden_gate: bool = True,
         use_glu_gate: bool = False,  # GLU-style: split h into h1 and gate
+        use_swiglu: bool = False,  # SwiGLU-style: y = value * SiLU(gate + x)
         gate_activation: str = 'sigmoid',  # 'sigmoid' or 'silu' (like Mamba2)
         ff_mult: float = 0.0,  # Optional FFN (0 = disabled)
         dropout: float = 0.0,
@@ -266,6 +298,7 @@ class CuDNNGRU_MultLM(nn.Module):
                     use_input_gate=use_input_gate,
                     use_hidden_gate=use_hidden_gate,
                     use_glu_gate=use_glu_gate,
+                    use_swiglu=use_swiglu,
                     gate_activation=gate_activation,
                     layer_idx=i,
                     num_layers=depth,

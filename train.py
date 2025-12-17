@@ -1085,6 +1085,7 @@ def get_model(model_config):
             'use_input_gate': True,  # Gate depends on input x
             'use_hidden_gate': not model_config.get('input_only_gate', False),  # Gate depends on hidden h (disabled for ablation)
             'use_glu_gate': model_config.get('use_glu_gate', False),  # GLU-style gate (h-dependent only)
+            'use_swiglu': model_config.get('use_swiglu', False),  # SwiGLU-style output
             'gate_activation': model_config.get('gate_activation', 'sigmoid'),  # sigmoid or silu (like Mamba2)
             'ff_mult': model_config.get('ff_mult', 0.0),  # Optional FFN
             'dropout': model_config['dropout'],
@@ -1094,7 +1095,8 @@ def get_model(model_config):
         }
         ckpt_str = f", checkpointing={mult_config['inner_chunk_size']}" if mult_config['use_checkpointing'] else ""
         gate_str = f", gate={mult_config['gate_activation']}" if mult_config['gate_activation'] != 'sigmoid' else ""
-        print(f"Using CuDNNGRU_MultLM: dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}{gate_str}{ckpt_str}")
+        swiglu_str = ", swiglu" if mult_config['use_swiglu'] else ""
+        print(f"Using CuDNNGRU_MultLM: dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}{gate_str}{swiglu_str}{ckpt_str}")
         return CuDNNGRU_MultLM(**mult_config)
 
     # Use cuDNN GRU + Bilinear (true second-order h×x interactions)
@@ -1374,6 +1376,8 @@ def get_args():
                         help='For Mult GRU: gate depends only on input x, not hidden h (ablation test)')
     parser.add_argument('--use_glu_gate', action='store_true',
                         help='For Mult GRU: use GLU-style gate (split h, gate with itself, no x dependence)')
+    parser.add_argument('--use_swiglu', action='store_true',
+                        help='For Mult GRU: use SwiGLU-style output (y = value * SiLU(gate + x), same params)')
     parser.add_argument('--gate_activation', type=str, default='sigmoid', choices=['sigmoid', 'silu'],
                         help='For Mult GRU: gate activation function (sigmoid default, silu like Mamba2)')
     parser.add_argument('--use_checkpointing', action='store_true',
@@ -1750,6 +1754,7 @@ def main():
             "use_ema_input_gate": args.use_ema_input_gate,
             "input_only_gate": args.input_only_gate,
             "use_glu_gate": args.use_glu_gate,
+            "use_swiglu": args.use_swiglu,
             "gate_activation": args.gate_activation,
             "use_checkpointing": args.use_checkpointing,
             "inner_chunk_size": args.inner_chunk_size,
