@@ -179,7 +179,7 @@ Training ~1B parameter models on The Pile dataset with 8× A100 GPUs (DDP), 512-
   [Stock GRU (no selectivity)], [1.11B], [No], [3.76], [baseline],
   [Mamba-2 SSD], [1.00B], [Yes], [2.88], [−23%],
   [GRU + Selectivity (sigmoid)], [1.01B], [*No*], [2.99], [−20%],
-  [*GRU + Selectivity (SiLU)*], [1.01B], [*No*], [*2.82*], [*−25%*],
+  [*GRU + Selectivity (SiLU)*], [1.01B], [*No*], [*2.80*], [*−26%*],
 )
 
 #v(0.5em)
@@ -198,12 +198,12 @@ Mamba-2 uses SiLU (Swish) activation throughout. We tested whether the gate acti
   align: (left, left, center),
   [*Gate Activation*], [*Formula*], [*Performance*],
   [Sigmoid (default)], [$bold(s)_t = sigma(bold(W)_h bold(h) + bold(W)_x bold(x))$], [2.99 nats],
-  [*SiLU (Mamba-style)*], [$bold(s)_t = "SiLU"(bold(W)_h bold(h) + bold(W)_x bold(x))$], [*2.82 nats*],
+  [*SiLU (Mamba-style)*], [$bold(s)_t = "SiLU"(bold(W)_h bold(h) + bold(W)_x bold(x))$], [*2.80 nats*],
 )
 
-*SiLU outperforms sigmoid by 0.17 nats* (6% relative improvement). This is a meaningful gain from a simple activation change.
+*SiLU outperforms sigmoid by 0.19 nats* (6% relative improvement). This is a meaningful gain from a simple activation change.
 
-SiLU differs from sigmoid in that it is *non-saturating* for positive values and allows negative outputs. The improved gradient flow appears to benefit training. Notably, SiLU GRUS (2.82) now *outperforms Mamba-2* (2.88) on this benchmark.
+SiLU differs from sigmoid in that it is *non-saturating* for positive values and allows negative outputs. The improved gradient flow appears to benefit training. Notably, SiLU GRUS (2.80) now *outperforms Mamba-2* (2.88) on this benchmark.
 
 == Ablation Studies (256 Context -- Being Reworked)
 
@@ -290,7 +290,7 @@ The success of GRUS implies:
 
 == Observations from Current Experiments
 
-*Activation function matters*: SiLU activation provides a 0.17 nat improvement over sigmoid (2.82 vs 2.99). This simple change makes GRUS outperform Mamba-2 (2.88) on this benchmark. SiLU's non-saturating behavior for positive values improves gradient flow.
+*Activation function matters*: SiLU activation provides a 0.19 nat improvement over sigmoid (2.80 vs 2.99). This simple change makes GRUS outperform Mamba-2 (2.88) on this benchmark. SiLU's non-saturating behavior for positive values improves gradient flow.
 
 *Context length independence*: The ~0.8 nat improvement from selectivity appears consistent at 512 context. Ablation experiments at 256 context showed similar patterns, though direct comparison requires re-running at matched conditions.
 
@@ -310,11 +310,11 @@ The empirical question: do practical tasks require this additional expressivity?
 
 = Conclusion
 
-Selective GRU demonstrates that adding input-dependent output gating to standard GRU *exceeds* the performance of state-of-the-art selective state space models at matched parameter count (~1B). With SiLU activation, GRUS achieves 2.82 nats vs Mamba-2's 2.88 nats---a 2% improvement while using true (non-associative) recurrence.
+Selective GRU demonstrates that adding input-dependent output gating to standard GRU *exceeds* the performance of state-of-the-art selective state space models at matched parameter count (~1B). With SiLU activation, GRUS achieves 2.80 nats vs Mamba-2's 2.88 nats---a 3% improvement while using true (non-associative) recurrence.
 
-The ~0.9 nat improvement over Stock GRU (3.76 → 2.82) is attributable to:
+The ~1.0 nat improvement over Stock GRU (3.76 → 2.80) is attributable to:
 1. *Selectivity mechanism* (~0.8 nats): Input-dependent output gating
-2. *SiLU activation* (~0.17 nats): Non-saturating gradient flow
+2. *SiLU activation* (~0.19 nats): Non-saturating gradient flow
 
 The architecture is simple (a single bilinear gate layer with SiLU), uses battle-tested cuDNN kernels, and preserves the non-associative dynamics that may prove important for complex temporal reasoning tasks.
 
