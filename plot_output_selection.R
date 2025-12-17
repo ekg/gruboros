@@ -40,7 +40,9 @@ logs <- list(
   list(file = "logs/mamba2_1b_20251207_060701.log",
        label = "Mamba2 (C matrix selection)", color = "#005a8d"),
   list(file = "logs/cudnn_mult_gru_512_20251212_022323.log",
-       label = "Mult GRU (multiplicative gate)", color = "#007a59")
+       label = "Mult GRU sigmoid", color = "#007a59"),
+  list(file = "logs/cudnn_mult_gru_silu_20251216_220912.log",
+       label = "Mult GRU SiLU (Mamba2-style)", color = "#9400D3")
 )
 
 # Parse all logs
@@ -93,13 +95,14 @@ p <- ggplot(all_data, aes(x = step, y = loss, color = model)) +
   ) +
   guides(color = guide_legend(ncol = 1))
 
-# Add final loss annotations
+# Calculate average loss over last 1000 steps for each model
 final_losses <- all_data %>%
   group_by(model) %>%
-  filter(step == max(step)) %>%
   summarize(
-    final_step = max(step),
-    final_loss = mean(loss),
+    max_step = max(step),
+    # Average over last 1000 steps (or all steps if < 1000)
+    avg_loss = mean(loss[step > max(step) - 1000]),
+    n_steps = sum(step > max(step) - 1000),
     pct = if (max(step) < 9999) sprintf(" (%d%%)", as.integer(max(step)/100)) else "",
     .groups = "drop"
   )
@@ -110,11 +113,12 @@ ggsave("/tmp/output_selection_comparison.png", p,
 
 cat("Saved: /tmp/output_selection_comparison.png\n")
 
-# Print final losses
-cat("\nFinal losses:\n")
+# Print average losses over last 1k steps
+cat("\nAverage loss (last 1k steps):\n")
 for (i in 1:nrow(final_losses)) {
-  cat(sprintf("  %s: %.2f%s\n",
+  cat(sprintf("  %s: %.2f%s (n=%d)\n",
               final_losses$model[i],
-              final_losses$final_loss[i],
-              final_losses$pct[i]))
+              final_losses$avg_loss[i],
+              final_losses$pct[i],
+              final_losses$n_steps[i]))
 }

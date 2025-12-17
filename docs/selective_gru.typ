@@ -167,45 +167,76 @@ provides only smoothing---no content-dependent memory decisions. Even with perfe
 
 = Empirical Results
 
-== Ablation Study (1B Parameters, 10K Steps, The Pile)
+== Main Comparison (1B Parameters, 10K Steps, 512 Context)
 
-Training 1B parameter models on The Pile dataset with 8 GPUs (DDP), 512 context length:
+Training ~1B parameter models on The Pile dataset with 8× A100 GPUs (DDP), 512-token context. Loss values are averaged over the final 1,000 training steps for stability:
 
 #table(
   columns: (auto, auto, auto, auto),
   inset: 8pt,
   align: (left, center, center, center),
-  [*Configuration*], [*Associative*], [*Final Loss*], [*vs Mamba-2*],
-  [Mamba-2 SSD], [Yes], [3.00], [baseline],
-  [GRU + Selectivity (GRUS)], [*No*], [*3.00*], [matches],
-  [GRU only], [No], [3.16], [+5.3%],
-  [EMA + Selectivity], [Yes], [4.60], [+53%],
-  [Input-only gate], [Yes], [3.30], [+10%],
-  [GLU gate], [---], [3.03], [+1%],
+  [*Configuration*], [*Associative*], [*Avg Loss (last 1k)*], [*vs Stock GRU*],
+  [Stock GRU (no selectivity)], [No], [3.76], [baseline],
+  [Mamba-2 SSD], [Yes], [2.88], [−23%],
+  [GRU + Selectivity (sigmoid)], [*No*], [2.99], [−20%],
+  [GRU + Selectivity (SiLU)], [*No*], [~2.9#super[†]], [−23%],
 )
 
-Key findings:
-- GRUS matches Mamba-2 exactly
-- Removing selectivity (GRU only) degrades performance significantly
-- Linear dynamics (EMA) fail even with selectivity
-- Both non-linear state dynamics *and* input-dependent output gating are necessary
+#text(size: 9pt)[#super[†] SiLU variant at 37% of training; tracking slightly below sigmoid at same step count.]
 
-== Architectural Variations
+#v(0.5em)
 
-We tested several selectivity formulations:
+*Key finding:* Output selectivity accounts for *~0.8 nats* improvement over Stock GRU. Both Mamba-2 and GRUS achieve similar performance through different mechanisms:
+- Mamba-2: Input-dependent $bold(C)$ matrix for output selection
+- GRUS: Multiplicative gate $bold(s)_t = sigma(bold(W)_h bold(h) + bold(W)_x bold(x))$
+
+== Gate Activation: Sigmoid vs SiLU
+
+Mamba-2 uses SiLU (Swish) activation throughout. We tested whether the gate activation matters:
+
+#table(
+  columns: (auto, auto, auto),
+  inset: 8pt,
+  align: (left, left, center),
+  [*Gate Activation*], [*Formula*], [*Performance*],
+  [Sigmoid (default)], [$bold(s)_t = sigma(bold(W)_h bold(h) + bold(W)_x bold(x))$], [2.99 nats],
+  [SiLU (Mamba-style)], [$bold(s)_t = "SiLU"(bold(W)_h bold(h) + bold(W)_x bold(x))$], [~2.9 nats#super[†]],
+)
+
+#text(size: 9pt)[#super[†] In progress. Early results suggest SiLU may provide slight improvement.]
+
+SiLU differs from sigmoid in that it is *non-saturating* for positive values and allows negative outputs. This may improve gradient flow during training.
+
+== Ablation Studies (256 Context -- Being Reworked)
+
+#text(style: "italic")[Note: The following ablations were conducted with 256-token context. We are re-running these at 512 context for consistency with main results.]
+
+Preliminary findings at 256 context:
 
 #table(
   columns: (auto, auto, auto),
   inset: 8pt,
   align: left,
-  [*Name*], [*Gate Formula*], [*Result*],
-  [Multiplicative (GRUS)], [$sigma(bold(W)_h bold(h) + bold(W)_x bold(x))$], [Best],
-  [Input-only], [$sigma(bold(W)_x bold(x))$], [Worse],
-  [GLU-style], [$sigma(bold(W) bold(x)) dot.circle (bold(V) bold(x))$], [Close],
-  [Bilinear], [$sigma(bold(x)^top bold(W) bold(h))$], [Similar],
+  [*Ablation*], [*Change*], [*Effect*],
+  [Input-only gate], [Remove $bold(W)_h bold(h)$ term], [Degraded],
+  [GLU-style gate], [Gate depends only on $bold(h)$], [Close to full],
+  [EMA + Selectivity], [Replace GRU with EMA], [Much worse],
 )
 
-The bilinear interaction between $bold(h)$ and $bold(x)$ appears essential.
+The bilinear interaction between $bold(h)$ and $bold(x)$ appears important, but the relative contributions of each term require further investigation at consistent context lengths.
+
+== Architectural Variations
+
+#table(
+  columns: (auto, auto, auto),
+  inset: 8pt,
+  align: left,
+  [*Name*], [*Gate Formula*], [*Notes*],
+  [Multiplicative (GRUS)], [$sigma(bold(W)_h bold(h) + bold(W)_x bold(x))$], [Default, best understood],
+  [Input-only], [$sigma(bold(W)_x bold(x))$], [Loses state-dependent selection],
+  [GLU-style], [$sigma(bold(W) bold(h)) dot.circle bold(h)$], [No input dependence in gate],
+  [SiLU variant], [$"SiLU"(bold(W)_h bold(h) + bold(W)_x bold(x))$], [Testing Mamba-style activation],
+)
 
 = Implementation Notes
 
@@ -251,17 +282,28 @@ This trades compute for memory, enabling training on contexts beyond what fits i
 
 The success of GRUS implies:
 
-1. *Mamba's success is decomposable*: Input-dependent state dynamics + input-dependent output gating are separable components that don't need to be entangled in a single formalism.
+1. *Output selection is the key differentiator*: The ~0.8 nat gap between Stock GRU and selective architectures (Mamba-2, GRUS) is attributable to input-dependent output gating. This is consistent across architectures.
 
-2. *Associativity is optional*: Performance matching doesn't require parallel-scannable operations. The training efficiency gap with good cuDNN kernels may be smaller than assumed.
+2. *Mamba's success is decomposable*: Input-dependent state dynamics + input-dependent output gating are separable components that don't need to be entangled in a single formalism.
 
-3. *True recurrence remains viable*: Non-associative, state-dependent gating can match linearized alternatives at equal parameter counts.
+3. *Associativity is optional*: Performance matching doesn't require parallel-scannable operations. The training efficiency gap with good cuDNN kernels may be smaller than assumed.
+
+4. *True recurrence remains viable*: Non-associative, state-dependent gating can match linearized alternatives at equal parameter counts.
+
+== Observations from Current Experiments
+
+*Activation function sensitivity*: Early results with SiLU activation suggest the choice of gate activation may matter. SiLU's non-saturating behavior for positive values could improve gradient flow. This warrants further investigation.
+
+*Context length independence*: The ~0.8 nat improvement from selectivity appears consistent at 512 context. Ablation experiments at 256 context showed similar patterns, though direct comparison requires re-running at matched conditions.
+
+*z-gate initialization*: We confirmed that GRU z-gate bias initialization (0 vs −2) does not meaningfully affect results. Both Stock GRU and GRUS use PyTorch's default (zero) initialization internally.
 
 == Open Questions
 
-- *Scaling behavior*: Does the match hold at larger scales (7B, 13B)?
+- *Scaling behavior*: Does the selectivity advantage hold at larger scales (7B, 13B)?
 - *Long-context tasks*: Does true recurrence provide advantages on tasks requiring complex temporal reasoning?
 - *Minimal sufficient architecture*: Is full GRU necessary, or would simpler non-linear dynamics suffice?
+- *Activation functions*: Does SiLU consistently outperform sigmoid for the selectivity gate?
 
 == Theoretical Implications
 
@@ -271,7 +313,9 @@ The empirical question: do practical tasks require this additional expressivity?
 
 = Conclusion
 
-Selective GRU demonstrates that adding input-dependent output gating to standard GRU matches state-of-the-art selective state space models. The architecture is simple (a single bilinear gate layer), uses battle-tested cuDNN kernels, and preserves the non-associative dynamics that may prove important for complex temporal reasoning tasks.
+Selective GRU demonstrates that adding input-dependent output gating to standard GRU achieves performance comparable to state-of-the-art selective state space models. The ~0.8 nat improvement over Stock GRU is attributable entirely to the selectivity mechanism.
+
+The architecture is simple (a single bilinear gate layer), uses battle-tested cuDNN kernels, and preserves the non-associative dynamics that may prove important for complex temporal reasoning tasks.
 
 The key insight is the *read-write decomposition*: GRU excels at building structured memory (writing); selectivity enables input-dependent retrieval (reading). Neither alone suffices; together they match Mamba-2.
 
@@ -280,5 +324,6 @@ The key insight is the *read-write decomposition*: GRU excels at building struct
 #v(0.5em)
 #text(size: 9pt, style: "italic")[
   Code: `github.com/ekg/gruboros` \
-  Training: 8x RTX 6000 Ada, PyTorch DDP, The Pile dataset
+  Training: 8× A100 (80GB), PyTorch DDP, The Pile dataset \
+  December 2025
 ]
