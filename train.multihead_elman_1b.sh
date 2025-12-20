@@ -4,19 +4,19 @@ set -e -x
 # =============================================================================
 # MultiHeadElman 1B Training - 2048x more expressive recurrence than Mamba2!
 # =============================================================================
-# Model: ~1.03B params using multi-head RNN with per-head R matrices
+# Model: ~1.0B params using multi-head RNN with per-head R matrices
 # Architecture:
-#   - 32 heads × 64×64 R matrices = 131K recurrence params per layer
+#   - 64 heads × 64×64 R matrices = 262K recurrence params per layer
 #   - Softsign activation (gradient-friendly, non-saturating)
 #   - Input-only output gate (like Mamba2)
-#   - 72 layers to match Mamba2's ~1B param count
+#   - depth=35 to match Mamba2 exactly
 #
 # Key insight: Mamba2 uses 64 scalar decays (one per head).
-# MultiHeadElman uses 32 heads × 64×64 matrices = 2048x more expressive!
+# MultiHeadElman uses 64 heads × 64×64 matrices = 4096x more expressive!
 #
 # Comparison:
 #   - Mamba2 recurrence params: 64 (scalars)
-#   - MultiHeadElman recurrence params: 131,072 (per layer)
+#   - MultiHeadElman recurrence params: 262,144 (per layer)
 #   - Full Elman recurrence params: 4,194,304 (too large to train)
 # =============================================================================
 
@@ -34,11 +34,11 @@ export MASTER_ADDR=127.0.0.1
 export MASTER_PORT=29536
 
 echo "======================================================================="
-echo "=== MultiHeadElman 1B Training (32 heads × 64×64, softsign) ==="
+echo "=== MultiHeadElman 1B Training (64 heads × 64×64, softsign) ==="
 echo "======================================================================="
 
-# Config: dim=2048, depth=72, nheads=32, headdim=64 → ~1.03B params
-# Matches Mamba2's ~1B param count (depth=35)
+# Config: dim=2048, depth=35, nheads=64, headdim=64 → ~1.0B params
+# Matches Mamba2's depth=35 exactly for fair comparison
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun \
   --nproc_per_node=8 \
@@ -52,13 +52,13 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 72 \
+  --depth 35 \
   --expansion_factor 1.0 \
   --ff_mult 0.0 \
   --dropout 0.0 \
   \
   --use_multihead_elman \
-  --multihead_elman_nheads 32 \
+  --multihead_elman_nheads 64 \
   --multihead_elman_headdim 64 \
   --multihead_elman_activation softsign \
   --recurrence_chunk_size 64 \
