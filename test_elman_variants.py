@@ -33,7 +33,13 @@ def test_basic():
     print("=" * 60)
 
     device = 'cuda'
-    dtype = torch.float32
+
+    # Test all dtypes
+    test_dtypes = [
+        ('fp32', torch.float32),
+        ('bf16', torch.bfloat16),
+        ('fp16', torch.float16),
+    ]
 
     B, T, D = 4, 32, 128
 
@@ -47,27 +53,29 @@ def test_basic():
     ]
 
     all_passed = True
-    for name, Layer in variants:
-        try:
-            layer = Layer(D, D).to(device, dtype)
-            layer.train()
+    for dtype_name, dtype in test_dtypes:
+        print(f"\n  Testing {dtype_name}:")
+        for name, Layer in variants:
+            try:
+                layer = Layer(D, D).to(device, dtype)
+                layer.train()
 
-            x = torch.randn(T, B, D, device=device, dtype=dtype, requires_grad=True)
+                x = torch.randn(T, B, D, device=device, dtype=dtype, requires_grad=True)
 
-            out = layer(x)
-            loss = out.sum()
-            loss.backward()
+                out = layer(x)
+                loss = out.sum()
+                loss.backward()
 
-            assert out.shape == (T, B, D), f"Output shape mismatch: {out.shape}"
-            assert x.grad is not None, "Input gradient is None"
-            assert layer.Wx.grad is not None, "Wx gradient is None"
-            assert layer.R.grad is not None, "R gradient is None"
-            assert layer.bias.grad is not None, "bias gradient is None"
+                assert out.shape == (T, B, D), f"Output shape mismatch: {out.shape}"
+                assert x.grad is not None, "Input gradient is None"
+                assert layer.Wx.grad is not None, "Wx gradient is None"
+                assert layer.R.grad is not None, "R gradient is None"
+                assert layer.bias.grad is not None, "bias gradient is None"
 
-            print(f"  {name:15s}: PASSED (out shape: {out.shape})")
-        except Exception as e:
-            print(f"  {name:15s}: FAILED ({e})")
-            all_passed = False
+                print(f"    {name:15s}: PASSED")
+            except Exception as e:
+                print(f"    {name:15s}: FAILED ({e})")
+                all_passed = False
 
     return all_passed
 
@@ -167,13 +175,18 @@ def test_gradients():
     return all_passed
 
 
-def benchmark_single_layer(batch_size=64, seq_len=512, hidden_size=2048):
+def benchmark_single_layer(batch_size=64, seq_len=512, hidden_size=2048, dtype_name='bf16'):
     """Benchmark all variants on a single layer."""
-    print(f"\nBenchmarking single layer (T={seq_len}, B={batch_size}, D={hidden_size}, fp16)...")
+    dtype_map = {
+        'fp32': torch.float32,
+        'fp16': torch.float16,
+        'bf16': torch.bfloat16,
+    }
+    dtype = dtype_map.get(dtype_name, torch.bfloat16)
+    print(f"\nBenchmarking single layer (T={seq_len}, B={batch_size}, D={hidden_size}, {dtype_name})...")
     print("=" * 60)
 
     device = 'cuda'
-    dtype = torch.float16
 
     B, T, D = batch_size, seq_len, hidden_size
 
@@ -191,40 +204,43 @@ def benchmark_single_layer(batch_size=64, seq_len=512, hidden_size=2048):
 
     results = {}
     for name, Layer in variants:
-        layer = Layer(D, D).to(device, dtype)
-        layer.train()
+        try:
+            layer = Layer(D, D).to(device, dtype)
+            layer.train()
 
-        # Warmup
-        for _ in range(3):
-            out = layer(x)
-            if isinstance(out, tuple):
-                out = out[0]
-            loss = out.sum()
-            loss.backward()
-            layer.zero_grad()
+            # Warmup
+            for _ in range(3):
+                out = layer(x)
+                if isinstance(out, tuple):
+                    out = out[0]
+                loss = out.sum()
+                loss.backward()
+                layer.zero_grad()
 
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
 
-        # Benchmark
-        num_iters = 10
-        torch.cuda.synchronize()
-        start = time.time()
-        for _ in range(num_iters):
-            out = layer(x)
-            if isinstance(out, tuple):
-                out = out[0]
-            loss = out.sum()
-            loss.backward()
-            layer.zero_grad()
-        torch.cuda.synchronize()
-        elapsed = time.time() - start
+            # Benchmark
+            num_iters = 10
+            torch.cuda.synchronize()
+            start = time.time()
+            for _ in range(num_iters):
+                out = layer(x)
+                if isinstance(out, tuple):
+                    out = out[0]
+                loss = out.sum()
+                loss.backward()
+                layer.zero_grad()
+            torch.cuda.synchronize()
+            elapsed = time.time() - start
 
-        tokens = B * T * num_iters
-        tok_per_sec = tokens / elapsed
-        ms_per_iter = elapsed / num_iters * 1000
+            tokens = B * T * num_iters
+            tok_per_sec = tokens / elapsed
+            ms_per_iter = elapsed / num_iters * 1000
 
-        results[name] = tok_per_sec
-        print(f"  {name:15s}: {tok_per_sec:>10,.0f} tok/s ({ms_per_iter:.1f} ms/iter)")
+            results[name] = tok_per_sec
+            print(f"  {name:15s}: {tok_per_sec:>10,.0f} tok/s ({ms_per_iter:.1f} ms/iter)")
+        except NotImplementedError as e:
+            print(f"  {name:15s}: SKIPPED (not supported for {dtype_name})")
 
     return results
 
@@ -237,6 +253,7 @@ def main():
     parser.add_argument('--batch', type=int, default=64, help='Batch size for benchmark')
     parser.add_argument('--seq-len', type=int, default=512, help='Sequence length for benchmark')
     parser.add_argument('--hidden', type=int, default=2048, help='Hidden size for benchmark')
+    parser.add_argument('--dtype', type=str, default='bf16', choices=['fp32', 'fp16', 'bf16'], help='Data type for benchmark')
     args = parser.parse_args()
 
     print("Elman RNN Variants Test Suite")
@@ -251,7 +268,7 @@ def main():
         test_gradients()
 
     if run_all or args.benchmark:
-        benchmark_single_layer(args.batch, args.seq_len, args.hidden)
+        benchmark_single_layer(args.batch, args.seq_len, args.hidden, args.dtype)
 
     print("\nDone!")
 

@@ -140,6 +140,14 @@ except ImportError as e:
     print(f"Failed to import FlashGRU: {e}")
     FlashGRU = None
 
+# Import ElmanSilu (haste CUDA kernels, 3x faster than cuDNN GRU!)
+try:
+    from mingru.elman_silu import ElmanSilu
+    print("ElmanSilu available (haste CUDA kernels, 3x faster than cuDNN GRU!)")
+except ImportError as e:
+    print(f"Failed to import ElmanSilu: {e}")
+    ElmanSilu = None
+
 def exists(v):
     return v is not None
 
@@ -238,6 +246,7 @@ class minLM(Module):
         use_cudnn_ssm_series_gru = False,  # Use cuDNN GRU → SSM in series (GRU extracts, SSM tracks!)
         per_layer_alpha = False,  # Initialize each layer with different EMA alpha (fast→slow)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
+        use_elman_silu = False,  # Use ElmanSilu (haste CUDA, 3x faster than cuDNN GRU!)
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
         z_bias_input = -2.0,  # Initial bias for z-gates on input projection
@@ -408,6 +417,16 @@ class minLM(Module):
                 'expansion_factor': expansion,
                 'z_bias_input': z_bias_input,
                 'z_bias_hidden': z_bias_hidden,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_elman_silu:
+            # Use ElmanSilu (haste CUDA kernels, 3x faster than cuDNN GRU!)
+            min_rnn_klass = ElmanSilu
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanSilu (haste CUDA{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
                 'recurrence_chunk_size': recurrence_chunk_size
             }
         else:

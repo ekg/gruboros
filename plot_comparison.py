@@ -53,6 +53,11 @@ logs = [
     # === Ablations (output selection variants) ===
     ('logs/input_only_gate_1b_20251209_035046.log', 'Input-only gate', '#E69F00', '#cc8a00'),
     ('logs/glu_gate_1b_20251209_160229.log', 'GLU gate', '#D55E00', '#b34d00'),
+
+    # === ElmanSilu (haste CUDA, no TBPTT, harmonized with Mamba2) ===
+    # Log file will be: logs/elman_silu_1b_YYYYMMDD_HHMMSS.log
+    # Uncomment after training completes:
+    # ('logs/elman_silu_1b_XXXXXXXX_XXXXXX.log', 'ElmanSilu (haste, no TBPTT)', '#FF69B4', '#db3d8f'),
 ]
 
 plt.figure(figsize=(14, 8))

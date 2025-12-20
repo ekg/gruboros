@@ -1073,6 +1073,52 @@ def get_model(model_config):
         print(f"Using CuDNNGRU_ConvLM: dim={conv_config['dim']}, depth={conv_config['depth']}, conv_kernel={conv_config['conv_kernel']}")
         return CuDNNGRU_ConvLM(**conv_config)
 
+    # Use minGRU + SiLU multiplicative output gate (parallel scan + selectivity)
+    if model_config.get('use_mingru_mult', False):
+        from mingru.mingru_mult import minGRU_MultLM
+        mingru_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'use_output_gate': True,  # SiLU output selectivity
+            'ff_mult': model_config.get('ff_mult', 0.0),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using minGRU_MultLM: dim={mingru_config['dim']}, depth={mingru_config['depth']}, expansion={mingru_config['expansion_factor']}")
+        return minGRU_MultLM(**mingru_config)
+
+    # Use cuDNN LSTM + SiLU multiplicative output gate (more stepwise nonlinearity)
+    if model_config.get('use_cudnn_lstm_mult', False):
+        from mingru.cudnn_lstm_mult import CuDNNLSTM_MultLM
+        lstm_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'gate_activation': 'silu',  # Mamba2-style
+            'ff_mult': model_config.get('ff_mult', 0.0),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using CuDNNLSTM_MultLM: dim={lstm_config['dim']}, depth={lstm_config['depth']}, expansion={lstm_config['expansion_factor']}")
+        return CuDNNLSTM_MultLM(**lstm_config)
+
+    # Use Elman MLP + SiLU selectivity (simplest possible recurrence)
+    if model_config.get('use_elman_selective', False):
+        from mingru.elman_selective import ElmanSelectiveLM
+        elman_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion': model_config['expansion'],
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using ElmanSelectiveLM: dim={elman_config['dim']}, depth={elman_config['depth']}, expansion={elman_config['expansion']}")
+        return ElmanSelectiveLM(**elman_config)
+
     # Use cuDNN GRU + Multiplicative Gating (for testing nonlinearity hypothesis)
     if model_config.get('use_cudnn_mult_gru', False):
         from mingru.cudnn_gru_mult import CuDNNGRU_MultLM
@@ -1196,7 +1242,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
     }
@@ -1344,6 +1390,8 @@ def get_args():
                         help='Initialize each layer with different EMA alpha (fast→slow with depth)')
     parser.add_argument('--use_ema_gru', action='store_true',
                         help='Use EMA GRU (GRU + EMA for long-range memory)')
+    parser.add_argument('--use_elman_silu', action='store_true',
+                        help='Use ElmanSilu (haste CUDA kernels, 3x faster than cuDNN GRU!)')
     parser.add_argument('--ema_alpha', type=float, default=0.01,
                         help='EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)')
     parser.add_argument('--use_deep_normal_gru', action='store_true',
@@ -1362,6 +1410,12 @@ def get_args():
                         help='Use cuDNN GRU + Causal Conv1d (Mamba2-style 4-wide local context before GRU)')
     parser.add_argument('--use_cudnn_mult_gru', action='store_true',
                         help='Use cuDNN GRU + Multiplicative Gating (adds h*f(x,h) nonlinearity after GRU)')
+    parser.add_argument('--use_mingru_mult', action='store_true',
+                        help='Use minGRU + SiLU output gate (parallel scan + selectivity, like fast Mamba+GRU)')
+    parser.add_argument('--use_cudnn_lstm_mult', action='store_true',
+                        help='Use cuDNN LSTM + SiLU output gate (more stepwise nonlinearity than GRU)')
+    parser.add_argument('--use_elman_selective', action='store_true',
+                        help='Use Elman MLP + SiLU selectivity (simplest recurrence: MLP state mixing + output gating)')
     parser.add_argument('--use_cudnn_bilinear_gru', action='store_true',
                         help='Use cuDNN GRU + Bilinear interactions (true second-order h×x terms)')
     parser.add_argument('--use_cudnn_plain_gru', action='store_true',
@@ -1738,6 +1792,7 @@ def main():
             "use_cudnn_ssm_series_gru": args.use_cudnn_ssm_series_gru,
             "per_layer_alpha": args.per_layer_alpha,
             "use_ema_gru": args.use_ema_gru,
+            "use_elman_silu": args.use_elman_silu,
             "ema_alpha": args.ema_alpha,
             "use_deep_normal_gru": args.use_deep_normal_gru,
             "use_logspace_gru": args.use_logspace_gru,
@@ -1747,6 +1802,9 @@ def main():
             "use_mamba2_ffn3": args.use_mamba2_ffn3,
             "use_cudnn_conv_gru": args.use_cudnn_conv_gru,
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
+            "use_mingru_mult": args.use_mingru_mult,
+            "use_cudnn_lstm_mult": args.use_cudnn_lstm_mult,
+            "use_elman_selective": args.use_elman_selective,
             "use_cudnn_bilinear_gru": args.use_cudnn_bilinear_gru,
             "use_cudnn_plain_gru": args.use_cudnn_plain_gru,
             "use_cudnn_ffn3_gru": args.use_cudnn_ffn3_gru,
