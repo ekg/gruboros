@@ -1242,7 +1242,8 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_haste_gru_silu', 'use_skip_elman_silu',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_haste_gru_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_multihead_elman', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
     }
@@ -1396,6 +1397,19 @@ def get_args():
                         help='Use HasteGRUSilu (haste GRU + silu gate, proper skip connection like cuDNN!)')
     parser.add_argument('--use_skip_elman_silu', action='store_true',
                         help='Use SkipElmanSilu (SkipElman + silu gate, simpler than GRU!)')
+    parser.add_argument('--use_elman_swish', action='store_true',
+                        help='Use ElmanSwish (silu inside + silu gate, SwiGLU-style like Mamba2!)')
+    parser.add_argument('--use_elman_input_gate', action='store_true',
+                        help='Use ElmanInputGate (input-only gating like Mamba2, better gradient flow!)')
+    parser.add_argument('--use_multihead_elman', action='store_true',
+                        help='Use MultiHeadElman (32 heads × 64×64 R matrices, 2048x more expressive than Mamba2!)')
+    parser.add_argument('--multihead_elman_nheads', type=int, default=32,
+                        help='Number of heads for MultiHeadElman (default 32)')
+    parser.add_argument('--multihead_elman_headdim', type=int, default=64,
+                        help='Dimension per head for MultiHeadElman (default 64)')
+    parser.add_argument('--multihead_elman_activation', type=str, default='softsign',
+                        choices=['softsign', 'tanh_residual', 'tanh'],
+                        help='Activation for MultiHeadElman: softsign (gradient-friendly), tanh_residual, or tanh')
     parser.add_argument('--ema_alpha', type=float, default=0.01,
                         help='EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)')
     parser.add_argument('--use_deep_normal_gru', action='store_true',
@@ -1799,6 +1813,12 @@ def main():
             "use_elman_silu": args.use_elman_silu,
             "use_haste_gru_silu": args.use_haste_gru_silu,
             "use_skip_elman_silu": args.use_skip_elman_silu,
+            "use_elman_swish": args.use_elman_swish,
+            "use_elman_input_gate": args.use_elman_input_gate,
+            "use_multihead_elman": args.use_multihead_elman,
+            "multihead_elman_nheads": args.multihead_elman_nheads,
+            "multihead_elman_headdim": args.multihead_elman_headdim,
+            "multihead_elman_activation": args.multihead_elman_activation,
             "ema_alpha": args.ema_alpha,
             "use_deep_normal_gru": args.use_deep_normal_gru,
             "use_logspace_gru": args.use_logspace_gru,

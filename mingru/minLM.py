@@ -164,6 +164,30 @@ except ImportError as e:
     print(f"Failed to import SkipElmanSilu: {e}")
     SkipElmanSilu = None
 
+# Import ElmanSwish (silu everywhere - like Mamba2 internal activations!)
+try:
+    from mingru.elman_swish import ElmanSwishLayer
+    print("ElmanSwishLayer available (silu inside + silu gate, SwiGLU-style!)")
+except ImportError as e:
+    print(f"Failed to import ElmanSwishLayer: {e}")
+    ElmanSwishLayer = None
+
+# Import ElmanInputGate (input-only gating like Mamba2!)
+try:
+    from mingru.elman_input_gate import ElmanInputGate
+    print("ElmanInputGate available (input-only gating like Mamba2!)")
+except ImportError as e:
+    print(f"Failed to import ElmanInputGate: {e}")
+    ElmanInputGate = None
+
+# Import MultiHeadElman (multi-head RNN with per-head R matrices, 2048x more expressive than Mamba2!)
+try:
+    from mingru.multihead_elman import MultiHeadElman
+    print("MultiHeadElman available (32 heads × 64×64 R matrices, 2048x more expressive than Mamba2!)")
+except ImportError as e:
+    print(f"Failed to import MultiHeadElman: {e}")
+    MultiHeadElman = None
+
 def exists(v):
     return v is not None
 
@@ -265,6 +289,12 @@ class minLM(Module):
         use_elman_silu = False,  # Use ElmanSilu (haste CUDA, 3x faster than cuDNN GRU!)
         use_haste_gru_silu = False,  # Use HasteGRUSilu (haste GRU + silu, proper skip connection!)
         use_skip_elman_silu = False,  # Use SkipElmanSilu (SkipElman + silu, simpler than GRU!)
+        use_elman_swish = False,  # Use ElmanSwish (silu inside + silu gate, like Mamba2!)
+        use_elman_input_gate = False,  # Use ElmanInputGate (input-only gating like Mamba2!)
+        use_multihead_elman = False,  # Use MultiHeadElman (32 heads × 64×64 R matrices!)
+        multihead_elman_nheads = 32,  # Number of heads for MultiHeadElman
+        multihead_elman_headdim = 64,  # Dimension per head for MultiHeadElman
+        multihead_elman_activation = 'softsign',  # Activation: 'softsign' or 'tanh_residual'
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
         z_bias_input = -2.0,  # Initial bias for z-gates on input projection
@@ -464,6 +494,40 @@ class minLM(Module):
             print(f"Using SkipElmanSilu (SkipElman + silu gate{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_elman_swish:
+            # Use ElmanSwish (silu inside + silu gate, like Mamba2 activations!)
+            min_rnn_klass = ElmanSwishLayer
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanSwish (silu+silu{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_elman_input_gate:
+            # Use ElmanInputGate (input-only gating like Mamba2!)
+            min_rnn_klass = ElmanInputGate
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanInputGate (input-only gate{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_multihead_elman:
+            # Use MultiHeadElman (32 heads × 64×64 R matrices, 2048x more expressive than Mamba2!)
+            min_rnn_klass = MultiHeadElman
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            r_params = multihead_elman_nheads * multihead_elman_headdim * multihead_elman_headdim
+            print(f"Using MultiHeadElman ({multihead_elman_nheads} heads × {multihead_elman_headdim}×{multihead_elman_headdim}, {r_params:,} R params, {multihead_elman_activation}{checkpoint_str}) for depth={depth} model")
+            rnn_kwargs = {
+                'nheads': multihead_elman_nheads,
+                'headdim': multihead_elman_headdim,
+                'expansion_factor': expansion,
+                'activation': multihead_elman_activation,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
                 'recurrence_chunk_size': recurrence_chunk_size
             }
