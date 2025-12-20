@@ -135,26 +135,17 @@ class MultiHeadElman(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """Initialize weights for stable training.
-
-        Key insight: R controls recurrence dynamics.
-        - Too contractive (small eigenvalues): info decays too fast
-        - Too expansive (large eigenvalues): exploding gradients
-        - Target: spectral radius ~0.9 for good gradient flow
-        """
+        """Initialize weights for stable training."""
+        # Initialize haste recurrence weights
+        # R should start near identity-ish for gradient flow
         for h in range(self.nheads):
-            # Initialize R with orthogonal + scale to spectral radius ~0.9
-            # Orthogonal matrices have eigenvalues on unit circle
-            nn.init.orthogonal_(self.recurrence.R[h])
-            self.recurrence.R.data[h] *= 0.9
+            # Initialize R close to identity with small noise
+            nn.init.eye_(self.recurrence.R[h])
+            self.recurrence.R.data[h] *= 0.5
+            self.recurrence.R.data[h] += torch.randn_like(self.recurrence.R[h]) * 0.02
 
-            # Add small identity component for stability
-            self.recurrence.R.data[h] += 0.1 * torch.eye(
-                self.headdim, device=self.recurrence.R.device, dtype=self.recurrence.R.dtype
-            )
-
-            # Wx: Xavier init for balanced gradients
-            nn.init.xavier_uniform_(self.recurrence.Wx[h])
+            # Wx: standard small init
+            nn.init.normal_(self.recurrence.Wx[h], std=0.02)
 
         # Bias: zero init
         nn.init.zeros_(self.recurrence.bias)
