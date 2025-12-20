@@ -31,7 +31,7 @@ mkdir -p "${OUTPUT_DIR}"
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MASTER_ADDR=127.0.0.1
-export MASTER_PORT=29536
+export MASTER_PORT=29550
 
 echo "======================================================================="
 echo "=== MultiHeadElman 1B Training (64 heads × 64×64, softsign) ==="
@@ -69,7 +69,7 @@ echo "======================================================================="
   --grad_accum 1 \
   \
   --train_steps 10000 \
-  --lr 0.0006 \
+  --lr 0.001 \
   --weight_decay 0.1 \
   --grad_clip 1.0 \
   \
