@@ -12,6 +12,19 @@ except ImportError:
     print("Warning: haste_pytorch not available. ElmanSilu will not work.")
 
 
+class RMSNorm(nn.Module):
+    """RMSNorm for stabilizing outputs."""
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.scale = dim ** 0.5
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        norm = torch.norm(x, dim=-1, keepdim=True) * (x.shape[-1] ** -0.5)
+        return x / (norm + self.eps) * self.g
+
+
 class ElmanSilu(nn.Module):
     """
     Wrapper around haste's ElmanSilu for compatibility with minLM.
@@ -65,8 +78,13 @@ class ElmanSilu(nn.Module):
             with torch.no_grad():
                 self.elman.bias[self.dim_inner:].fill_(gate_bias_init)
 
+        # LayerNorm before output for stability
+        self.output_norm = RMSNorm(self.dim_inner)
+
         # Output projection: dim_inner -> dim
+        # ZERO-INITIALIZED for stable residual connection!
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
+        nn.init.zeros_(self.output_proj.weight)
 
     def _elman_forward(self, x_proj, h0):
         """Helper function for gradient checkpointing."""
@@ -137,7 +155,10 @@ class ElmanSilu(nn.Module):
         # Convert back to batch-first: (batch, seq_len, dim_inner)
         elman_out = elman_out.transpose(0, 1).contiguous()
 
-        # Project output
+        # Normalize before output projection for stability
+        elman_out = self.output_norm(elman_out)
+
+        # Project output (zero-initialized for stable residual)
         output = self.output_proj(elman_out)  # (batch, seq_len, dim)
 
         if return_hiddens:
