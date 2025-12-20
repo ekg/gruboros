@@ -1242,7 +1242,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_haste_gru_silu', 'use_skip_elman_silu',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
     }
@@ -1392,6 +1392,10 @@ def get_args():
                         help='Use EMA GRU (GRU + EMA for long-range memory)')
     parser.add_argument('--use_elman_silu', action='store_true',
                         help='Use ElmanSilu (haste CUDA kernels, 3x faster than cuDNN GRU!)')
+    parser.add_argument('--use_haste_gru_silu', action='store_true',
+                        help='Use HasteGRUSilu (haste GRU + silu gate, proper skip connection like cuDNN!)')
+    parser.add_argument('--use_skip_elman_silu', action='store_true',
+                        help='Use SkipElmanSilu (SkipElman + silu gate, simpler than GRU!)')
     parser.add_argument('--ema_alpha', type=float, default=0.01,
                         help='EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)')
     parser.add_argument('--use_deep_normal_gru', action='store_true',
@@ -1793,6 +1797,8 @@ def main():
             "per_layer_alpha": args.per_layer_alpha,
             "use_ema_gru": args.use_ema_gru,
             "use_elman_silu": args.use_elman_silu,
+            "use_haste_gru_silu": args.use_haste_gru_silu,
+            "use_skip_elman_silu": args.use_skip_elman_silu,
             "ema_alpha": args.ema_alpha,
             "use_deep_normal_gru": args.use_deep_normal_gru,
             "use_logspace_gru": args.use_logspace_gru,

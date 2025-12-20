@@ -148,6 +148,22 @@ except ImportError as e:
     print(f"Failed to import ElmanSilu: {e}")
     ElmanSilu = None
 
+# Import HasteGRUSilu (haste GRU + silu output gate, matches cuDNN GRU + silu!)
+try:
+    from mingru.haste_gru_silu import HasteGRUSilu
+    print("HasteGRUSilu available (haste GRU + silu gate, proper skip connection!)")
+except ImportError as e:
+    print(f"Failed to import HasteGRUSilu: {e}")
+    HasteGRUSilu = None
+
+# Import SkipElmanSilu (SkipElman + silu output gate, simpler than GRU!)
+try:
+    from mingru.skip_elman_silu import SkipElmanSilu
+    print("SkipElmanSilu available (SkipElman + silu gate, gradient highway!)")
+except ImportError as e:
+    print(f"Failed to import SkipElmanSilu: {e}")
+    SkipElmanSilu = None
+
 def exists(v):
     return v is not None
 
@@ -247,6 +263,8 @@ class minLM(Module):
         per_layer_alpha = False,  # Initialize each layer with different EMA alpha (fast→slow)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         use_elman_silu = False,  # Use ElmanSilu (haste CUDA, 3x faster than cuDNN GRU!)
+        use_haste_gru_silu = False,  # Use HasteGRUSilu (haste GRU + silu, proper skip connection!)
+        use_skip_elman_silu = False,  # Use SkipElmanSilu (SkipElman + silu, simpler than GRU!)
         ema_alpha = 0.01,  # EMA decay rate (small = longer memory, 0.01 ~ 70 token half-life)
         use_gradient_checkpointing = False,  # Use gradient checkpointing to reduce memory
         z_bias_input = -2.0,  # Initial bias for z-gates on input projection
@@ -424,6 +442,26 @@ class minLM(Module):
             min_rnn_klass = ElmanSilu
             checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
             print(f"Using ElmanSilu (haste CUDA{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_haste_gru_silu:
+            # Use HasteGRUSilu (haste GRU + silu output gate, proper skip connection!)
+            min_rnn_klass = HasteGRUSilu
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using HasteGRUSilu (haste GRU + silu gate{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_skip_elman_silu:
+            # Use SkipElmanSilu (SkipElman + silu output gate, simpler than GRU!)
+            min_rnn_klass = SkipElmanSilu
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using SkipElmanSilu (SkipElman + silu gate{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
