@@ -99,19 +99,13 @@ class MultiHeadElman(nn.Module):
         self.dim = dim
         self.nheads = nheads
         self.headdim = headdim
-        self.dim_inner = nheads * headdim  # Should equal dim * expansion_factor
+        self.dim_inner = nheads * headdim  # Determined by nheads × headdim
         self.activation = activation
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.recurrence_chunk_size = recurrence_chunk_size
 
-        # Verify dimensions
-        expected_dim_inner = int(dim * expansion_factor)
-        if self.dim_inner != expected_dim_inner:
-            # Adjust nheads to match expected dim_inner
-            self.dim_inner = expected_dim_inner
-            self.nheads = self.dim_inner // headdim
-            assert self.dim_inner % headdim == 0, \
-                f"dim_inner ({self.dim_inner}) must be divisible by headdim ({headdim})"
+        # Note: dim_inner is determined by nheads × headdim, not expansion_factor
+        # This allows explicit control over the multi-head structure
 
         # Input projection: dim -> dim_inner (cross-head mixing happens here)
         self.input_proj = nn.Linear(dim, self.dim_inner, bias=False)
