@@ -4,12 +4,12 @@ set -e -x
 # =============================================================================
 # MultiHeadElman 1B Training - 2048x more expressive recurrence than Mamba2!
 # =============================================================================
-# Model: ~1.13B params using multi-head RNN with per-head R matrices
+# Model: ~1.03B params using multi-head RNN with per-head R matrices
 # Architecture:
 #   - 32 heads × 64×64 R matrices = 131K recurrence params per layer
 #   - Softsign activation (gradient-friendly, non-saturating)
 #   - Input-only output gate (like Mamba2)
-#   - 80 layers (matches Mamba2's "more layers" approach to param count)
+#   - 72 layers to match Mamba2's ~1B param count
 #
 # Key insight: Mamba2 uses 64 scalar decays (one per head).
 # MultiHeadElman uses 32 heads × 64×64 matrices = 2048x more expressive!
@@ -37,8 +37,8 @@ echo "======================================================================="
 echo "=== MultiHeadElman 1B Training (32 heads × 64×64, softsign) ==="
 echo "======================================================================="
 
-# Config: dim=2048, depth=80, nheads=32, headdim=64 → ~1.13B params
-# Matches Mamba2's "more layers to compensate" approach
+# Config: dim=2048, depth=72, nheads=32, headdim=64 → ~1.03B params
+# Matches Mamba2's ~1B param count (depth=35)
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun \
   --nproc_per_node=8 \
@@ -52,7 +52,7 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 80 \
+  --depth 72 \
   --expansion_factor 1.0 \
   --ff_mult 0.0 \
   --dropout 0.0 \
