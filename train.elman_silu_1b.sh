@@ -51,7 +51,7 @@ echo "======================================================================="
   --no-tbptt \
   \
   --chunk_size 512 \
-  --batch_size 16 \
+  --batch_size 32 \
   --grad_accum 1 \
   \
   --train_steps 10000 \

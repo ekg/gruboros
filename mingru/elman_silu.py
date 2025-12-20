@@ -82,14 +82,17 @@ class ElmanSilu(nn.Module):
             with torch.no_grad():
                 self.elman.bias[self.dim_inner:].fill_(gate_bias_init)
 
+        # Normalization before output gate (stabilizes training)
+        self.pre_gate_norm = RMSNorm(self.dim_inner)
+
         # silu OUTPUT gate (like Mult GRU + silu)
-        # Projects h to gate logits, then silu for input-dependent selection
-        self.output_gate = nn.Linear(self.dim_inner, self.dim_inner, bias=True)
+        # Gate depends on BOTH h and x for true input-dependent selection
+        self.gate_h = nn.Linear(self.dim_inner, self.dim_inner, bias=False)
+        self.gate_x = nn.Linear(self.dim_inner, self.dim_inner, bias=False)
+        self.gate_bias = nn.Parameter(torch.zeros(self.dim_inner))
 
         # Output projection: dim_inner -> dim
-        # ZERO-INITIALIZED for stable residual connection!
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
-        nn.init.zeros_(self.output_proj.weight)
 
     def _elman_forward(self, x_proj, h0):
         """Helper function for gradient checkpointing."""
@@ -160,14 +163,17 @@ class ElmanSilu(nn.Module):
         # Convert back to batch-first: (batch, seq_len, dim_inner)
         elman_out = elman_out.transpose(0, 1).contiguous()
 
-        # Apply silu OUTPUT gate (like Mult GRU + silu)
-        # This is input-dependent selection AFTER stable recurrence
-        gate_logits = self.output_gate(elman_out)  # [B, T, dim_inner]
-        gate = F.silu(gate_logits)  # silu for selectivity
-        elman_out = elman_out * gate  # gated output
+        # Normalize before gating
+        elman_out = self.pre_gate_norm(elman_out)
 
-        # Project output (zero-initialized for stable residual)
-        output = self.output_proj(elman_out)  # (batch, seq_len, dim)
+        # Apply silu OUTPUT gate (like Mult GRU + silu)
+        # Gate depends on BOTH h and x for true input-dependent selection
+        gate_logits = self.gate_h(elman_out) + self.gate_x(x_proj.transpose(0, 1)) + self.gate_bias
+        gate = F.silu(gate_logits)  # silu for selectivity
+        gated_out = elman_out * gate  # gated output
+
+        # Project output
+        output = self.output_proj(gated_out)  # (batch, seq_len, dim)
 
         if return_hiddens:
             return output, h, None  # (output, hiddens, conv_buffers)
