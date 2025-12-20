@@ -9,7 +9,7 @@ set -e -x
 #   - 64 heads × 64×64 R matrices = 262K recurrence params per layer
 #   - Softsign activation (gradient-friendly, non-saturating)
 #   - Input-only output gate (like Mamba2)
-#   - depth=35 to match Mamba2 exactly
+#   - depth=31 to match Mamba2's ~1B param count
 #
 # Key insight: Mamba2 uses 64 scalar decays (one per head).
 # MultiHeadElman uses 64 heads × 64×64 matrices = 4096x more expressive!
@@ -37,8 +37,8 @@ echo "======================================================================="
 echo "=== MultiHeadElman 1B Training (64 heads × 64×64, softsign) ==="
 echo "======================================================================="
 
-# Config: dim=2048, depth=35, nheads=64, headdim=64 → ~1.0B params
-# Matches Mamba2's depth=35 exactly for fair comparison
+# Config: dim=2048, depth=31, nheads=64, headdim=64 → 1.003B params
+# Close to Mamba2's depth=35, matched on param count
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun \
   --nproc_per_node=8 \
@@ -52,7 +52,7 @@ echo "======================================================================="
   --tiktoken_encoding p50k_base \
   \
   --dim 2048 \
-  --depth 35 \
+  --depth 31 \
   --expansion_factor 1.0 \
   --ff_mult 0.0 \
   --dropout 0.0 \
