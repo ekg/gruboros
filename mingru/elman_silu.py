@@ -1,10 +1,14 @@
 """ElmanSilu RNN using haste's CUDA-optimized kernels.
 
-Architecture (matches Mult GRU + silu selectivity):
-1. Bounded recurrence via ElmanSigmoid (stable)
-2. silu OUTPUT gate for input-dependent selection (like Mamba2/Mult GRU)
+Architecture (Mamba2-style input-only selectivity):
+1. Bounded recurrence via ElmanSigmoid (tanh * sigmoid, stable)
+2. silu OUTPUT gate from INPUT ONLY (like Mamba2 - no hidden state dependency!)
+
+Key insight: Mamba2's gates depend only on input, not hidden state.
+This allows parallel precomputation and cleaner gradient flow.
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,7 +37,7 @@ class RMSNorm(nn.Module):
 
 class ElmanSilu(nn.Module):
     """
-    Haste ElmanSigmoid + silu OUTPUT gate (matches Mult GRU + silu architecture).
+    Haste ElmanSigmoid + INPUT-ONLY silu output gate (Mamba2-style selectivity).
 
     Architecture:
         1. RECURRENCE (bounded, stable):
@@ -41,16 +45,17 @@ class ElmanSilu(nn.Module):
            recur_gate = sigmoid(R @ h + Wx @ x + b2)  -- BOUNDED [0,1]
            h_new = h_candidate * recur_gate
 
-        2. OUTPUT SELECTION (silu, like Mult GRU/Mamba2):
-           output_gate = silu(W_out @ h + b_out)      -- input-dependent selection
+        2. OUTPUT SELECTION (INPUT-ONLY, like Mamba2):
+           output_gate = silu(W_gate @ x + b_gate)    -- INPUT ONLY, no h!
            output = h * output_gate
 
-    This matches Mult GRU + silu: bounded recurrence + silu output selection.
-    Uses haste's fused CUDA kernels (3x faster than cuDNN GRU).
+    Key difference from previous version: output gate depends ONLY on input x,
+    not on hidden state h. This matches Mamba2's selectivity pattern and allows:
+    - Parallel precomputation of gates
+    - Cleaner gradient flow (no gate-through-h path)
+    - Simpler architecture
 
-    Performance (T=512, B=64, D=2048, bf16):
-        - Elman + silu output: ~920k tok/s
-        - cuDNN GRU: ~280k tok/s
+    Uses haste's fused CUDA kernels for fast recurrence.
     """
 
     def __init__(
@@ -85,14 +90,29 @@ class ElmanSilu(nn.Module):
         # Normalization before output gate (stabilizes training)
         self.pre_gate_norm = RMSNorm(self.dim_inner)
 
-        # silu OUTPUT gate (like Mult GRU + silu)
-        # Gate depends on BOTH h and x for true input-dependent selection
-        self.gate_h = nn.Linear(self.dim_inner, self.dim_inner, bias=False)
-        self.gate_x = nn.Linear(self.dim_inner, self.dim_inner, bias=False)
+        # silu OUTPUT gate - INPUT ONLY (like Mamba2!)
+        # Gate depends ONLY on raw x, NOT on hidden state h
+        # This allows parallel precomputation and cleaner gradient flow
+        self.gate_x = nn.Linear(dim, self.dim_inner, bias=False)  # RAW input only!
         self.gate_bias = nn.Parameter(torch.zeros(self.dim_inner))
 
         # Output projection: dim_inner -> dim
         self.output_proj = nn.Linear(self.dim_inner, dim, bias=False)
+
+        # Initialize weights (matches cuDNN GRU mult initialization)
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights for stable residual learning."""
+        # Gate projection: std=0.02
+        nn.init.normal_(self.gate_x.weight, std=0.02)
+        nn.init.zeros_(self.gate_bias)
+
+        # Input projection: std=0.02
+        nn.init.normal_(self.input_proj.weight, std=0.02)
+
+        # Output projection: SMALL init for residual learning
+        nn.init.normal_(self.output_proj.weight, std=0.02 / math.sqrt(2))
 
     def _elman_forward(self, x_proj, h0):
         """Helper function for gradient checkpointing."""
@@ -166,9 +186,10 @@ class ElmanSilu(nn.Module):
         # Normalize before gating
         elman_out = self.pre_gate_norm(elman_out)
 
-        # Apply silu OUTPUT gate (like Mult GRU + silu)
-        # Gate depends on BOTH h and x for true input-dependent selection
-        gate_logits = self.gate_h(elman_out) + self.gate_x(x_proj.transpose(0, 1)) + self.gate_bias
+        # Apply silu OUTPUT gate - INPUT ONLY (like Mamba2!)
+        # Gate depends ONLY on raw x, NOT on hidden state
+        # This allows parallel precomputation of gates
+        gate_logits = self.gate_x(x) + self.gate_bias  # INPUT ONLY!
         gate = F.silu(gate_logits)  # silu for selectivity
         gated_out = elman_out * gate  # gated output
 

@@ -2,10 +2,14 @@
 set -e -x
 
 # =============================================================================
-# ElmanSilu 1B Training - Harmonized with Mamba2 baseline
+# ElmanSilu 1B Training - INPUT-ONLY output gating like Mamba2
 # =============================================================================
-# Model: ~1B params using haste ElmanSilu CUDA kernels
-# Architecture: h_new = tanh(h_candidate) * silu(gate) - simpler than GRU
+# Model: ~1.15B params using haste ElmanSilu CUDA kernels
+# Architecture:
+#   - Haste ElmanSigmoid for bounded recurrence (tanh * sigmoid)
+#   - silu OUTPUT gate from INPUT ONLY (like Mamba2 - no hidden state dependency!)
+#   - Parallel Wx precomputation in haste CUDA kernels
+#   - No FFN layers (ff_mult=0.0) - all capacity in recurrence
 # Note: TBPTT disabled for fair comparison with Mamba2 (which can't do TBPTT)
 # =============================================================================
 
@@ -20,14 +24,14 @@ mkdir -p "${OUTPUT_DIR}"
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MASTER_ADDR=127.0.0.1
-export MASTER_PORT=29522
+export MASTER_PORT=29531
 
 echo "======================================================================="
-echo "=== ElmanSilu 1B Training (haste CUDA kernels, 3x faster than GRU) ==="
+echo "=== ElmanSilu 1B Training (input-only output gate, haste CUDA) ==="
 echo "======================================================================="
 
-# ElmanSilu 1B config: dim=2048, depth=32 gives ~1.01B params
-# Harmonized with Mamba2: lr=0.0006, weight_decay=0.1, no TBPTT
+# ElmanSilu 1B config: dim=2048, depth=32, ff_mult=0.0 gives ~1.15B params
+# Input-only output gate like Mamba2: lr=0.0006, weight_decay=0.1, no TBPTT
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun \
   --nproc_per_node=8 \
@@ -51,7 +55,7 @@ echo "======================================================================="
   --no-tbptt \
   \
   --chunk_size 512 \
-  --batch_size 24 \
+  --batch_size 16 \
   --grad_accum 1 \
   \
   --train_steps 10000 \
