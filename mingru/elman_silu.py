@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 try:
-    from haste_pytorch import ElmanSilu as HasteElmanSilu
+    from haste_pytorch import ElmanSigmoid as HasteElmanSigmoid
     HASTE_AVAILABLE = True
 except ImportError:
     HASTE_AVAILABLE = False
@@ -27,20 +27,24 @@ class RMSNorm(nn.Module):
 
 class ElmanSilu(nn.Module):
     """
-    Wrapper around haste's ElmanSilu for compatibility with minLM.
+    Wrapper around haste's ElmanSigmoid for compatibility with minLM.
+    (Named ElmanSilu for backwards compatibility but uses sigmoid gate for stability)
 
     Architecture per timestep:
         raw = R @ h + Wx @ x + b          -- [B, 2D] single matmul
         [h_candidate, gate_logit] = split(raw)
         h_candidate = tanh(h_candidate)   -- [B, D]
-        gate = silu(gate_logit)           -- [B, D]
+        gate = sigmoid(gate_logit)        -- [B, D] BOUNDED [0,1]!
         h_new = h_candidate * gate        -- [B, D] elementwise
 
     Much simpler than GRU (2 gates vs 3), potentially faster.
     Uses haste's fused CUDA kernels (cuBLAS gemm + custom pointwise).
 
+    NOTE: Uses sigmoid gate (not silu) because silu is unbounded for positive
+    values and causes gradient explosion. sigmoid is bounded [0,1] for stability.
+
     Performance (T=512, B=64, D=2048, bf16):
-        - ElmanSilu: ~920k tok/s (gated variants)
+        - Elman variants: ~920k tok/s
         - cuDNN GRU: ~280k tok/s (fp16)
 
     3x faster than cuDNN GRU with simpler architecture!
@@ -52,7 +56,7 @@ class ElmanSilu(nn.Module):
         expansion_factor=1.0,
         use_gradient_checkpointing=False,
         recurrence_chunk_size=64,  # Process sequence in chunks to save memory
-        gate_bias_init=1.0,  # Initial bias for gate (silu(1)≈0.73, silu(0)=0)
+        gate_bias_init=0.0,  # sigmoid(0)=0.5, gate starts half-open
         **kwargs  # Ignore other args
     ):
         super().__init__()
@@ -67,13 +71,13 @@ class ElmanSilu(nn.Module):
         # Input projection: dim -> dim_inner
         self.input_proj = nn.Linear(dim, self.dim_inner, bias=False)
 
-        # Haste ElmanSilu: hidden_size = dim_inner
+        # Haste ElmanSigmoid: hidden_size = dim_inner
         # Note: haste expects (T, B, D) format (time-first)
-        self.elman = HasteElmanSilu(self.dim_inner, self.dim_inner)
+        # Using ElmanSigmoid for stability (bounded gate [0,1])
+        self.elman = HasteElmanSigmoid(self.dim_inner, self.dim_inner)
 
-        # Initialize gate bias to open the gate (unlike default zeros)
+        # Initialize gate bias (sigmoid(0)=0.5, sigmoid(1)≈0.73, sigmoid(-1)≈0.27)
         # bias layout: [h_candidate_bias (D), gate_bias (D)]
-        # silu(0)=0 (gate closed), silu(1)≈0.73 (gate open)
         if gate_bias_init != 0.0:
             with torch.no_grad():
                 self.elman.bias[self.dim_inner:].fill_(gate_bias_init)
