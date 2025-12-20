@@ -2514,8 +2514,12 @@ def main():
                             if h is None:
                                 return None
                             if isinstance(h, tuple):
-                                return tuple(x.masked_fill(mask, 0.0) for x in h)
-                            return h.masked_fill(mask, 0.0)
+                                return tuple(masked_fill_hidden(x, mask) for x in h)
+                            # Expand mask to match hidden state dimensions (e.g., MultiHeadElman: batch, nheads, headdim)
+                            m = mask
+                            while m.dim() < h.dim():
+                                m = m.unsqueeze(-1)
+                            return h.masked_fill(m, 0.0)
 
                         mask = reset_next.unsqueeze(-1)
                         hidden_state = [masked_fill_hidden(h, mask) for h in hidden_state]
