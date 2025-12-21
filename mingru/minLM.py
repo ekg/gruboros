@@ -156,6 +156,22 @@ except ImportError as e:
     print(f"Failed to import HasteGRUSilu: {e}")
     HasteGRUSilu = None
 
+# Import HasteGRUSiluFused (fused GRU + silu CUDA kernel, BF16 native!)
+try:
+    from mingru.haste_gru_silu_fused import HasteGRUSiluFused
+    print("HasteGRUSiluFused available (fused CUDA kernel, BF16 native!)")
+except ImportError as e:
+    print(f"Failed to import HasteGRUSiluFused: {e}")
+    HasteGRUSiluFused = None
+
+# Import HasteLSTMSilu (fused LSTM + silu CUDA kernel, BF16 native!)
+try:
+    from mingru.haste_lstm_silu import HasteLSTMSilu
+    print("HasteLSTMSilu available (fused LSTM + silu CUDA kernel, BF16 native!)")
+except ImportError as e:
+    print(f"Failed to import HasteLSTMSilu: {e}")
+    HasteLSTMSilu = None
+
 # Import SkipElmanSilu (SkipElman + silu output gate, simpler than GRU!)
 try:
     from mingru.skip_elman_silu import SkipElmanSilu
@@ -288,6 +304,8 @@ class minLM(Module):
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         use_elman_silu = False,  # Use ElmanSilu (haste CUDA, 3x faster than cuDNN GRU!)
         use_haste_gru_silu = False,  # Use HasteGRUSilu (haste GRU + silu, proper skip connection!)
+        use_haste_gru_silu_fused = False,  # Use HasteGRUSiluFused (fused CUDA kernel, BF16 native!)
+        use_haste_lstm_silu = False,  # Use HasteLSTMSilu (fused LSTM + silu CUDA kernel, BF16 native!)
         use_skip_elman_silu = False,  # Use SkipElmanSilu (SkipElman + silu, simpler than GRU!)
         use_elman_swish = False,  # Use ElmanSwish (silu inside + silu gate, like Mamba2!)
         use_elman_input_gate = False,  # Use ElmanInputGate (input-only gating like Mamba2!)
@@ -482,6 +500,26 @@ class minLM(Module):
             min_rnn_klass = HasteGRUSilu
             checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
             print(f"Using HasteGRUSilu (haste GRU + silu gate{checkpoint_str}, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_haste_gru_silu_fused:
+            # Use HasteGRUSiluFused (fused CUDA kernel, BF16 native!)
+            min_rnn_klass = HasteGRUSiluFused
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using HasteGRUSiluFused (fused CUDA{checkpoint_str}, BF16 native, chunk_size={recurrence_chunk_size}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_haste_lstm_silu:
+            # Use HasteLSTMSilu (fused LSTM + silu CUDA kernel, BF16 native!)
+            min_rnn_klass = HasteLSTMSilu
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using HasteLSTMSilu (fused LSTM+silu{checkpoint_str}, BF16 native, chunk_size={recurrence_chunk_size}) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
