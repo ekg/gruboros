@@ -220,6 +220,7 @@ class Mamba2FFN3LM(nn.Module):
         return_prev_hiddens=False,
         return_loss=False,
         doc_boundaries=None,
+        actual_length=None,
         **kwargs,
     ):
         """
@@ -227,11 +228,15 @@ class Mamba2FFN3LM(nn.Module):
 
         Args:
             x: [B, T] input token ids
+            actual_length: [B] tensor of valid token counts per sequence.
+                           If provided, loss is only computed on valid tokens (not padding).
             (other args for API compatibility, mostly ignored)
 
         Returns:
             loss scalar, or (loss, (None, None)) if return_prev_hiddens
         """
+        B, T = x.shape
+
         # Embed
         h = self.token_emb(x)
         h = self.drop(h)
@@ -245,12 +250,24 @@ class Mamba2FFN3LM(nn.Module):
         logits = self.to_logits(h)
 
         # Compute loss: predict next token
+        # If actual_length provided, only compute loss on valid tokens (not padding)
         targets = x[:, 1:].contiguous()
         logits_for_loss = logits[:, :-1, :].contiguous()
-        loss = F.cross_entropy(
-            logits_for_loss.view(-1, logits_for_loss.size(-1)),
-            targets.view(-1),
-        )
+
+        if actual_length is not None:
+            mask = torch.arange(T - 1, device=x.device).unsqueeze(0) < (actual_length.unsqueeze(1) - 1)
+            targets_masked = targets.clone()
+            targets_masked[~mask] = -100
+            loss = F.cross_entropy(
+                logits_for_loss.view(-1, logits_for_loss.size(-1)),
+                targets_masked.view(-1),
+                ignore_index=-100,
+            )
+        else:
+            loss = F.cross_entropy(
+                logits_for_loss.view(-1, logits_for_loss.size(-1)),
+                targets.view(-1),
+            )
 
         if not return_prev_hiddens and not return_next_prev_hidden:
             return loss

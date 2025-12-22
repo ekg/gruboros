@@ -1145,6 +1145,25 @@ def get_model(model_config):
         print(f"Using CuDNNGRU_MultLM: dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}{gate_str}{swiglu_str}{ckpt_str}")
         return CuDNNGRU_MultLM(**mult_config)
 
+    # Use Haste GRU + SiLU Multiplicative Gating (fused CUDA kernel, BF16 native)
+    # EXACT numerical equivalence to CuDNNGRU_MultLM with gate_activation='silu'
+    if model_config.get('use_haste_mult_gru', False):
+        from mingru.haste_gru_mult import HasteGRU_MultLM
+        mult_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'expansion_factor': model_config['expansion'],
+            'ff_mult': model_config.get('ff_mult', 0.0),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+            'use_checkpointing': model_config.get('use_checkpointing', False),
+            'inner_chunk_size': model_config.get('inner_chunk_size', 128),
+        }
+        ckpt_str = f", checkpointing={mult_config['inner_chunk_size']}" if mult_config['use_checkpointing'] else ""
+        print(f"Using HasteGRU_MultLM (fused CUDA, BF16 native): dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}{ckpt_str}")
+        return HasteGRU_MultLM(**mult_config)
+
     # Use cuDNN GRU + Bilinear (true second-order h×x interactions)
     if model_config.get('use_cudnn_bilinear_gru', False):
         from mingru.cudnn_gru_bilinear import CuDNNGRU_BilinearLM
@@ -1281,6 +1300,7 @@ def get_args():
     parser.add_argument('--conv_kernel_size', type=int, default=None, help='convolutional kernel size for preprocessing (None=disabled, typical: 4, 8, 16)')
     parser.add_argument('--dropout', type=float, default=0.0, help='dropout rate for training (0.0=disabled)')
     parser.add_argument('--bf16', action='store_true', help='use bfloat16 mixed precision training')
+    parser.add_argument('--no-autocast', action='store_true', dest='no_autocast', help='disable autocast when using bf16 (for CUDA kernels that handle BF16 natively)')
     parser.add_argument('--compile', action='store_true', help='use torch.compile for model optimization')
     parser.add_argument('--chunk_size', type=str, default="2k", help='sequence length of each chunk for BPTT')
     parser.add_argument('--batch_size', type=str, default="1", help='batch size per GPU (document streaming requires 1)')
@@ -1432,6 +1452,8 @@ def get_args():
                         help='Use cuDNN GRU + Causal Conv1d (Mamba2-style 4-wide local context before GRU)')
     parser.add_argument('--use_cudnn_mult_gru', action='store_true',
                         help='Use cuDNN GRU + Multiplicative Gating (adds h*f(x,h) nonlinearity after GRU)')
+    parser.add_argument('--use_haste_mult_gru', action='store_true',
+                        help='Use Haste GRU + SiLU Multiplicative Gating (fused CUDA kernel, BF16 native, EXACT numerical match to CuDNN+silu)')
     parser.add_argument('--use_mingru_mult', action='store_true',
                         help='Use minGRU + SiLU output gate (parallel scan + selectivity, like fast Mamba+GRU)')
     parser.add_argument('--use_cudnn_lstm_mult', action='store_true',
@@ -1834,6 +1856,7 @@ def main():
             "use_mamba2_ffn3": args.use_mamba2_ffn3,
             "use_cudnn_conv_gru": args.use_cudnn_conv_gru,
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
+            "use_haste_mult_gru": args.use_haste_mult_gru,
             "use_mingru_mult": args.use_mingru_mult,
             "use_cudnn_lstm_mult": args.use_cudnn_lstm_mult,
             "use_elman_selective": args.use_elman_selective,
@@ -2533,7 +2556,7 @@ def main():
                 # Save is_doc_end for next chunk's reset
                 reset_next = is_doc_end  # [B] bool - will be used BEFORE next chunk
 
-                with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16 and not getattr(args, 'no_autocast', False)):
                     # No TBPTT mode: reset hidden state each chunk for fair comparison with Mamba2
                     effective_hidden = None if getattr(args, 'no_tbptt', False) else hidden_state
                     effective_conv = None if getattr(args, 'no_tbptt', False) else conv_buffers

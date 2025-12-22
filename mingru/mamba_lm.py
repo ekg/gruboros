@@ -162,7 +162,8 @@ class MambaLM(nn.Module):
         return_prev_hiddens=False,
         return_loss=False,
         doc_boundaries=None,
-        **kwargs,  # Catch any extra arguments (actual_length, etc.)
+        actual_length=None,
+        **kwargs,
     ):
         """
         Forward pass matching train.py interface.
@@ -176,7 +177,8 @@ class MambaLM(nn.Module):
             return_prev_hiddens: If True with return_loss, include prev_hiddens in dict
             return_loss: If True, compute loss and return dict
             doc_boundaries: Ignored
-            **kwargs: Catch extra args (actual_length, etc.)
+            actual_length: [B] tensor of valid token counts per sequence.
+                           If provided, loss is only computed on valid tokens (not padding).
 
         Returns:
             If return_loss:
@@ -186,6 +188,8 @@ class MambaLM(nn.Module):
             else:
                 logits: [B, T, V] output logits
         """
+        B, T = x.shape
+
         # Embed
         h = self.token_emb(x)
         h = self.drop(h)
@@ -198,14 +202,25 @@ class MambaLM(nn.Module):
         h = self.norm_f(h)
         logits = self.to_logits(h)
 
-        # Compute loss: predict next token (like minLM)
-        # logits: [B, T, V], targets: x shifted by 1
+        # Compute loss: predict next token
+        # If actual_length provided, only compute loss on valid tokens (not padding)
         targets = x[:, 1:].contiguous()
         logits_for_loss = logits[:, :-1, :].contiguous()
-        loss = F.cross_entropy(
-            logits_for_loss.view(-1, logits_for_loss.size(-1)),
-            targets.view(-1),
-        )
+
+        if actual_length is not None:
+            mask = torch.arange(T - 1, device=x.device).unsqueeze(0) < (actual_length.unsqueeze(1) - 1)
+            targets_masked = targets.clone()
+            targets_masked[~mask] = -100
+            loss = F.cross_entropy(
+                logits_for_loss.view(-1, logits_for_loss.size(-1)),
+                targets_masked.view(-1),
+                ignore_index=-100,
+            )
+        else:
+            loss = F.cross_entropy(
+                logits_for_loss.view(-1, logits_for_loss.size(-1)),
+                targets.view(-1),
+            )
 
         # Return format matching minLM interface
         if not return_prev_hiddens and not return_next_prev_hidden:
@@ -292,7 +307,8 @@ class Mamba2LM(nn.Module):
         return_prev_hiddens=False,
         return_loss=False,
         doc_boundaries=None,
-        **kwargs,  # Catch any extra arguments (actual_length, etc.)
+        actual_length=None,
+        **kwargs,
     ):
         """
         Forward pass matching train.py interface.
@@ -306,7 +322,8 @@ class Mamba2LM(nn.Module):
             return_prev_hiddens: If True with return_loss, include prev_hiddens in dict
             return_loss: If True, compute loss and return dict
             doc_boundaries: Ignored
-            **kwargs: Catch extra args (actual_length, etc.)
+            actual_length: [B] tensor of valid token counts per sequence.
+                           If provided, loss is only computed on valid tokens (not padding).
 
         Returns:
             If return_loss:
@@ -316,6 +333,8 @@ class Mamba2LM(nn.Module):
             else:
                 logits: [B, T, V] output logits
         """
+        B, T = x.shape
+
         # Embed
         h = self.token_emb(x)
         h = self.drop(h)
@@ -328,14 +347,25 @@ class Mamba2LM(nn.Module):
         h = self.norm_f(h)
         logits = self.to_logits(h)
 
-        # Compute loss: predict next token (like minLM)
-        # logits: [B, T, V], targets: x shifted by 1
+        # Compute loss: predict next token
+        # If actual_length provided, only compute loss on valid tokens (not padding)
         targets = x[:, 1:].contiguous()
         logits_for_loss = logits[:, :-1, :].contiguous()
-        loss = F.cross_entropy(
-            logits_for_loss.view(-1, logits_for_loss.size(-1)),
-            targets.view(-1),
-        )
+
+        if actual_length is not None:
+            mask = torch.arange(T - 1, device=x.device).unsqueeze(0) < (actual_length.unsqueeze(1) - 1)
+            targets_masked = targets.clone()
+            targets_masked[~mask] = -100
+            loss = F.cross_entropy(
+                logits_for_loss.view(-1, logits_for_loss.size(-1)),
+                targets_masked.view(-1),
+                ignore_index=-100,
+            )
+        else:
+            loss = F.cross_entropy(
+                logits_for_loss.view(-1, logits_for_loss.size(-1)),
+                targets.view(-1),
+            )
 
         # Return format matching minLM interface
         if not return_prev_hiddens and not return_next_prev_hidden:
