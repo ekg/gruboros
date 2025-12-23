@@ -35,7 +35,7 @@ echo "=== HasteGRU_MultLM 1B - Fused CUDA kernel, BF16 native           ===="
 echo "======================================================================="
 echo "Timestamp: ${TIMESTAMP}"
 echo "Config: dim=2048, depth=27, expansion=1.0"
-echo "Batch: 6 x 2048 x 8 GPUs = 98,304 tokens/step"
+echo "Batch: 24 x 512 x 8 GPUs = 98,304 tokens/step"
 echo "Output: ${OUTPUT_DIR}"
 echo "======================================================================="
 
@@ -62,11 +62,11 @@ echo "======================================================================="
   --use_haste_mult_gru \
   --no-tbptt \
   \
-  --chunk_size 2048 \
-  --batch_size 6 \
+  --chunk_size 512 \
+  --batch_size 24 \
   --grad_accum 1 \
   \
-  --train_steps 10000 \
+  --train_steps 3000 \
   --lr 0.001 \
   --sf_beta 0.9 \
   --sf_beta2 0.995 \

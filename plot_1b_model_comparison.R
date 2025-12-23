@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
-# 1B Model Training Comparison: cuDNN GRU variants vs Mamba SSM
-# PyTorch DDP, 8 GPUs
+# 1B Model Training Comparison: HasteGRU vs Mamba2
+# CORRECTED PADDING: Only runs with actual_length loss masking (Dec 22+ commits)
+# PyTorch DDP, 8 GPUs, batch=24, chunk=512
 
 library(ggplot2)
 library(dplyr)
@@ -28,26 +29,15 @@ extract_log_data <- function(log_file, model_name) {
   data.frame(step = steps, loss = losses, model = model_name)
 }
 
-# Define models to compare (Mamba2 baseline onwards + ablation study)
+# === CORRECTED PADDING RUNS ONLY ===
+# These runs have actual_length loss masking (commit 80962f8, Dec 22 2025)
+# All use: batch=24, chunk=512, 8 GPUs = 98,304 tokens/step
 models <- list(
-  # === Baselines ===
-  list(log = "logs/mamba2_1b_20251207_060701.log", name = "Mamba2 SSD", params = "1.1B"),
-  list(log = "logs/mamba2_ffn3_1b_20251207_234937.log", name = "Mamba2+FFN3", params = "1.0B"),
-  list(log = "logs/cudnn_mult_gru_1b_20251208_170520.log", name = "Mult GRU (full)", params = "1.0B"),
+  # HasteGRU_MultLM: Fused CUDA kernel, 1.01B params, depth=27
+  list(log = "logs/haste_mult_gru_1b_20251222_182059.log", name = "HasteGRU_Mult", params = "1.01B"),
 
-  # === Ablation Study: What makes Mult GRU work? ===
-  # Option 1: Input-only gate (remove W_h from gate)
-  list(log = "logs/input_only_gate_1b_20251209_035046.log", name = "Ablation 1: Input-only gate", params = "1.0B"),
-
-  # Option 2: EMA + input gate (cheapest recurrence)
-  list(log = "logs/ema_input_gate_1b_20251209_023906.log", name = "Ablation 2: EMA + input gate", params = "1.1B"),
-
-  # Option 3: GLU-style gate (h-dependent only, no x)
-  list(log = "logs/glu_gate_1b_20251209_160229.log", name = "Ablation 3: GLU gate", params = "1.0B")
-
-  # === ElmanSilu (haste CUDA, harmonized with Mamba2, no TBPTT) ===
-  # Uncomment after training completes and update log filename:
-  # list(log = "logs/elman_silu_1b_XXXXXXXX_XXXXXX.log", name = "ElmanSilu (haste)", params = "1.0B")
+  # Mamba2LM: SSD kernel, 1.00B params, depth=35
+  list(log = "logs/mamba2_1b_matched_20251223_072401.log", name = "Mamba2 SSD", params = "1.00B")
 )
 
 # Extract data from all logs
@@ -81,38 +71,41 @@ all_data <- all_data %>%
   mutate(loss_smooth = rolling_mean(loss, k = 50)) %>%
   ungroup()
 
-# Define color palette (6 models)
+# Define color palette
 n_models <- length(unique(all_data$model))
 colors <- c(
-  "#0072B2",  # Blue - Mamba2 SSD
-  "#56B4E9",  # Sky blue - Mamba2+FFN3
-  "#009E73",  # Green - Mult GRU (full)
-  "#E69F00",  # Orange - Ablation 1: Input-only gate
-  "#CC79A7",  # Pink - Ablation 2: EMA + input gate
-  "#D55E00"   # Vermillion - Ablation 3: GLU gate
+  "#009E73",  # Green - HasteGRU_Mult
+  "#0072B2"   # Blue - Mamba2 SSD
 )[1:n_models]
 
-# Create the plot
-p <- ggplot(all_data, aes(x = step, y = loss_smooth, color = model)) +
-  geom_line(linewidth = 1, alpha = 0.9) +
-  scale_y_continuous(limits = c(2.5, 7), breaks = seq(2, 8, 0.5)) +
-  scale_x_continuous(labels = scales::comma) +
+# Create the plot with raw data as faint background + smoothed overlay
+p <- ggplot(all_data, aes(x = step, color = model)) +
+  # Raw data as faint lines
+  geom_line(aes(y = loss), alpha = 0.15, linewidth = 0.3) +
+  # Smoothed overlay
+  geom_line(aes(y = loss_smooth), linewidth = 1.2, alpha = 0.9) +
+  scale_y_log10(
+    breaks = c(3, 4, 5, 6, 7, 8, 10, 12),
+    labels = c("3", "4", "5", "6", "7", "8", "10", "12")
+  ) +
+  annotation_logticks(sides = "l") +
+  scale_x_continuous(labels = scales::comma, limits = c(0, 3000)) +
   scale_color_manual(values = colors) +
   labs(
-    title = "Multiplicative Gating Ablation Study: What makes Mult GRU work?",
-    subtitle = "Baselines (Mamba2, Mult GRU) vs ablations removing different gating components",
+    title = "HasteGRU vs Mamba2: Corrected Padding Comparison",
+    subtitle = "Loss masking enabled - honest loss on real tokens only (batch=24, chunk=512, ~1B params)",
     x = "Training Step",
-    y = "Loss",
+    y = "Loss (log scale)",
     color = "Model"
   ) +
   theme_minimal(base_size = 14) +
   theme(
     legend.position = "bottom",
-    legend.direction = "vertical",
+    legend.direction = "horizontal",
     plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
     plot.subtitle = element_text(hjust = 0.5, size = 12),
     panel.grid.minor = element_blank(),
-    legend.text = element_text(size = 10)
+    legend.text = element_text(size = 12)
   ) +
   guides(color = guide_legend(ncol = 2))
 
@@ -133,5 +126,5 @@ for (i in 1:nrow(final_losses)) {
 }
 
 # Save plot
-ggsave("/tmp/cudnn_ema_comparison.png", p, width = 14, height = 8, dpi = 150)
-cat("\nPlot saved to /tmp/cudnn_ema_comparison.png\n")
+ggsave("/tmp/1b_model_comparison.png", p, width = 12, height = 7, dpi = 150)
+cat("\nPlot saved to /tmp/1b_model_comparison.png\n")
