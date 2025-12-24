@@ -8,7 +8,8 @@ set -e -x
 # Architecture:
 #   - candidate = tanh(R @ h + Wx @ x + b)       -- NONLINEAR (our innovation!)
 #   - dt = softplus(W_delta @ x + b_delta)       -- input-dependent timestep
-#   - alpha = exp(-dt * exp(A))                  -- Mamba2-style per-channel decay
+#   - decay_rate = exp(-exp(A_log))              -- LOG-SPACE: always in (0,1)!
+#   - alpha = exp(-dt * decay_rate)              -- Mamba2-style per-channel decay
 #   - h_new = alpha * h + (1 - alpha) * candidate -- exponential blend
 #   - gate = silu(W_gate_x @ x + W_gate_h @ h)   -- h+x selective output
 #   - output = h * gate
@@ -38,7 +39,8 @@ echo "=== ElmanLeakySelective 1B (Mamba2-style + h+x Output Gate) ==="
 echo "======================================================================="
 
 # ElmanLeakySelective 1B config: dim=2048, depth=32, ff_mult=0.0
-# delta_init=3.0 → softplus(3)≈3.0 → alpha≈0.74 (candidate has ~26% influence)
+# delta_init=3.0 → dt=softplus(3)≈3.0
+# A in (-0.5, 0.5) → decay_rate=exp(-exp(A))≈0.37 → alpha=exp(-1.1)≈0.33 → ~67% candidate
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun \
   --nproc_per_node=8 \
