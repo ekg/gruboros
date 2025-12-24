@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Output Selection in Recurrent Language Models
+Leaky Elman RNN Comparison
 
-Compares Stock GRU (no output selection) vs architectures with output selection:
-- Mamba2: C matrix provides input-dependent output selection
-- Mult GRU: Multiplicative gate h' = h * σ(Wx·x + Wh·h) filters outputs
+Compares architectures with discretized dynamics:
+- Mamba2: Linear SSM baseline
+- ElmanLeakySelective: h+x output gate (overdoing it?)
+- LeakyElman: Input-only output gate (closer to Mamba2's C matrix)
 
-Key finding: Output selection mechanism accounts for ~0.8 nats improvement.
+All runs use log-space A parameterization: decay_rate = exp(-exp(A_log))
 """
 import matplotlib
 matplotlib.use('Agg')
@@ -14,8 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import re
 
-def smooth(y, steps, window=500):
-    """Very heavy smoothing. Returns (smoothed_steps, smoothed_values) only where full window exists."""
+def smooth(y, steps, window=200):
+    """Smoothing for 3k step runs. Returns (smoothed_steps, smoothed_values) only where full window exists."""
     if len(y) < window:
         return steps, y
     smoothed = np.convolve(y, np.ones(window)/window, mode='valid')
@@ -35,32 +36,28 @@ def parse_log(log_file):
                     losses.append(float(m.group(2)))
     return steps, losses
 
-# Output Selection Comparison
+# Post loss-masking-fix runs only (Dec 22, 2025 onwards)
 logs = [
-    # === No Output Selection (Baseline) ===
-    ('logs/test_standard_gru_no_tbptt_10k_20251215_215912.log', 'Stock GRU (no output selection)', '#FF0000', '#CC0000'),
+    # === Mamba2 baseline ===
+    ('logs/mamba2_1b_matched_20251223_072401.log', 'Mamba2 (linear SSM)', '#0072B2', '#005a8d'),
 
-    # === With Output Selection ===
-    ('logs/mamba2_1b_20251207_060701.log', 'Mamba2 (C matrix selection)', '#0072B2', '#005a8d'),
-    ('logs/cudnn_mult_gru_1b_20251210_044618.log', 'Mult GRU (multiplicative gate)', '#009E73', '#007a59'),
-    ('logs/cudnn_mult_gru_512_20251212_022323.log', 'Mult GRU 512 ctx', '#2E8B57', '#1a5c38'),
+    # === ElmanLeaky: True discretized, NO output gate - BEST RNN! ===
+    ('logs/elman_leaky_1b_20251223_171536.log', 'ElmanLeaky (no gate, 3.9!)', '#D55E00', '#a34700'),
 
-    # === Variants ===
-    ('logs/mamba2_ffn3_1b_20251207_234937.log', 'Mamba2 + FFN3', '#56B4E9', '#3d9fd4'),
-    ('logs/cudnn_conv_gru_1b_20251211_175832.log', 'Conv + Mult GRU', '#4B0082', '#2d004d'),
-    ('logs/cudnn_ffn3_gru_1b_20251211_212558.log', 'FFN3 Gate GRU', '#8B0000', '#5c0000'),
+    # === ElmanLeakySelective: h+x output gate (log-space A fix) ===
+    ('logs/elman_leaky_selective_1b_20251224_131529.log', 'ElmanLeakySelective (h+x gate)', '#E69F00', '#b37d00'),
 
-    # === Ablations (output selection variants) ===
-    ('logs/input_only_gate_1b_20251209_035046.log', 'Input-only gate', '#E69F00', '#cc8a00'),
-    ('logs/glu_gate_1b_20251209_160229.log', 'GLU gate', '#D55E00', '#b34d00'),
-
-    # === ElmanSilu (haste CUDA, no TBPTT, harmonized with Mamba2) ===
-    # Log file will be: logs/elman_silu_1b_YYYYMMDD_HHMMSS.log
-    # Uncomment after training completes:
-    # ('logs/elman_silu_1b_XXXXXXXX_XXXXXX.log', 'ElmanSilu (haste, no TBPTT)', '#FF69B4', '#db3d8f'),
+    # === LeakyElman: input-only output gate (like Mamba2 C matrix) ===
+    ('logs/leaky_elman_new.log', 'LeakyElman (input-only gate)', '#009E73', '#007a59'),
 ]
 
+def get_avg_2k_3k(steps, losses):
+    """Get average loss between steps 2000-3000."""
+    vals = [l for s, l in zip(steps, losses) if 2000 <= s <= 3000]
+    return sum(vals) / len(vals) if vals else None
+
 plt.figure(figsize=(14, 8))
+print("\n=== Average Loss (steps 2000-3000) ===")
 for i, (log, label, light, dark) in enumerate(logs):
     try:
         steps, losses = parse_log(log)
@@ -70,10 +67,23 @@ for i, (log, label, light, dark) in enumerate(logs):
         # Heavy smoothed line (only where full window exists)
         sm_steps, sm = smooth(losses, steps)
         plt.plot(sm_steps, sm, color=dark, linewidth=2.5, label=label)
+
+        # Calculate avg 2k-3k
+        avg_2k_3k = get_avg_2k_3k(steps, losses)
+        if avg_2k_3k:
+            print(f"{label}: {avg_2k_3k:.3f}")
+
         final = sm[-1] if len(sm) > 0 else losses[-1]
         final_step = sm_steps[-1] if len(sm_steps) > 0 else steps[-1]
-        pct = f' ({steps[-1]/10000*100:.0f}%)' if steps[-1] < 9999 else ''
-        plt.annotate(f'{final:.2f}{pct}', xy=(final_step, final),
+        # Show avg 2k-3k in annotation if available, otherwise final
+        if avg_2k_3k and steps[-1] >= 2500:
+            display_val = avg_2k_3k
+            display_label = f'{avg_2k_3k:.2f}'
+        else:
+            display_val = final
+            pct = f' ({steps[-1]/3000*100:.0f}%)' if steps[-1] < 2999 else ''
+            display_label = f'{final:.2f}{pct}'
+        plt.annotate(display_label, xy=(final_step, final),
                     xytext=(final_step+100, final + 0.12*(i-2)),
                     fontsize=9, color=dark, fontweight='bold')
     except: pass
@@ -81,13 +91,13 @@ for i, (log, label, light, dark) in enumerate(logs):
 plt.annotate('Random init: 10.82', xy=(0, 8), xytext=(100, 7.8), fontsize=10, color='#666')
 plt.xlabel('Training Step', fontsize=12)
 plt.ylabel('Cross-Entropy Loss (nats)', fontsize=12)
-plt.title('Output Selection in Recurrent LMs: Stock GRU vs Selective Architectures\n~1B params, The Pile, 512-token chunks, 8× A100', fontsize=13, fontweight='bold')
-plt.ylim(2.5, 8.5)
-plt.xlim(0, 10500)
+plt.title('Leaky Elman RNN: Output Gate Comparison\n~1B params, The Pile, 512-token chunks, 8× A100', fontsize=13, fontweight='bold')
+plt.ylim(3.5, 8.5)
+plt.xlim(0, 4500)
 plt.gca().set_facecolor('white')
 plt.gcf().set_facecolor('white')
 plt.grid(True, alpha=0.3, color='#ccc')
 plt.legend(loc='upper right', fontsize=9, framealpha=0.95)
 plt.tight_layout()
-plt.savefig('/tmp/output_selection_comparison.png', dpi=150, bbox_inches='tight', facecolor='white')
-print("Saved: /tmp/output_selection_comparison.png")
+plt.savefig('/tmp/leaky_elman_comparison.png', dpi=150, bbox_inches='tight', facecolor='white')
+print("Saved: /tmp/leaky_elman_comparison.png")

@@ -172,6 +172,14 @@ except ImportError as e:
     print(f"Failed to import LeakyElman: {e}")
     LeakyElman = None
 
+# Import ElmanLeakySilu (silu activation + leaky integration)
+try:
+    from mingru.elman_leaky_silu import ElmanLeakySilu
+    print("ElmanLeakySilu available (silu + leaky integration, like ElmanLeaky but with silu!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakySilu: {e}")
+    ElmanLeakySilu = None
+
 # Import HasteGRUSilu (haste GRU + silu output gate, matches cuDNN GRU + silu!)
 try:
     from mingru.haste_gru_silu import HasteGRUSilu
@@ -330,6 +338,7 @@ class minLM(Module):
         use_elman_leaky = False,  # Use ElmanLeaky (true discretized dynamics, input-dependent delta!)
         use_elman_leaky_selective = False,  # Use ElmanLeakySelective (Mamba2-style discretization + h+x output gate!)
         use_leaky_elman = False,  # Use LeakyElman (leaky integration + INPUT-ONLY output gate!)
+        use_elman_leaky_silu = False,  # Use ElmanLeakySilu (silu + leaky integration, like ElmanLeaky but with silu!)
         delta_init = -2.0,  # Delta initialization for ElmanLeaky/ElmanLeakySelective/ElmanMamba
         use_haste_gru_silu = False,  # Use HasteGRUSilu (haste GRU + silu, proper skip connection!)
         use_haste_gru_silu_fused = False,  # Use HasteGRUSiluFused (fused CUDA kernel, BF16 native!)
@@ -556,6 +565,17 @@ class minLM(Module):
                 'recurrence_chunk_size': recurrence_chunk_size,
                 'delta_init': delta_init,
                 'use_output_gate': True  # Input-only gate
+            }
+        elif use_elman_leaky_silu:
+            # Use ElmanLeakySilu (silu + leaky integration, like ElmanLeaky but with silu!)
+            min_rnn_klass = ElmanLeakySilu
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakySilu (silu + leaky{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init
             }
         elif use_haste_gru_silu:
             # Use HasteGRUSilu (haste GRU + silu output gate, proper skip connection!)
