@@ -164,13 +164,13 @@ except ImportError as e:
     print(f"Failed to import ElmanLeakySelective: {e}")
     ElmanLeakySelective = None
 
-# Import ElmanMamba (CLEANER Mamba2-style: input-only output gate!)
+# Import LeakyElman (leaky integration + input-only output gate)
 try:
-    from mingru.elman_mamba import ElmanMamba
-    print("ElmanMamba available (Mamba2-style + INPUT-ONLY output gate!)")
+    from mingru.leaky_elman import LeakyElman
+    print("LeakyElman available (leaky integration + INPUT-ONLY output gate!)")
 except ImportError as e:
-    print(f"Failed to import ElmanMamba: {e}")
-    ElmanMamba = None
+    print(f"Failed to import LeakyElman: {e}")
+    LeakyElman = None
 
 # Import HasteGRUSilu (haste GRU + silu output gate, matches cuDNN GRU + silu!)
 try:
@@ -329,7 +329,7 @@ class minLM(Module):
         use_elman_silu = False,  # Use ElmanSilu (haste CUDA, 3x faster than cuDNN GRU!)
         use_elman_leaky = False,  # Use ElmanLeaky (true discretized dynamics, input-dependent delta!)
         use_elman_leaky_selective = False,  # Use ElmanLeakySelective (Mamba2-style discretization + h+x output gate!)
-        use_elman_mamba = False,  # Use ElmanMamba (Mamba2-style + INPUT-ONLY output gate!)
+        use_leaky_elman = False,  # Use LeakyElman (leaky integration + INPUT-ONLY output gate!)
         delta_init = -2.0,  # Delta initialization for ElmanLeaky/ElmanLeakySelective/ElmanMamba
         use_haste_gru_silu = False,  # Use HasteGRUSilu (haste GRU + silu, proper skip connection!)
         use_haste_gru_silu_fused = False,  # Use HasteGRUSiluFused (fused CUDA kernel, BF16 native!)
@@ -545,17 +545,17 @@ class minLM(Module):
                 'recurrence_chunk_size': recurrence_chunk_size,
                 'delta_init': delta_init
             }
-        elif use_elman_mamba:
-            # Use ElmanMamba (CLEANER Mamba2-style: input-only output gate!)
-            min_rnn_klass = ElmanMamba
+        elif use_leaky_elman:
+            # Use LeakyElman (leaky integration + input-only output gate)
+            min_rnn_klass = LeakyElman
             checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
-            print(f"Using ElmanMamba (Mamba2-style + INPUT-ONLY gate{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            print(f"Using LeakyElman (leaky integration + INPUT-ONLY gate{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
                 'recurrence_chunk_size': recurrence_chunk_size,
                 'delta_init': delta_init,
-                'use_output_gate': True  # Input-only gate like Mamba2's C
+                'use_output_gate': True  # Input-only gate
             }
         elif use_haste_gru_silu:
             # Use HasteGRUSilu (haste GRU + silu output gate, proper skip connection!)

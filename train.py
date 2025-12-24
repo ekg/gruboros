@@ -1283,7 +1283,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_elman_mamba', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
         'use_multihead_elman', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
@@ -1439,8 +1439,8 @@ def get_args():
                         help='Use ElmanLeaky (true discretized dynamics, input-dependent delta!)')
     parser.add_argument('--use_elman_leaky_selective', action='store_true',
                         help='Use ElmanLeakySelective (Mamba2-style discretization + h+x output gate!)')
-    parser.add_argument('--use_elman_mamba', action='store_true',
-                        help='Use ElmanMamba (Mamba2-style + INPUT-ONLY output gate, closer to Mamba2!)')
+    parser.add_argument('--use_leaky_elman', action='store_true',
+                        help='Use LeakyElman (leaky integration + INPUT-ONLY output gate)')
     parser.add_argument('--use_haste_gru_silu', action='store_true',
                         help='Use HasteGRUSilu (haste GRU + silu gate, proper skip connection like cuDNN!)')
     parser.add_argument('--use_haste_gru_silu_fused', action='store_true',
@@ -1874,7 +1874,7 @@ def main():
             "use_elman_silu": args.use_elman_silu,
             "use_elman_leaky": args.use_elman_leaky,
             "use_elman_leaky_selective": args.use_elman_leaky_selective,
-            "use_elman_mamba": args.use_elman_mamba,
+            "use_leaky_elman": args.use_leaky_elman,
             "delta_init": args.delta_init,
             "use_haste_gru_silu": args.use_haste_gru_silu,
             "use_haste_gru_silu_fused": args.use_haste_gru_silu_fused,
