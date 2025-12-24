@@ -148,6 +148,30 @@ except ImportError as e:
     print(f"Failed to import ElmanSilu: {e}")
     ElmanSilu = None
 
+# Import ElmanLeaky (true discretized Elman with input-dependent delta, Mamba2-style)
+try:
+    from mingru.elman_leaky import ElmanLeaky
+    print("ElmanLeaky available (true discretized dynamics, input-dependent delta!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeaky: {e}")
+    ElmanLeaky = None
+
+# Import ElmanLeakySelective (Mamba2-style discretization + h+x output gate)
+try:
+    from mingru.elman_leaky_selective import ElmanLeakySelective
+    print("ElmanLeakySelective available (Mamba2-style discretization + h+x output gate!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakySelective: {e}")
+    ElmanLeakySelective = None
+
+# Import ElmanMamba (CLEANER Mamba2-style: input-only output gate!)
+try:
+    from mingru.elman_mamba import ElmanMamba
+    print("ElmanMamba available (Mamba2-style + INPUT-ONLY output gate!)")
+except ImportError as e:
+    print(f"Failed to import ElmanMamba: {e}")
+    ElmanMamba = None
+
 # Import HasteGRUSilu (haste GRU + silu output gate, matches cuDNN GRU + silu!)
 try:
     from mingru.haste_gru_silu import HasteGRUSilu
@@ -303,6 +327,10 @@ class minLM(Module):
         per_layer_alpha = False,  # Initialize each layer with different EMA alpha (fast→slow)
         use_ema_gru = False,  # Use EMA GRU (GRU + EMA for long-range memory)
         use_elman_silu = False,  # Use ElmanSilu (haste CUDA, 3x faster than cuDNN GRU!)
+        use_elman_leaky = False,  # Use ElmanLeaky (true discretized dynamics, input-dependent delta!)
+        use_elman_leaky_selective = False,  # Use ElmanLeakySelective (Mamba2-style discretization + h+x output gate!)
+        use_elman_mamba = False,  # Use ElmanMamba (Mamba2-style + INPUT-ONLY output gate!)
+        delta_init = -2.0,  # Delta initialization for ElmanLeaky/ElmanLeakySelective/ElmanMamba
         use_haste_gru_silu = False,  # Use HasteGRUSilu (haste GRU + silu, proper skip connection!)
         use_haste_gru_silu_fused = False,  # Use HasteGRUSiluFused (fused CUDA kernel, BF16 native!)
         use_haste_lstm_silu = False,  # Use HasteLSTMSilu (fused LSTM + silu CUDA kernel, BF16 native!)
@@ -494,6 +522,40 @@ class minLM(Module):
                 'expansion_factor': expansion,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
                 'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_elman_leaky:
+            # Use ElmanLeaky (true discretized dynamics, input-dependent delta!)
+            min_rnn_klass = ElmanLeaky
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeaky (true discretized{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init
+            }
+        elif use_elman_leaky_selective:
+            # Use ElmanLeakySelective (Mamba2-style discretization + h+x output gate!)
+            min_rnn_klass = ElmanLeakySelective
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakySelective (Mamba2-style{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init
+            }
+        elif use_elman_mamba:
+            # Use ElmanMamba (CLEANER Mamba2-style: input-only output gate!)
+            min_rnn_klass = ElmanMamba
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanMamba (Mamba2-style + INPUT-ONLY gate{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'use_output_gate': True  # Input-only gate like Mamba2's C
             }
         elif use_haste_gru_silu:
             # Use HasteGRUSilu (haste GRU + silu output gate, proper skip connection!)
