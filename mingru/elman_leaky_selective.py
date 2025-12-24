@@ -88,8 +88,8 @@ class ElmanLeakySelective(nn.Module):
         expansion_factor=1.0,
         use_gradient_checkpointing=False,
         recurrence_chunk_size=64,
-        delta_init=-2.0,  # softplus(-2) ≈ 0.13 for slow dynamics
-        A_init_range=(0.5, 2.0),  # Log-space: decay_rate = exp(-exp(A_log)) always in (0,1)
+        delta_init=3.0,  # softplus(3) ≈ 3.0 for meaningful timestep
+        A_init_range=(-1.5, -0.5),  # SIMPLIFIED: rate=softplus(A), alpha=exp(-dt*rate) → ~60% candidate
         **kwargs
     ):
         super().__init__()

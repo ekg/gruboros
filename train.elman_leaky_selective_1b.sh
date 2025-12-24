@@ -38,7 +38,7 @@ echo "=== ElmanLeakySelective 1B (Mamba2-style + h+x Output Gate) ==="
 echo "======================================================================="
 
 # ElmanLeakySelective 1B config: dim=2048, depth=32, ff_mult=0.0
-# delta_init=-2.0 → softplus(-2)≈0.13 (slow dynamics initially)
+# delta_init=3.0 → softplus(3)≈3.0 → alpha≈0.74 (candidate has ~26% influence)
 
 /home/erikg/micromamba/envs/mingru/bin/torchrun \
   --nproc_per_node=8 \
@@ -58,7 +58,7 @@ echo "======================================================================="
   --dropout 0.0 \
   \
   --use_elman_leaky_selective \
-  --delta_init -2.0 \
+  --delta_init 3.0 \
   --recurrence_chunk_size 64 \
   --no-tbptt \
   \

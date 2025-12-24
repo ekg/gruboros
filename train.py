@@ -1164,6 +1164,28 @@ def get_model(model_config):
         print(f"Using HasteGRU_MultLM (fused CUDA, BF16 native): dim={mult_config['dim']}, depth={mult_config['depth']}, ff_mult={mult_config['ff_mult']}{ckpt_str}")
         return HasteGRU_MultLM(**mult_config)
 
+    # Use Discretized Elman with explicit delta (leaky integrator)
+    # Fast version using haste ElmanNoGate + EMA blending
+    if model_config.get('use_discretized_elman', False):
+        from mingru.discretized_elman_fast import DiscretizedElmanFastLM
+        delta_mode = model_config.get('delta_mode', 'fixed')
+        # Input-dependent delta REQUIRES exact mode (fast mode has broken dynamics)
+        use_exact = delta_mode in ('input', 'input_state')
+        elman_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'delta_mode': delta_mode,
+            'delta_init': model_config.get('delta_init', 0.5),
+            'ff_mult': model_config.get('ff_mult', 0.0),
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+            'add_output_gate': True,  # Mamba2-style input-only silu gate
+            'exact': use_exact,  # True for input-dependent delta (correct dynamics)
+        }
+        print(f"Using DiscretizedElmanFastLM: dim={elman_config['dim']}, depth={elman_config['depth']}, delta_mode={elman_config['delta_mode']}, delta_init={elman_config['delta_init']}, exact={use_exact}")
+        return DiscretizedElmanFastLM(**elman_config)
+
     # Use cuDNN GRU + Bilinear (true second-order h×x interactions)
     if model_config.get('use_cudnn_bilinear_gru', False):
         from mingru.cudnn_gru_bilinear import CuDNNGRU_BilinearLM
@@ -1261,7 +1283,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
         'use_multihead_elman', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
@@ -1413,6 +1435,10 @@ def get_args():
                         help='Use EMA GRU (GRU + EMA for long-range memory)')
     parser.add_argument('--use_elman_silu', action='store_true',
                         help='Use ElmanSilu (haste CUDA kernels, 3x faster than cuDNN GRU!)')
+    parser.add_argument('--use_elman_leaky', action='store_true',
+                        help='Use ElmanLeaky (true discretized dynamics, input-dependent delta!)')
+    parser.add_argument('--use_elman_leaky_selective', action='store_true',
+                        help='Use ElmanLeakySelective (Mamba2-style discretization + h+x output gate!)')
     parser.add_argument('--use_haste_gru_silu', action='store_true',
                         help='Use HasteGRUSilu (haste GRU + silu gate, proper skip connection like cuDNN!)')
     parser.add_argument('--use_haste_gru_silu_fused', action='store_true',
@@ -1454,6 +1480,13 @@ def get_args():
                         help='Use cuDNN GRU + Multiplicative Gating (adds h*f(x,h) nonlinearity after GRU)')
     parser.add_argument('--use_haste_mult_gru', action='store_true',
                         help='Use Haste GRU + SiLU Multiplicative Gating (fused CUDA kernel, BF16 native, EXACT numerical match to CuDNN+silu)')
+    parser.add_argument('--use_discretized_elman', action='store_true',
+                        help='Use Discretized Elman with explicit delta (leaky integrator with input-dependent step size)')
+    parser.add_argument('--delta_mode', type=str, default='fixed',
+                        choices=['fixed', 'learned', 'input', 'input_state'],
+                        help='Delta computation mode for discretized Elman')
+    parser.add_argument('--delta_init', type=float, default=-2.0,
+                        help='Delta initialization for ElmanLeaky/DiscretizedElman (sigmoid(-2)≈0.12 for slow dynamics)')
     parser.add_argument('--use_mingru_mult', action='store_true',
                         help='Use minGRU + SiLU output gate (parallel scan + selectivity, like fast Mamba+GRU)')
     parser.add_argument('--use_cudnn_lstm_mult', action='store_true',
@@ -1837,6 +1870,9 @@ def main():
             "per_layer_alpha": args.per_layer_alpha,
             "use_ema_gru": args.use_ema_gru,
             "use_elman_silu": args.use_elman_silu,
+            "use_elman_leaky": args.use_elman_leaky,
+            "use_elman_leaky_selective": args.use_elman_leaky_selective,
+            "delta_init": args.delta_init,
             "use_haste_gru_silu": args.use_haste_gru_silu,
             "use_haste_gru_silu_fused": args.use_haste_gru_silu_fused,
             "use_haste_lstm_silu": args.use_haste_lstm_silu,
@@ -1857,6 +1893,9 @@ def main():
             "use_cudnn_conv_gru": args.use_cudnn_conv_gru,
             "use_cudnn_mult_gru": args.use_cudnn_mult_gru,
             "use_haste_mult_gru": args.use_haste_mult_gru,
+            "use_discretized_elman": args.use_discretized_elman,
+            "delta_mode": args.delta_mode,
+            "delta_init": args.delta_init,
             "use_mingru_mult": args.use_mingru_mult,
             "use_cudnn_lstm_mult": args.use_cudnn_lstm_mult,
             "use_elman_selective": args.use_elman_selective,
@@ -2271,7 +2310,10 @@ def main():
         evolutionary_node.start_gossip_protocol()
     if global_rank == 0:
         proto_type = "Filesystem-Augmented" if args.filesystem_coordinator else "Pure TCP"
-        print(f"\n{proto_type} Gossip protocol initialized and running.\n")
+        print(f"\n{proto_type} Gossip protocol initialized and running.\n", flush=True)
+
+    # DEBUG: Track where DDP hangs
+    print(f"[DEBUG RANK {global_rank}] Post-gossip init, entering training setup", flush=True)
 
     start_time = time.time()
     # Initialize per-GPU token counter
@@ -2338,6 +2380,8 @@ def main():
     if global_rank == 0 and device.type == 'cuda':
         mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
         print(f"[MEMORY] Before training loop: {mem_allocated:.2f} GB")
+
+    print(f"[DEBUG RANK {global_rank}] Entering training loop at step {step}", flush=True)
 
     while step < train_steps:
         # NOTE: Moved gossip updates to after optimization for safety
