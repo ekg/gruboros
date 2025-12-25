@@ -268,6 +268,46 @@ except ImportError as e:
     print(f"Failed to import MultiHeadElmanCompete: {e}")
     MultiHeadElmanCompete = None
 
+# Import ElmanLeakyCompeteAsymmetric (coarse compete × full silu)
+try:
+    from mingru.elman_leaky_compete_asymmetric import ElmanLeakyCompeteAsymmetric
+    print("ElmanLeakyCompeteAsymmetric available (coarse compete × full silu!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteAsymmetric: {e}")
+    ElmanLeakyCompeteAsymmetric = None
+
+# Import ElmanLeakyCompeteNoDelta (fixed decay, no learned delta)
+try:
+    from mingru.elman_leaky_compete_no_delta import ElmanLeakyCompeteNoDelta
+    print("ElmanLeakyCompeteNoDelta available (fixed decay, no delta!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteNoDelta: {e}")
+    ElmanLeakyCompeteNoDelta = None
+
+# Import ElmanMamba2Style (Mamba2 linear recurrence)
+try:
+    from mingru.elman_mamba2_style import ElmanMamba2Style
+    print("ElmanMamba2Style available (Mamba2 linear recurrence!)")
+except ImportError as e:
+    print(f"Failed to import ElmanMamba2Style: {e}")
+    ElmanMamba2Style = None
+
+# Import ElmanLeakyCompeteLearnedDelta (per-dim delta scaling)
+try:
+    from mingru.elman_leaky_compete_learned_delta import ElmanLeakyCompeteLearnedDelta
+    print("ElmanLeakyCompeteLearnedDelta available (per-dim delta scaling!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteLearnedDelta: {e}")
+    ElmanLeakyCompeteLearnedDelta = None
+
+# Import ElmanLeakyCompeteLowRank (low-rank R = U @ V)
+try:
+    from mingru.elman_leaky_compete_lowrank import ElmanLeakyCompeteLowRank
+    print("ElmanLeakyCompeteLowRank available (low-rank R = U @ V!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteLowRank: {e}")
+    ElmanLeakyCompeteLowRank = None
+
 # Import HasteGRUSilu (haste GRU + silu output gate, matches cuDNN GRU + silu!)
 try:
     from mingru.haste_gru_silu import HasteGRUSilu
@@ -438,6 +478,12 @@ class minLM(Module):
         use_elman_leaky_compete_learned_temp = False,  # Use ElmanLeakyCompeteLearnedTemp (learned temperature!)
         use_elman_leaky_compete_gelu = False,  # Use ElmanLeakyCompeteGelu (competition × gelu hybrid!)
         use_elman_leaky_compete_mish = False,  # Use ElmanLeakyCompeteMish (competition × mish hybrid!)
+        use_elman_leaky_compete_asymmetric = False,  # Use ElmanLeakyCompeteAsymmetric (coarse compete × full silu!)
+        use_elman_leaky_compete_no_delta = False,  # Use ElmanLeakyCompeteNoDelta (fixed decay, no delta!)
+        use_elman_mamba2_style = False,  # Use ElmanMamba2Style (Mamba2 linear recurrence!)
+        use_elman_leaky_compete_learned_delta = False,  # Use ElmanLeakyCompeteLearnedDelta (per-dim delta!)
+        use_elman_leaky_compete_lowrank = False,  # Use ElmanLeakyCompeteLowRank (R = U @ V!)
+        r_rank = 512,  # Rank for low-rank R factorization
         use_elman_leaky_sparsemax = False,  # Use ElmanLeakySparsemax (sparsemax gate!)
         use_elman_leaky_topk = False,  # Use ElmanLeakyTopK (top-k gate!)
         topk_k = 16,  # Number of top values to keep per group
@@ -774,6 +820,67 @@ class minLM(Module):
                 'recurrence_chunk_size': recurrence_chunk_size,
                 'delta_init': delta_init,
                 'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_compete_asymmetric:
+            # Use ElmanLeakyCompeteAsymmetric (coarse compete × full silu!)
+            min_rnn_klass = ElmanLeakyCompeteAsymmetric
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteAsymmetric (n_groups={compete_n_groups}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_compete_no_delta:
+            # Use ElmanLeakyCompeteNoDelta (fixed decay, no learned delta!)
+            min_rnn_klass = ElmanLeakyCompeteNoDelta
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteNoDelta (fixed decay{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_mamba2_style:
+            # Use ElmanMamba2Style (Mamba2 linear recurrence!)
+            min_rnn_klass = ElmanMamba2Style
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanMamba2Style (Mamba2 linear recurrence{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_compete_learned_delta:
+            # Use ElmanLeakyCompeteLearnedDelta (per-dim delta scaling!)
+            min_rnn_klass = ElmanLeakyCompeteLearnedDelta
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteLearnedDelta (per-dim delta{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_compete_lowrank:
+            # Use ElmanLeakyCompeteLowRank (low-rank R = U @ V!)
+            min_rnn_klass = ElmanLeakyCompeteLowRank
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteLowRank (rank={r_rank}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups,
+                'r_rank': r_rank
             }
         elif use_elman_leaky_sparsemax:
             # Use ElmanLeakySparsemax (sparsemax gate!)

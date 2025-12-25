@@ -1283,7 +1283,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_compete_asymmetric', 'use_elman_leaky_compete_no_delta', 'use_elman_mamba2_style', 'use_elman_leaky_compete_learned_delta', 'use_elman_leaky_compete_lowrank', 'r_rank', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
         'use_multihead_elman', 'use_multihead_elman_compete', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
@@ -1465,6 +1465,18 @@ def get_args():
                         help='Use ElmanLeakyCompeteGelu (competition × gelu hybrid!)')
     parser.add_argument('--use_elman_leaky_compete_mish', action='store_true',
                         help='Use ElmanLeakyCompeteMish (competition × mish hybrid!)')
+    parser.add_argument('--use_elman_leaky_compete_asymmetric', action='store_true',
+                        help='Use ElmanLeakyCompeteAsymmetric (coarse compete × full silu!)')
+    parser.add_argument('--use_elman_leaky_compete_no_delta', action='store_true',
+                        help='Use ElmanLeakyCompeteNoDelta (fixed decay, no learned delta!)')
+    parser.add_argument('--use_elman_mamba2_style', action='store_true',
+                        help='Use ElmanMamba2Style (Mamba2 linear recurrence, no R matrix!)')
+    parser.add_argument('--use_elman_leaky_compete_learned_delta', action='store_true',
+                        help='Use ElmanLeakyCompeteLearnedDelta (per-dim delta scaling!)')
+    parser.add_argument('--use_elman_leaky_compete_lowrank', action='store_true',
+                        help='Use ElmanLeakyCompeteLowRank (low-rank R = U @ V!)')
+    parser.add_argument('--r_rank', type=int, default=512,
+                        help='Rank for low-rank R factorization (default 512)')
     parser.add_argument('--use_elman_leaky_sparsemax', action='store_true',
                         help='Use ElmanLeakySparsemax (sparsemax gate, exact zeros!)')
     parser.add_argument('--use_elman_leaky_topk', action='store_true',
@@ -1919,6 +1931,12 @@ def main():
             "use_elman_leaky_compete_learned_temp": args.use_elman_leaky_compete_learned_temp,
             "use_elman_leaky_compete_gelu": args.use_elman_leaky_compete_gelu,
             "use_elman_leaky_compete_mish": args.use_elman_leaky_compete_mish,
+            "use_elman_leaky_compete_asymmetric": args.use_elman_leaky_compete_asymmetric,
+            "use_elman_leaky_compete_no_delta": args.use_elman_leaky_compete_no_delta,
+            "use_elman_mamba2_style": args.use_elman_mamba2_style,
+            "use_elman_leaky_compete_learned_delta": args.use_elman_leaky_compete_learned_delta,
+            "use_elman_leaky_compete_lowrank": args.use_elman_leaky_compete_lowrank,
+            "r_rank": args.r_rank,
             "use_elman_leaky_sparsemax": args.use_elman_leaky_sparsemax,
             "use_elman_leaky_topk": args.use_elman_leaky_topk,
             "topk_k": args.topk_k,
