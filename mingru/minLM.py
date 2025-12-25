@@ -188,6 +188,86 @@ except ImportError as e:
     print(f"Failed to import ElmanLeakyDiag: {e}")
     ElmanLeakyDiag = None
 
+# Import ElmanLeakyNoGate (NO output gate ablation)
+try:
+    from mingru.elman_leaky_nogate import ElmanLeakyNoGate
+    print("ElmanLeakyNoGate available (no output gate ablation!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyNoGate: {e}")
+    ElmanLeakyNoGate = None
+
+# Import ElmanLeakyMLPGate (MLP gate with bottleneck)
+try:
+    from mingru.elman_leaky_mlp_gate import ElmanLeakyMLPGate
+    print("ElmanLeakyMLPGate available (MLP gate with bottleneck!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyMLPGate: {e}")
+    ElmanLeakyMLPGate = None
+
+# Import ElmanLeakyCompete (competition gate with group softmax)
+try:
+    from mingru.elman_leaky_compete import ElmanLeakyCompete
+    print("ElmanLeakyCompete available (competition gate with group softmax!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompete: {e}")
+    ElmanLeakyCompete = None
+
+# Import ElmanLeakyCompeteSilu (competition × silu hybrid)
+try:
+    from mingru.elman_leaky_compete_silu import ElmanLeakyCompeteSilu
+    print("ElmanLeakyCompeteSilu available (competition × silu hybrid!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteSilu: {e}")
+    ElmanLeakyCompeteSilu = None
+
+# Import ElmanLeakyCompeteLearnedTemp (competition with learned temperature)
+try:
+    from mingru.elman_leaky_compete_learned_temp import ElmanLeakyCompeteLearnedTemp
+    print("ElmanLeakyCompeteLearnedTemp available (learned temperature!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteLearnedTemp: {e}")
+    ElmanLeakyCompeteLearnedTemp = None
+
+# Import ElmanLeakyCompeteGelu (competition × gelu hybrid)
+try:
+    from mingru.elman_leaky_compete_gelu import ElmanLeakyCompeteGelu
+    print("ElmanLeakyCompeteGelu available (competition × gelu hybrid!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteGelu: {e}")
+    ElmanLeakyCompeteGelu = None
+
+# Import ElmanLeakyCompeteMish (competition × mish hybrid)
+try:
+    from mingru.elman_leaky_compete_mish import ElmanLeakyCompeteMish
+    print("ElmanLeakyCompeteMish available (competition × mish hybrid!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyCompeteMish: {e}")
+    ElmanLeakyCompeteMish = None
+
+# Import ElmanLeakySparsemax (sparsemax gate)
+try:
+    from mingru.elman_leaky_sparsemax import ElmanLeakySparsemax
+    print("ElmanLeakySparsemax available (sparsemax gate, exact zeros!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakySparsemax: {e}")
+    ElmanLeakySparsemax = None
+
+# Import ElmanLeakyTopK (top-k gate)
+try:
+    from mingru.elman_leaky_topk import ElmanLeakyTopK
+    print("ElmanLeakyTopK available (top-k gate, hard sparsity!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLeakyTopK: {e}")
+    ElmanLeakyTopK = None
+
+# Import MultiHeadElmanCompete (multi-head + compete × silu)
+try:
+    from mingru.multihead_elman_compete import MultiHeadElmanCompete
+    print("MultiHeadElmanCompete available (multi-head + compete × silu!)")
+except ImportError as e:
+    print(f"Failed to import MultiHeadElmanCompete: {e}")
+    MultiHeadElmanCompete = None
+
 # Import HasteGRUSilu (haste GRU + silu output gate, matches cuDNN GRU + silu!)
 try:
     from mingru.haste_gru_silu import HasteGRUSilu
@@ -348,6 +428,19 @@ class minLM(Module):
         use_leaky_elman = False,  # Use LeakyElman (leaky integration + INPUT-ONLY output gate!)
         use_elman_leaky_silu = False,  # Use ElmanLeakySilu (silu + leaky integration, like ElmanLeaky but with silu!)
         use_elman_leaky_diag = False,  # Use ElmanLeakyDiag (DIAGONAL R + leaky, like Mamba's diagonal A!)
+        use_elman_leaky_nogate = False,  # Use ElmanLeakyNoGate (NO output gate ablation!)
+        use_elman_leaky_mlp_gate = False,  # Use ElmanLeakyMLPGate (MLP gate with bottleneck!)
+        gate_hidden_dim = 4,  # Hidden dim for MLP gate bottleneck
+        use_elman_leaky_compete = False,  # Use ElmanLeakyCompete (competition gate!)
+        compete_n_groups = 32,  # Number of competition groups
+        compete_temp = 1.0,  # Softmax temperature (<1 sharper, >1 softer)
+        use_elman_leaky_compete_silu = False,  # Use ElmanLeakyCompeteSilu (competition × silu hybrid!)
+        use_elman_leaky_compete_learned_temp = False,  # Use ElmanLeakyCompeteLearnedTemp (learned temperature!)
+        use_elman_leaky_compete_gelu = False,  # Use ElmanLeakyCompeteGelu (competition × gelu hybrid!)
+        use_elman_leaky_compete_mish = False,  # Use ElmanLeakyCompeteMish (competition × mish hybrid!)
+        use_elman_leaky_sparsemax = False,  # Use ElmanLeakySparsemax (sparsemax gate!)
+        use_elman_leaky_topk = False,  # Use ElmanLeakyTopK (top-k gate!)
+        topk_k = 16,  # Number of top values to keep per group
         delta_init = -2.0,  # Delta initialization for ElmanLeaky/ElmanLeakySelective/ElmanMamba
         use_haste_gru_silu = False,  # Use HasteGRUSilu (haste GRU + silu, proper skip connection!)
         use_haste_gru_silu_fused = False,  # Use HasteGRUSiluFused (fused CUDA kernel, BF16 native!)
@@ -356,6 +449,7 @@ class minLM(Module):
         use_elman_swish = False,  # Use ElmanSwish (silu inside + silu gate, like Mamba2!)
         use_elman_input_gate = False,  # Use ElmanInputGate (input-only gating like Mamba2!)
         use_multihead_elman = False,  # Use MultiHeadElman (32 heads × 64×64 R matrices!)
+        use_multihead_elman_compete = False,  # Use MultiHeadElmanCompete (multi-head + compete × silu!)
         multihead_elman_nheads = 32,  # Number of heads for MultiHeadElman
         multihead_elman_headdim = 64,  # Dimension per head for MultiHeadElman
         multihead_elman_activation = 'softsign',  # Activation: 'softsign' or 'tanh_residual'
@@ -597,6 +691,115 @@ class minLM(Module):
                 'recurrence_chunk_size': recurrence_chunk_size,
                 'delta_init': delta_init
             }
+        elif use_elman_leaky_nogate:
+            # Use ElmanLeakyNoGate (NO output gate ablation!)
+            min_rnn_klass = ElmanLeakyNoGate
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyNoGate (NO gate{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init
+            }
+        elif use_elman_leaky_mlp_gate:
+            # Use ElmanLeakyMLPGate (MLP gate with bottleneck!)
+            min_rnn_klass = ElmanLeakyMLPGate
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyMLPGate (MLP gate hidden={gate_hidden_dim}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'gate_hidden_dim': gate_hidden_dim
+            }
+        elif use_elman_leaky_compete:
+            # Use ElmanLeakyCompete (competition gate!)
+            min_rnn_klass = ElmanLeakyCompete
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompete (n_groups={compete_n_groups}, temp={compete_temp}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups,
+                'compete_temp': compete_temp
+            }
+        elif use_elman_leaky_compete_silu:
+            # Use ElmanLeakyCompeteSilu (competition × silu hybrid!)
+            min_rnn_klass = ElmanLeakyCompeteSilu
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteSilu (n_groups={compete_n_groups}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_compete_learned_temp:
+            # Use ElmanLeakyCompeteLearnedTemp (competition with learned temperature!)
+            min_rnn_klass = ElmanLeakyCompeteLearnedTemp
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteLearnedTemp (n_groups={compete_n_groups}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_compete_gelu:
+            # Use ElmanLeakyCompeteGelu (competition × gelu hybrid!)
+            min_rnn_klass = ElmanLeakyCompeteGelu
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteGelu (n_groups={compete_n_groups}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_compete_mish:
+            # Use ElmanLeakyCompeteMish (competition × mish hybrid!)
+            min_rnn_klass = ElmanLeakyCompeteMish
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyCompeteMish (n_groups={compete_n_groups}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_sparsemax:
+            # Use ElmanLeakySparsemax (sparsemax gate!)
+            min_rnn_klass = ElmanLeakySparsemax
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakySparsemax (n_groups={compete_n_groups}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups
+            }
+        elif use_elman_leaky_topk:
+            # Use ElmanLeakyTopK (top-k gate!)
+            min_rnn_klass = ElmanLeakyTopK
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            print(f"Using ElmanLeakyTopK (n_groups={compete_n_groups}, k={topk_k}{checkpoint_str}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size,
+                'delta_init': delta_init,
+                'n_groups': compete_n_groups,
+                'topk_k': topk_k
+            }
         elif use_haste_gru_silu:
             # Use HasteGRUSilu (haste GRU + silu output gate, proper skip connection!)
             min_rnn_klass = HasteGRUSilu
@@ -668,6 +871,21 @@ class minLM(Module):
                 'headdim': multihead_elman_headdim,
                 'expansion_factor': expansion,
                 'activation': multihead_elman_activation,
+                'use_gradient_checkpointing': use_gradient_checkpointing,
+                'recurrence_chunk_size': recurrence_chunk_size
+            }
+        elif use_multihead_elman_compete:
+            # Use MultiHeadElmanCompete (multi-head + compete × silu!)
+            min_rnn_klass = MultiHeadElmanCompete
+            checkpoint_str = " with gradient checkpointing" if use_gradient_checkpointing else ""
+            r_params = multihead_elman_nheads * multihead_elman_headdim * multihead_elman_headdim
+            print(f"Using MultiHeadElmanCompete ({multihead_elman_nheads} heads × {multihead_elman_headdim}×{multihead_elman_headdim}, {r_params:,} R params, n_groups={compete_n_groups}{checkpoint_str}) for depth={depth} model")
+            rnn_kwargs = {
+                'nheads': multihead_elman_nheads,
+                'headdim': multihead_elman_headdim,
+                'expansion_factor': expansion,
+                'activation': multihead_elman_activation,
+                'n_groups': compete_n_groups,
                 'use_gradient_checkpointing': use_gradient_checkpointing,
                 'recurrence_chunk_size': recurrence_chunk_size
             }

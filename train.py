@@ -1283,8 +1283,8 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
-        'use_multihead_elman', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_multihead_elman', 'use_multihead_elman_compete', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
     }
@@ -1445,6 +1445,32 @@ def get_args():
                         help='Use ElmanLeakySilu (silu + leaky integration, like ElmanLeaky but with silu!)')
     parser.add_argument('--use_elman_leaky_diag', action='store_true',
                         help='Use ElmanLeakyDiag (DIAGONAL R + leaky, like Mamba diagonal A!)')
+    parser.add_argument('--use_elman_leaky_nogate', action='store_true',
+                        help='Use ElmanLeakyNoGate (NO output gate ablation!)')
+    parser.add_argument('--use_elman_leaky_mlp_gate', action='store_true',
+                        help='Use ElmanLeakyMLPGate (MLP gate with bottleneck!)')
+    parser.add_argument('--gate_hidden_dim', type=int, default=4,
+                        help='Hidden dim for MLP gate bottleneck (default 4 = extreme compression)')
+    parser.add_argument('--use_elman_leaky_compete', action='store_true',
+                        help='Use ElmanLeakyCompete (competition gate with group softmax!)')
+    parser.add_argument('--compete_n_groups', type=int, default=32,
+                        help='Number of competition groups (default 32 = 64 dims per group)')
+    parser.add_argument('--compete_temp', type=float, default=1.0,
+                        help='Softmax temperature for competition (<1 sharper, >1 softer)')
+    parser.add_argument('--use_elman_leaky_compete_silu', action='store_true',
+                        help='Use ElmanLeakyCompeteSilu (competition × silu hybrid!)')
+    parser.add_argument('--use_elman_leaky_compete_learned_temp', action='store_true',
+                        help='Use ElmanLeakyCompeteLearnedTemp (learned temperature per group!)')
+    parser.add_argument('--use_elman_leaky_compete_gelu', action='store_true',
+                        help='Use ElmanLeakyCompeteGelu (competition × gelu hybrid!)')
+    parser.add_argument('--use_elman_leaky_compete_mish', action='store_true',
+                        help='Use ElmanLeakyCompeteMish (competition × mish hybrid!)')
+    parser.add_argument('--use_elman_leaky_sparsemax', action='store_true',
+                        help='Use ElmanLeakySparsemax (sparsemax gate, exact zeros!)')
+    parser.add_argument('--use_elman_leaky_topk', action='store_true',
+                        help='Use ElmanLeakyTopK (top-k gate, hard sparsity!)')
+    parser.add_argument('--topk_k', type=int, default=16,
+                        help='Number of top values to keep per group (default 16)')
     parser.add_argument('--use_haste_gru_silu', action='store_true',
                         help='Use HasteGRUSilu (haste GRU + silu gate, proper skip connection like cuDNN!)')
     parser.add_argument('--use_haste_gru_silu_fused', action='store_true',
@@ -1459,6 +1485,8 @@ def get_args():
                         help='Use ElmanInputGate (input-only gating like Mamba2, better gradient flow!)')
     parser.add_argument('--use_multihead_elman', action='store_true',
                         help='Use MultiHeadElman (32 heads × 64×64 R matrices, 2048x more expressive than Mamba2!)')
+    parser.add_argument('--use_multihead_elman_compete', action='store_true',
+                        help='Use MultiHeadElmanCompete (multi-head + compete × silu!)')
     parser.add_argument('--multihead_elman_nheads', type=int, default=32,
                         help='Number of heads for MultiHeadElman (default 32)')
     parser.add_argument('--multihead_elman_headdim', type=int, default=64,
@@ -1881,6 +1909,19 @@ def main():
             "use_leaky_elman": args.use_leaky_elman,
             "use_elman_leaky_silu": args.use_elman_leaky_silu,
             "use_elman_leaky_diag": args.use_elman_leaky_diag,
+            "use_elman_leaky_nogate": args.use_elman_leaky_nogate,
+            "use_elman_leaky_mlp_gate": args.use_elman_leaky_mlp_gate,
+            "gate_hidden_dim": args.gate_hidden_dim,
+            "use_elman_leaky_compete": args.use_elman_leaky_compete,
+            "compete_n_groups": args.compete_n_groups,
+            "compete_temp": args.compete_temp,
+            "use_elman_leaky_compete_silu": args.use_elman_leaky_compete_silu,
+            "use_elman_leaky_compete_learned_temp": args.use_elman_leaky_compete_learned_temp,
+            "use_elman_leaky_compete_gelu": args.use_elman_leaky_compete_gelu,
+            "use_elman_leaky_compete_mish": args.use_elman_leaky_compete_mish,
+            "use_elman_leaky_sparsemax": args.use_elman_leaky_sparsemax,
+            "use_elman_leaky_topk": args.use_elman_leaky_topk,
+            "topk_k": args.topk_k,
             "delta_init": args.delta_init,
             "use_haste_gru_silu": args.use_haste_gru_silu,
             "use_haste_gru_silu_fused": args.use_haste_gru_silu_fused,
@@ -1889,6 +1930,7 @@ def main():
             "use_elman_swish": args.use_elman_swish,
             "use_elman_input_gate": args.use_elman_input_gate,
             "use_multihead_elman": args.use_multihead_elman,
+            "use_multihead_elman_compete": args.use_multihead_elman_compete,
             "multihead_elman_nheads": args.multihead_elman_nheads,
             "multihead_elman_headdim": args.multihead_elman_headdim,
             "multihead_elman_activation": args.multihead_elman_activation,
