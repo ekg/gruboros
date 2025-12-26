@@ -1003,6 +1003,22 @@ def get_model(model_config):
         print(f"Using MambaLM: dim={mamba_config['dim']}, depth={mamba_config['depth']}, d_state={mamba_config['d_state']}, expand={mamba_config['expand']}")
         return MambaLM(**mamba_config)
 
+    # Use LLaMA-style Transformer if requested (baseline comparison)
+    if model_config.get('use_llama', False):
+        from mingru.llama_lm import LLaMALM
+        llama_config = {
+            'num_tokens': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'n_heads': model_config.get('transformer_n_heads', 32),
+            'ff_mult': model_config.get('ff_mult', 4.0),
+            'max_seq_len': model_config.get('chunk_size', 2048) * 2,  # Allow 2x chunk_size for RoPE
+            'dropout': model_config['dropout'],
+            'tie_weights': True,
+        }
+        print(f"Using LLaMALM: dim={llama_config['dim']}, depth={llama_config['depth']}, n_heads={llama_config['n_heads']}, ff_mult={llama_config['ff_mult']}")
+        return LLaMALM(**llama_config)
+
     # Use Mamba2 SSM with SSD if requested (faster parallel training)
     if model_config.get('use_mamba2', False):
         from mingru.mamba_lm import Mamba2LM
@@ -1283,7 +1299,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_compete_asymmetric', 'use_elman_leaky_compete_no_delta', 'use_elman_mamba2_style', 'use_elman_mamba2_tanh', 'use_elman_mamba2_silu', 'use_elman_leaky_mamba2_delta', 'use_elman_leaky_compete_learned_delta', 'use_elman_leaky_compete_lowrank', 'r_rank', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_compete_asymmetric', 'use_elman_leaky_compete_no_delta', 'use_elman_mamba2_style', 'use_elman_mamba2_tanh', 'use_elman_mamba2_silu', 'use_elman_leaky_mamba2_delta', 'use_elman_triple_r', 'use_elman_neural_memory', 'num_memory_slots', 'memory_dim', 'use_elman_lowrank_r', 'lowrank_rank', 'use_elman_leaky_compete_learned_delta', 'use_elman_leaky_compete_lowrank', 'r_rank', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
         'use_multihead_elman', 'use_multihead_elman_compete', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
@@ -1477,6 +1493,18 @@ def get_args():
                         help='Use ElmanMamba2Silu (Mamba2 structure WITH silu, no R matrix)')
     parser.add_argument('--use_elman_leaky_mamba2_delta', action='store_true',
                         help='Use ElmanLeakyMamba2DeltaCompeteSilu (Mamba2-style softplus/exp delta + compete×silu!)')
+    parser.add_argument('--use_elman_triple_r', action='store_true',
+                        help='Use ElmanTripleRCompeteSilu (3 R matrices for h/x/delta + compete×silu!)')
+    parser.add_argument('--use_elman_neural_memory', action='store_true',
+                        help='Use ElmanNeuralMemoryCompeteSilu (NTM-style memory bank + compete×silu!)')
+    parser.add_argument('--num_memory_slots', type=int, default=64,
+                        help='Number of memory slots for neural memory')
+    parser.add_argument('--memory_dim', type=int, default=256,
+                        help='Dimension of each memory slot')
+    parser.add_argument('--use_elman_lowrank_r', action='store_true',
+                        help='Use ElmanLowRankRCompeteSilu (R = U @ V^T + S + compete×silu!)')
+    parser.add_argument('--lowrank_rank', type=int, default=256,
+                        help='Rank for low-rank R decomposition')
     parser.add_argument('--use_elman_leaky_compete_learned_delta', action='store_true',
                         help='Use ElmanLeakyCompeteLearnedDelta (per-dim delta scaling!)')
     parser.add_argument('--use_elman_leaky_compete_lowrank', action='store_true',
@@ -1526,6 +1554,10 @@ def get_args():
                         help='Use Hybrid Mamba2+cuDNN GRU (parallel paths with learned mixing, no TBPTT)')
     parser.add_argument('--use_mamba2_ffn3', action='store_true',
                         help='Use Mamba2 + 3-layer FFN (arXiv:2505.06633: d→4d→4d→d with GELU, no TBPTT)')
+    parser.add_argument('--use_llama', action='store_true',
+                        help='Use LLaMA-style Transformer (RoPE, SwiGLU, RMSNorm) for baseline comparison')
+    parser.add_argument('--transformer_n_heads', type=int, default=32,
+                        help='Number of attention heads for transformer (default: 32)')
     parser.add_argument('--use_cudnn_conv_gru', action='store_true',
                         help='Use cuDNN GRU + Causal Conv1d (Mamba2-style 4-wide local context before GRU)')
     parser.add_argument('--use_cudnn_mult_gru', action='store_true',
@@ -1900,6 +1932,7 @@ def main():
             "num_tokens": 256,  # Will be updated by tokenizer
             "dim": dim,
             "depth": depth,
+            "chunk_size": chunk_size,  # For LLaMA's max_seq_len
             "ff_mult": args.ff_mult,
             "expansion": args.expansion_factor,
             "conv_kernel_size": args.conv_kernel_size,
@@ -1943,6 +1976,12 @@ def main():
             "use_elman_mamba2_tanh": args.use_elman_mamba2_tanh,
             "use_elman_mamba2_silu": args.use_elman_mamba2_silu,
             "use_elman_leaky_mamba2_delta": args.use_elman_leaky_mamba2_delta,
+            "use_elman_triple_r": args.use_elman_triple_r,
+            "use_elman_neural_memory": args.use_elman_neural_memory,
+            "num_memory_slots": args.num_memory_slots,
+            "memory_dim": args.memory_dim,
+            "use_elman_lowrank_r": args.use_elman_lowrank_r,
+            "lowrank_rank": args.lowrank_rank,
             "use_elman_leaky_compete_learned_delta": args.use_elman_leaky_compete_learned_delta,
             "use_elman_leaky_compete_lowrank": args.use_elman_leaky_compete_lowrank,
             "r_rank": args.r_rank,
@@ -1966,6 +2005,8 @@ def main():
             "use_logspace_gru": args.use_logspace_gru,
             "use_mamba": args.use_mamba,
             "use_mamba2": args.use_mamba2,
+            "use_llama": args.use_llama,
+            "transformer_n_heads": args.transformer_n_heads,
             "use_hybrid_mamba2_gru": args.use_hybrid_mamba2_gru,
             "use_mamba2_ffn3": args.use_mamba2_ffn3,
             "use_cudnn_conv_gru": args.use_cudnn_conv_gru,
@@ -2022,7 +2063,7 @@ def main():
         print("====================\n")
 
     if global_rank == 0:
-        print(f"Model size: {get_parameter_count_str(model_config)} parameters")
+        # Note: actual param count printed after model creation
         print(f"Configuration: {model_config}")
         # The directory is now guaranteed to exist before this is called.
         with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
@@ -2047,10 +2088,13 @@ def main():
         if global_rank == 0:
             print("Model converted to bfloat16 for FlashRNN compatibility")
 
-    # Print ACTUAL parameter count (not estimated!)
+    # Print actual model parameter count
     if global_rank == 0:
         actual_params = sum(p.numel() for p in model.parameters())
-        print(f"ACTUAL model parameters: {actual_params/1e9:.2f}B ({actual_params/1e6:.1f}M)")
+        if actual_params >= 1e9:
+            print(f"Model size: {actual_params/1e9:.2f}B parameters")
+        else:
+            print(f"Model size: {actual_params/1e6:.1f}M parameters")
 
     # MEMORY CHECKPOINT 1: After model creation
     if global_rank == 0 and device.type == 'cuda':
