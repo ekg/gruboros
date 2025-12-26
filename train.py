@@ -1299,7 +1299,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_compete_asymmetric', 'use_elman_leaky_compete_no_delta', 'use_elman_mamba2_style', 'use_elman_mamba2_tanh', 'use_elman_mamba2_silu', 'use_elman_leaky_mamba2_delta', 'use_elman_triple_r', 'use_elman_neural_memory', 'num_memory_slots', 'memory_dim', 'use_elman_lowrank_r', 'lowrank_rank', 'use_elman_leaky_compete_learned_delta', 'use_elman_leaky_compete_lowrank', 'r_rank', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_compete_asymmetric', 'use_elman_leaky_compete_no_delta', 'use_elman_mamba2_style', 'use_elman_mamba2_tanh', 'use_elman_mamba2_silu', 'use_elman_leaky_mamba2_delta', 'use_elman_triple_r', 'use_elman_selective_triple_r', 'use_elman_neural_memory', 'num_memory_slots', 'memory_dim', 'use_elman_lowrank_r', 'lowrank_rank', 'use_elman_leaky_compete_learned_delta', 'use_elman_leaky_compete_lowrank', 'r_rank', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
         'use_multihead_elman', 'use_multihead_elman_compete', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
@@ -1495,6 +1495,8 @@ def get_args():
                         help='Use ElmanLeakyMamba2DeltaCompeteSilu (Mamba2-style softplus/exp delta + compete×silu!)')
     parser.add_argument('--use_elman_triple_r', action='store_true',
                         help='Use ElmanTripleRCompeteSilu (3 R matrices for h/x/delta + compete×silu!)')
+    parser.add_argument('--use_elman_selective_triple_r', action='store_true',
+                        help='Use ElmanSelectiveTripleRCompeteSilu (Triple R + Mamba2-style input selectivity!)')
     parser.add_argument('--use_elman_neural_memory', action='store_true',
                         help='Use ElmanNeuralMemoryCompeteSilu (NTM-style memory bank + compete×silu!)')
     parser.add_argument('--num_memory_slots', type=int, default=64,
@@ -1977,6 +1979,7 @@ def main():
             "use_elman_mamba2_silu": args.use_elman_mamba2_silu,
             "use_elman_leaky_mamba2_delta": args.use_elman_leaky_mamba2_delta,
             "use_elman_triple_r": args.use_elman_triple_r,
+            "use_elman_selective_triple_r": args.use_elman_selective_triple_r,
             "use_elman_neural_memory": args.use_elman_neural_memory,
             "num_memory_slots": args.num_memory_slots,
             "memory_dim": args.memory_dim,

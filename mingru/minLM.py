@@ -316,6 +316,38 @@ except ImportError as e:
     print(f"Failed to import ElmanLeakyMamba2DeltaCompeteSilu: {e}")
     ElmanLeakyMamba2DeltaCompeteSilu = None
 
+# Import ElmanTripleRCompeteSilu (Triple R matrices + compete×silu)
+try:
+    from mingru.elman_triple_r_compete_silu import ElmanTripleRCompeteSilu
+    print("ElmanTripleRCompeteSilu available (3 R matrices + compete×silu!)")
+except ImportError as e:
+    print(f"Failed to import ElmanTripleRCompeteSilu: {e}")
+    ElmanTripleRCompeteSilu = None
+
+# Import ElmanSelectiveTripleRCompeteSilu (Selective Triple R + compete×silu, Mamba2-like selectivity!)
+try:
+    from mingru.elman_selective_triple_r_compete_silu import ElmanSelectiveTripleRCompeteSilu
+    print("ElmanSelectiveTripleRCompeteSilu available (selective Triple R + compete×silu!)")
+except ImportError as e:
+    print(f"Failed to import ElmanSelectiveTripleRCompeteSilu: {e}")
+    ElmanSelectiveTripleRCompeteSilu = None
+
+# Import ElmanNeuralMemoryCompeteSilu (NTM-style memory + compete×silu)
+try:
+    from mingru.elman_neural_memory_compete_silu import ElmanNeuralMemoryCompeteSilu
+    print("ElmanNeuralMemoryCompeteSilu available (neural memory + compete×silu!)")
+except ImportError as e:
+    print(f"Failed to import ElmanNeuralMemoryCompeteSilu: {e}")
+    ElmanNeuralMemoryCompeteSilu = None
+
+# Import ElmanLowRankRCompeteSilu (Low-rank R + compete×silu)
+try:
+    from mingru.elman_lowrank_r_compete_silu import ElmanLowRankRCompeteSilu
+    print("ElmanLowRankRCompeteSilu available (low-rank R + compete×silu!)")
+except ImportError as e:
+    print(f"Failed to import ElmanLowRankRCompeteSilu: {e}")
+    ElmanLowRankRCompeteSilu = None
+
 # Import ElmanLeakyCompeteLearnedDelta (per-dim delta scaling)
 try:
     from mingru.elman_leaky_compete_learned_delta import ElmanLeakyCompeteLearnedDelta
@@ -508,6 +540,13 @@ class minLM(Module):
         use_elman_mamba2_tanh = False,  # Use ElmanMamba2Tanh (Mamba2 + tanh, no R matrix!)
         use_elman_mamba2_silu = False,  # Use ElmanMamba2Silu (Mamba2 + silu, no R matrix!)
         use_elman_leaky_mamba2_delta = False,  # Use ElmanLeakyMamba2DeltaCompeteSilu (Mamba2-style delta + compete×silu!)
+        use_elman_triple_r = False,  # Use ElmanTripleRCompeteSilu (3 R matrices + compete×silu!)
+        use_elman_selective_triple_r = False,  # Use ElmanSelectiveTripleRCompeteSilu (Mamba2-style selectivity!)
+        use_elman_neural_memory = False,  # Use ElmanNeuralMemoryCompeteSilu (NTM memory + compete×silu!)
+        num_memory_slots = 64,  # Number of memory slots for neural memory
+        memory_dim = 256,  # Dimension of each memory slot
+        use_elman_lowrank_r = False,  # Use ElmanLowRankRCompeteSilu (low-rank R + compete×silu!)
+        lowrank_rank = 256,  # Rank for low-rank R decomposition
         use_elman_leaky_compete_learned_delta = False,  # Use ElmanLeakyCompeteLearnedDelta (per-dim delta!)
         use_elman_leaky_compete_lowrank = False,  # Use ElmanLeakyCompeteLowRank (R = U @ V!)
         r_rank = 512,  # Rank for low-rank R factorization
@@ -919,6 +958,45 @@ class minLM(Module):
                 'recurrence_chunk_size': recurrence_chunk_size,
                 'delta_init': delta_init,
                 'n_groups': compete_n_groups
+            }
+        elif use_elman_triple_r:
+            # Use ElmanTripleRCompeteSilu (3 R matrices + compete×silu!)
+            min_rnn_klass = ElmanTripleRCompeteSilu
+            print(f"Using ElmanTripleRCompeteSilu (3 R matrices + compete×silu, expansion={expansion}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'n_groups': compete_n_groups,
+                'delta_init': delta_init
+            }
+        elif use_elman_selective_triple_r:
+            # Use ElmanSelectiveTripleRCompeteSilu (Mamba2-style input selectivity + Triple R!)
+            min_rnn_klass = ElmanSelectiveTripleRCompeteSilu
+            print(f"Using ElmanSelectiveTripleRCompeteSilu (selective Triple R + compete×silu, expansion={expansion}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'n_groups': compete_n_groups,
+                'delta_init': delta_init
+            }
+        elif use_elman_neural_memory:
+            # Use ElmanNeuralMemoryCompeteSilu (NTM-style memory + compete×silu!)
+            min_rnn_klass = ElmanNeuralMemoryCompeteSilu
+            print(f"Using ElmanNeuralMemoryCompeteSilu (memory: {num_memory_slots}×{memory_dim}, expansion={expansion}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'num_memory_slots': num_memory_slots,
+                'memory_dim': memory_dim,
+                'n_groups': compete_n_groups,
+                'delta_init': delta_init
+            }
+        elif use_elman_lowrank_r:
+            # Use ElmanLowRankRCompeteSilu (low-rank R + compete×silu!)
+            min_rnn_klass = ElmanLowRankRCompeteSilu
+            print(f"Using ElmanLowRankRCompeteSilu (rank={lowrank_rank}, expansion={expansion}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'rank': lowrank_rank,
+                'n_groups': compete_n_groups,
+                'delta_init': delta_init
             }
         elif use_elman_leaky_compete_learned_delta:
             # Use ElmanLeakyCompeteLearnedDelta (per-dim delta scaling!)
