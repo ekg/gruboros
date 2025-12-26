@@ -60,12 +60,15 @@ COLORS['baseline'] = '#E69F00'   # Yellow-orange
 
 # Colorblind-friendly palette - more colors
 COLORS['gru'] = '#56B4E9'      # Cyan for GRU
+COLORS['selective'] = '#F0E442'  # Yellow for Selective Triple R
 
 # Runs to compare
 RUNS = [
+    ('logs/selective_triple_r_1.33b_20251226.log', 'SelectiveTripleR (1.33B)', 'selective'),
+    ('logs/triple_r_1.35b_20251226.log', 'ElmanTripleR (1.35B)', 'triple_r'),
     ('logs/triple_r_run6.log', 'ElmanTripleR run1 (1.28B)', 'triple_r'),
-    ('logs/triple_r_run2_20251226.log', 'ElmanTripleR run2 (1.28B)', 'triple_r'),
-    ('logs/baseline_compete_silu_20251226.log', 'ElmanLeakyCompeteSilu (1.15B)', 'baseline'),
+    ('logs/baseline_compete_silu_20251226.log', 'LeakyCompeteSilu (1.15B)', 'baseline'),
+    ('logs/leaky_compete_silu_1.33b_20251226.log', 'LeakyCompeteSilu (1.33B)', 'baseline'),  # NEW - worse!
     ('logs/real_mamba2_20251226_165100.log', 'Mamba2 run1 (1.33B)', 'mamba2'),
     ('logs/real_mamba2_20251226_172754.log', 'Mamba2 run2 (1.33B)', 'mamba2'),
     ('logs/standard_gru_300_20251226.log', 'StandardGRU (1.28B)', 'gru'),
