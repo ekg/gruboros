@@ -4,27 +4,35 @@
 
 We're exploring the design space between **Mamba-style selectivity** and **simple Elman RNNs** to understand what makes recurrent language models work. Key question: Can we match Mamba2/Transformer performance with simpler, more interpretable architectures?
 
-Our best architecture, **Triple R** (3 recurrent matrices), achieves **5.179 avg50 @ 1.28B params**, competitive with Mamba2's 5.04-5.13 at similar scale.
+**Latest finding (Dec 27)**: Mamba2 definitively beats Triple R by 7% at 1000 steps (3.924 vs 4.216 avg50). The selective input gate (Mamba2's B gate) has NO effect when added to Triple R. Mamba2's advantage likely comes from:
+1. **Log-space numerical stability** - Custom segment-sum algorithm prevents NaN during training
+2. **Diagonal state transitions** - Element-wise decay is more stable at depth than full R matrices
+3. **SSD parallelization** - Hardware-efficient matrix multiplication primitives
 
-**Main finding**: RNNs converge faster than transformers in early training. At 300 steps (~20M tokens), Triple R and Mamba2 both reach ~5.1-5.2 loss while LLaMA transformer lags at 5.69. This suggests recurrent models have an inductive bias advantage for language modeling.
+We're now testing **Diagonal MHTR** (Multi-Head Triple R with diagonal transitions) to isolate whether diagonal structure is the key.
 
 ---
 
-## Current Results (Dec 26, 2025)
+## Current Results (Dec 27, 2025)
 
-All runs: 300 steps, batch_size=16, chunk_size=512, ~65k tokens/step, 8× A100
+### 1000-Step Extended Comparison (~1.3B params, 8× A100)
 
-| Rank | Model | Params | avg50 | Notes |
-|------|-------|--------|-------|-------|
-| 1 | **Mamba2 (official)** | 1.33B | 5.038 | Best run, mamba-ssm package |
-| 2 | Mamba2 run2 | 1.33B | 5.131 | Second run for variance check |
-| 3 | **Triple R** | 1.28B | 5.179 | Our best RNN - 3 R matrices |
-| 4 | LLaMA Transformer | 1.34B | 5.685 | RoPE, SwiGLU, RMSNorm |
-| 5 | Low-rank R | 1.18B | 5.788 | R = U @ V^T (rank=256) |
+| Rank | Model | Params | avg50 | tok/s | Notes |
+|------|-------|--------|-------|-------|-------|
+| 1 | **Mamba2** | 1.33B | **3.924** | 25-35k | Winner by 7% |
+| 2 | MHTR (Multi-Head Triple R) | 1.33B | 4.197 | 15-16k | 32× state expansion |
+| 3 | Triple R | 1.28B | 4.216 | 10-11k | Full R matrices |
+| 4 | Selective Triple R | 1.33B | 4.216 | 10-11k | +B gate = no effect |
 
-**Note on throughput**: tok/s comparisons are awkward because RNNs can run with much higher batch sizes due to lower memory requirements. A fair comparison would be on identical hardware at maximum throughput, which we haven't done yet (TODO: wallclock comparison).
+### 300-Step Quick Comparison (previous results)
 
-**Comparison plot**: `/tmp/dec26_model_comparison.png`
+| Model | Params | avg50 | Notes |
+|-------|--------|-------|-------|
+| Mamba2 | 1.33B | 5.04-5.13 | mamba-ssm package |
+| Triple R | 1.28B | 5.179 | 3 R matrices |
+| LLaMA Transformer | 1.34B | 5.685 | RoPE, SwiGLU, RMSNorm |
+
+**Key observation**: Mamba2's lead widens with more training (2.7% at 300 steps → 7% at 1000 steps).
 
 ---
 
@@ -220,6 +228,9 @@ Original gruboros concept: evolutionary optimization across distributed models
 ### Core Models
 - `mingru/haste_elman_triple_r.py` - Triple R implementation (Haste CUDA)
 - `mingru/haste_elman_compete_silu.py` - Baseline compete×silu
+- `mingru/multihead_triple_r_expanded.py` - MHTR with 32× state expansion
+- `mingru/diagonal_mhtr.py` - Diagonal MHTR (Mamba2-style transitions)
+- `mingru/logspace_hybrid_gru.py` - Log-space GRU (numerical stability)
 - `mingru/mamba_lm.py` - Official Mamba2 wrapper
 - `mingru/llama_lm.py` - LLaMA transformer baseline
 
@@ -242,11 +253,13 @@ Original gruboros concept: evolutionary optimization across distributed models
 
 ## Next Steps (Priority Order)
 
-1. **Investigate gradient death** - Main blocker for long training
-2. **Wallclock comparison** - Fair throughput comparison at max batch size
-3. **Scale to 7B** - Verify Triple R advantages hold at scale
-4. **Neural Memory Bank** - Test external memory augmentation
-5. **Optimize for inference** - KV-cache equivalent for RNNs
+1. **Complete Diagonal MHTR experiment** - Does diagonal match Mamba2?
+   - If yes → diagonal transitions are key, not expressivity
+   - If no → Mamba2's advantage is log-space + SSD parallelization
+2. **Implement log-space Elman** - Port Mamba2's segment-sum to our architecture
+3. **Profile numerical stability** - Track hidden state norms/gradients through depth
+4. **Investigate gradient death** - May be related to numerical instability
+5. **Wallclock comparison** - Fair throughput at max batch size
 
 ---
 
@@ -254,26 +267,64 @@ Original gruboros concept: evolutionary optimization across distributed models
 
 1. **RNNs converge faster early**: At 300 steps, Triple R (5.18) and Mamba2 (5.04) both beat LLaMA transformer (5.69). Recurrent inductive bias helps with early language modeling.
 
-2. **Full R matrices > diagonal A**: Mamba2's diagonal A sacrifices expressivity for speed. With Haste CUDA kernels, we can have full R without speed penalty.
+2. **Mamba2's lead widens over time**: 2.7% gap at 300 steps → 7% at 1000 steps. This suggests Mamba2 has better gradient flow for extended training.
 
-3. **Competition + SiLU synergy**: Competition gate provides implicit sparsity/selection. SiLU provides smooth gradients. Combined = best of both.
+3. **Selective input gate (B) doesn't help**: Adding Mamba2's `B = sigmoid(W_B @ x)` to Triple R had zero effect. Selectivity is not the source of Mamba2's advantage.
 
-4. **Delta initialization matters**: -1.8 to -2.0 range keeps initial decay ~0.12-0.14, allowing gradients to flow while maintaining memory.
+4. **Full R matrices may hurt at depth**: Hypothesis: Full matrix transitions `h = R @ h` compound errors through layers. Diagonal transitions `h = R * h` (element-wise) are more stable.
 
-5. **Low-rank R needs higher rank**: rank=256 for D=2048 (12.5%) is too aggressive. Typical ratios are 30-60% of full rank.
+5. **Log-space computation is critical**: Mamba2 uses log-space segment-sum algorithm that "without the right implementation... produces NaNs immediately during training (even with FP32)." Our RNNs may be hitting similar numerical limits.
 
-6. **Throughput parity achieved**: Our RNN variants match Mamba2/Transformer throughput on modern hardware thanks to optimized CUDA kernels.
+6. **Competition + SiLU synergy**: Competition gate provides implicit sparsity/selection. SiLU provides smooth gradients. Combined = best of both.
+
+7. **Delta initialization matters**: -1.8 to -2.0 range keeps initial decay ~0.12-0.14, allowing gradients to flow while maintaining memory.
+
+8. **Throughput gap persists**: Mamba2 is ~2-3× faster (25-35k vs 10-16k tok/s) due to SSD using tensor cores for matrix multiplication.
 
 ---
 
-## Today's Progress (Dec 26, 2025)
+## Progress Log
+
+### December 27, 2025
+
+1. **1000-step extended comparison** - Mamba2 beats Triple R by 7% (3.924 vs 4.216)
+2. **Selective input gate ablation** - Adding B gate to Triple R had NO effect
+3. **Multi-Head Triple R (MHTR)** - 32× state expansion, still loses to Mamba2 (4.197 vs 3.924)
+4. **Diagonal MHTR experiment** - Started testing diagonal R transitions (Mamba2-style)
+5. **Log-space hypothesis** - Mamba2's segment-sum algorithm may be key to deep training stability
+
+**Key finding**: Mamba2's advantage is NOT from selectivity. It's likely from:
+- Log-space numerical stability (prevents NaN at depth)
+- Diagonal state transitions (independent per-dimension decay)
+- Hardware-efficient SSD algorithm
+
+**Research pivot**: From "can rich R matrices beat SSMs?" to "is diagonal structure + log-space the winning formula?"
+
+### December 26, 2025
 
 1. **Fixed param counting** - Now shows actual model params, not estimates
 2. **Ran Mamba2 comparison** - Official mamba-ssm at 1.33B: 5.04-5.13 avg50
 3. **Completed LLaMA transformer** - 1.34B: 5.685 avg50 (slower than RNNs)
 4. **Created comparison plot** - `/tmp/dec26_model_comparison.png`
-5. **Updated research status** - This file with complete results
 
-**Key finding**: Both Mamba2 and Triple R significantly outperform transformer at 300 steps. Triple R matches Mamba2 at same scale, suggesting our simpler architecture (full R matrices + compete×silu) is competitive with sophisticated SSM designs. Transformers may need more training to catch up.
+---
 
-*Last updated: December 26, 2025*
+## Hypothesis: Log-Space Enables Depth
+
+Mamba2's SSD algorithm uses a critical numerical technique:
+
+```
+Instead of computing cumulative products (which underflow):
+  A_1, A_1·A_2, A_1·A_2·A_3, ...
+
+Convert to log-space cumulative sums:
+  log(A_1), log(A_1)+log(A_2), log(A_1)+log(A_2)+log(A_3), ...
+```
+
+But naive log-space still fails due to **catastrophic cancellation** when subtracting large cumulative sums. Mamba2 uses a custom **segment-sum (segsum)** operation that "produces the right answer without subtraction."
+
+**Quote from Tri Dao's blog**: "Without the right implementation of these primitives, the basic SSD algorithm produces NaNs immediately during training (even with FP32)."
+
+**Implication for Triple R**: Our full R matrices may accumulate numerical errors through depth. If diagonal MHTR matches Mamba2, the next step is implementing log-space Elman dynamics.
+
+*Last updated: December 27, 2025*
