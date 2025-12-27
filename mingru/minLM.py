@@ -324,6 +324,30 @@ except ImportError as e:
     print(f"Failed to import ElmanTripleRCompeteSilu: {e}")
     ElmanTripleRCompeteSilu = None
 
+# Import ElmanTripleRDStateCompeteSilu (Triple R with d_state like Mamba2!)
+try:
+    from mingru.elman_triple_r_dstate import ElmanTripleRDStateCompeteSilu
+    print("ElmanTripleRDStateCompeteSilu available (d_state Triple R, Mamba2-style efficiency!)")
+except ImportError as e:
+    print(f"Failed to import ElmanTripleRDStateCompeteSilu: {e}")
+    ElmanTripleRDStateCompeteSilu = None
+
+# Import MultiHeadTripleRExpanded (32× state expansion like Mamba2!)
+try:
+    from mingru.multihead_triple_r_expanded import MultiHeadTripleRExpanded
+    print("MultiHeadTripleRExpanded available (32× state expansion, Mamba2-style!)")
+except ImportError as e:
+    print(f"Failed to import MultiHeadTripleRExpanded: {e}")
+    MultiHeadTripleRExpanded = None
+
+# Import DiagonalMHTR (diagonal transitions - stable at depth!)
+try:
+    from mingru.diagonal_mhtr import DiagonalMHTR
+    print("DiagonalMHTR available (diagonal transitions, depth-stable!)")
+except ImportError as e:
+    print(f"Failed to import DiagonalMHTR: {e}")
+    DiagonalMHTR = None
+
 # Import ElmanSelectiveTripleRCompeteSilu (Selective Triple R + compete×silu, Mamba2-like selectivity!)
 try:
     from mingru.elman_selective_triple_r_compete_silu import ElmanSelectiveTripleRCompeteSilu
@@ -541,6 +565,13 @@ class minLM(Module):
         use_elman_mamba2_silu = False,  # Use ElmanMamba2Silu (Mamba2 + silu, no R matrix!)
         use_elman_leaky_mamba2_delta = False,  # Use ElmanLeakyMamba2DeltaCompeteSilu (Mamba2-style delta + compete×silu!)
         use_elman_triple_r = False,  # Use ElmanTripleRCompeteSilu (3 R matrices + compete×silu!)
+        use_elman_triple_r_dstate = False,  # Use ElmanTripleRDStateCompeteSilu (d_state like Mamba2!)
+        triple_r_dstate = 64,  # d_state for low-rank R matrices (like Mamba2's d_state)
+        use_multihead_triple_r_expanded = False,  # Use MultiHeadTripleRExpanded (32× state like Mamba2!)
+        use_diagonal_mhtr = False,  # Use DiagonalMHTR (diagonal transitions - stable at depth!)
+        mhtr_expand = 2,  # Expansion factor for multi-head Triple R
+        mhtr_headdim = 64,  # Head dimension for multi-head Triple R
+        mhtr_d_state_r = 16,  # Low-rank factor for R matrices per head
         use_elman_selective_triple_r = False,  # Use ElmanSelectiveTripleRCompeteSilu (Mamba2-style selectivity!)
         use_elman_neural_memory = False,  # Use ElmanNeuralMemoryCompeteSilu (NTM memory + compete×silu!)
         num_memory_slots = 64,  # Number of memory slots for neural memory
@@ -966,6 +997,38 @@ class minLM(Module):
             rnn_kwargs = {
                 'expansion_factor': expansion,
                 'n_groups': compete_n_groups,
+                'delta_init': delta_init
+            }
+        elif use_elman_triple_r_dstate:
+            # Use ElmanTripleRDStateCompeteSilu (d_state like Mamba2!)
+            min_rnn_klass = ElmanTripleRDStateCompeteSilu
+            print(f"Using ElmanTripleRDStateCompeteSilu (d_state={triple_r_dstate}, expansion={expansion}, delta_init={delta_init}) for depth={depth} model")
+            rnn_kwargs = {
+                'expansion_factor': expansion,
+                'd_state': triple_r_dstate,
+                'n_groups': compete_n_groups,
+                'delta_init': delta_init
+            }
+        elif use_multihead_triple_r_expanded:
+            # Use MultiHeadTripleRExpanded (32× state expansion like Mamba2!)
+            min_rnn_klass = MultiHeadTripleRExpanded
+            nheads = (dim * mhtr_expand) // mhtr_headdim
+            state_expansion = nheads * mhtr_headdim * mhtr_d_state_r / dim
+            print(f"Using MultiHeadTripleRExpanded (expand={mhtr_expand}, nheads={nheads}, headdim={mhtr_headdim}, d_state_r={mhtr_d_state_r}, state={state_expansion:.0f}× dim) for depth={depth} model")
+            rnn_kwargs = {
+                'expand': mhtr_expand,
+                'headdim': mhtr_headdim,
+                'd_state_r': mhtr_d_state_r,
+                'delta_init': delta_init
+            }
+        elif use_diagonal_mhtr:
+            # Use DiagonalMHTR (diagonal transitions - stable at depth!)
+            min_rnn_klass = DiagonalMHTR
+            nheads = (dim * mhtr_expand) // mhtr_headdim
+            print(f"Using DiagonalMHTR (DIAGONAL transitions, expand={mhtr_expand}, nheads={nheads}, headdim={mhtr_headdim}) for depth={depth} model")
+            rnn_kwargs = {
+                'expand': mhtr_expand,
+                'headdim': mhtr_headdim,
                 'delta_init': delta_init
             }
         elif use_elman_selective_triple_r:

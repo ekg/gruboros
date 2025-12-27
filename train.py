@@ -1299,7 +1299,7 @@ def get_model(model_config):
         'dropout', 'use_fused_gru', 'use_hybrid_gru', 'use_test_gru', 'use_standard_gru',
         'use_persistent_gru', 'use_sequential_triton_gru', 'use_selective_gru', 'use_projected_gru', 'h_recurrent', 'use_local_conv',
         'use_flash_gru', 'use_flash_ema_gru', 'use_cudnn_ema_gru', 'use_cudnn_multiscale_ema_gru',
-        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_compete_asymmetric', 'use_elman_leaky_compete_no_delta', 'use_elman_mamba2_style', 'use_elman_mamba2_tanh', 'use_elman_mamba2_silu', 'use_elman_leaky_mamba2_delta', 'use_elman_triple_r', 'use_elman_selective_triple_r', 'use_elman_neural_memory', 'num_memory_slots', 'memory_dim', 'use_elman_lowrank_r', 'lowrank_rank', 'use_elman_leaky_compete_learned_delta', 'use_elman_leaky_compete_lowrank', 'r_rank', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
+        'use_cudnn_ssm_gru', 'use_cudnn_ssm_series_gru', 'per_layer_alpha', 'use_ema_gru', 'use_elman_silu', 'use_elman_leaky', 'use_elman_leaky_selective', 'use_leaky_elman', 'use_elman_leaky_silu', 'use_elman_leaky_diag', 'use_elman_leaky_nogate', 'use_elman_leaky_mlp_gate', 'gate_hidden_dim', 'use_elman_leaky_compete', 'compete_n_groups', 'compete_temp', 'use_elman_leaky_compete_silu', 'use_elman_leaky_compete_learned_temp', 'use_elman_leaky_compete_gelu', 'use_elman_leaky_compete_mish', 'use_elman_leaky_compete_asymmetric', 'use_elman_leaky_compete_no_delta', 'use_elman_mamba2_style', 'use_elman_mamba2_tanh', 'use_elman_mamba2_silu', 'use_elman_leaky_mamba2_delta', 'use_elman_triple_r', 'use_elman_triple_r_dstate', 'triple_r_dstate', 'use_multihead_triple_r_expanded', 'use_diagonal_mhtr', 'mhtr_expand', 'mhtr_headdim', 'mhtr_d_state_r', 'use_elman_selective_triple_r', 'use_elman_neural_memory', 'num_memory_slots', 'memory_dim', 'use_elman_lowrank_r', 'lowrank_rank', 'use_elman_leaky_compete_learned_delta', 'use_elman_leaky_compete_lowrank', 'r_rank', 'use_elman_leaky_sparsemax', 'use_elman_leaky_topk', 'topk_k', 'delta_init', 'use_haste_gru_silu', 'use_haste_gru_silu_fused', 'use_haste_lstm_silu', 'use_skip_elman_silu', 'use_elman_swish', 'use_elman_input_gate',
         'use_multihead_elman', 'use_multihead_elman_compete', 'multihead_elman_nheads', 'multihead_elman_headdim', 'multihead_elman_activation',
         'ema_alpha', 'use_gradient_checkpointing', 'z_bias_input', 'z_bias_hidden',
         'recurrence_chunk_size'
@@ -1495,6 +1495,20 @@ def get_args():
                         help='Use ElmanLeakyMamba2DeltaCompeteSilu (Mamba2-style softplus/exp delta + compete×silu!)')
     parser.add_argument('--use_elman_triple_r', action='store_true',
                         help='Use ElmanTripleRCompeteSilu (3 R matrices for h/x/delta + compete×silu!)')
+    parser.add_argument('--use_elman_triple_r_dstate', action='store_true',
+                        help='Use ElmanTripleRDStateCompeteSilu (d_state like Mamba2, low-rank R!)')
+    parser.add_argument('--triple_r_dstate', type=int, default=64,
+                        help='d_state for low-rank R matrices (like Mamba2 d_state, default=64)')
+    parser.add_argument('--use_multihead_triple_r_expanded', action='store_true',
+                        help='Use MultiHeadTripleRExpanded (32× state expansion like Mamba2!)')
+    parser.add_argument('--mhtr_expand', type=int, default=2,
+                        help='Expansion factor for multi-head Triple R (default=2)')
+    parser.add_argument('--mhtr_headdim', type=int, default=64,
+                        help='Head dimension for multi-head Triple R (default=64)')
+    parser.add_argument('--mhtr_d_state_r', type=int, default=16,
+                        help='Low-rank factor for R matrices per head (default=16)')
+    parser.add_argument('--use_diagonal_mhtr', action='store_true',
+                        help='Use DiagonalMHTR (diagonal transitions - stable at depth!)')
     parser.add_argument('--use_elman_selective_triple_r', action='store_true',
                         help='Use ElmanSelectiveTripleRCompeteSilu (Triple R + Mamba2-style input selectivity!)')
     parser.add_argument('--use_elman_neural_memory', action='store_true',
@@ -1979,6 +1993,13 @@ def main():
             "use_elman_mamba2_silu": args.use_elman_mamba2_silu,
             "use_elman_leaky_mamba2_delta": args.use_elman_leaky_mamba2_delta,
             "use_elman_triple_r": args.use_elman_triple_r,
+            "use_elman_triple_r_dstate": args.use_elman_triple_r_dstate,
+            "triple_r_dstate": args.triple_r_dstate,
+            "use_multihead_triple_r_expanded": args.use_multihead_triple_r_expanded,
+            "use_diagonal_mhtr": args.use_diagonal_mhtr,
+            "mhtr_expand": args.mhtr_expand,
+            "mhtr_headdim": args.mhtr_headdim,
+            "mhtr_d_state_r": args.mhtr_d_state_r,
             "use_elman_selective_triple_r": args.use_elman_selective_triple_r,
             "use_elman_neural_memory": args.use_elman_neural_memory,
             "num_memory_slots": args.num_memory_slots,
@@ -2091,13 +2112,10 @@ def main():
         if global_rank == 0:
             print("Model converted to bfloat16 for FlashRNN compatibility")
 
-    # Print actual model parameter count
+    # Print actual model parameter count (counted from instantiated model)
     if global_rank == 0:
         actual_params = sum(p.numel() for p in model.parameters())
-        if actual_params >= 1e9:
-            print(f"Model size: {actual_params/1e9:.2f}B parameters")
-        else:
-            print(f"Model size: {actual_params/1e6:.1f}M parameters")
+        print(f"Model size: {actual_params:,} parameters ({actual_params/1e9:.3f}B)")
 
     # MEMORY CHECKPOINT 1: After model creation
     if global_rank == 0 and device.type == 'cuda':
