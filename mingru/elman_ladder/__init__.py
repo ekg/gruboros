@@ -101,10 +101,25 @@ except ImportError:
     LadderLM = None
     create_ladder_model = None
 
+# Log-space wrapper for any level
+try:
+    from .log_space_wrapper import (
+        LogSpaceLayer, LogSpaceCellWrapper, LogRMSNorm,
+        create_log_space_level, to_log_space, from_log_space
+    )
+    LOG_SPACE_WRAPPER_AVAILABLE = True
+except ImportError:
+    LogSpaceLayer = None
+    LogSpaceCellWrapper = None
+    LogRMSNorm = None
+    create_log_space_level = None
+    LOG_SPACE_WRAPPER_AVAILABLE = False
+
 
 def get_available_levels():
     """Return dict of available ladder levels."""
-    return {
+    levels = {
+        # Normal space levels
         0: ("Stock Elman", LEVEL_0_AVAILABLE, StockElman),
         1: ("Gated Elman", LEVEL_1_AVAILABLE, GatedElman),
         2: ("Selective Elman", LEVEL_2_AVAILABLE, SelectiveElman),
@@ -116,6 +131,30 @@ def get_available_levels():
         "5-fast": ("Full R Linear", LEVEL_5_FAST_AVAILABLE, FullRElman),
         "6-fast": ("Triple R Linear", LEVEL_6_FAST_AVAILABLE, TripleRElman),
     }
+
+    # Add log-space variants of levels 0-3 (using wrapper)
+    if LOG_SPACE_WRAPPER_AVAILABLE:
+        from .stock_elman import StockElmanCell
+        from .gated_elman import GatedElmanCell
+        from .selective_elman import SelectiveElmanCell
+        from .diagonal_selective import DiagonalSelectiveCell
+
+        # Factory functions for log-space variants
+        def make_log_stock(dim, **kw):
+            return LogSpaceLayer(StockElmanCell, dim, **kw)
+        def make_log_gated(dim, **kw):
+            return LogSpaceLayer(GatedElmanCell, dim, **kw)
+        def make_log_selective(dim, **kw):
+            return LogSpaceLayer(SelectiveElmanCell, dim, **kw)
+        def make_log_diagonal(dim, **kw):
+            return LogSpaceLayer(DiagonalSelectiveCell, dim, **kw)
+
+        levels["0-log"] = ("Stock Elman + Log-Space", True, make_log_stock)
+        levels["1-log"] = ("Gated Elman + Log-Space", True, make_log_gated)
+        levels["2-log"] = ("Selective Elman + Log-Space", True, make_log_selective)
+        levels["3-log"] = ("Diagonal Selective + Log-Space", True, make_log_diagonal)
+
+    return levels
 
 
 def get_ladder_level(level):
@@ -141,6 +180,10 @@ __all__ = [
     # Fast variants (no log-space)
     'FullRElman', 'FullRElmanCell',
     'TripleRElman', 'TripleRElmanCell',
+    # Log-space wrapper (for any level)
+    'LogSpaceLayer', 'LogSpaceCellWrapper', 'LogRMSNorm',
+    'create_log_space_level', 'to_log_space', 'from_log_space',
+    'LOG_SPACE_WRAPPER_AVAILABLE',
     # Availability flags
     'LEVEL_0_AVAILABLE', 'LEVEL_1_AVAILABLE', 'LEVEL_2_AVAILABLE',
     'LEVEL_3_AVAILABLE', 'LEVEL_4_AVAILABLE', 'LEVEL_5_AVAILABLE',
