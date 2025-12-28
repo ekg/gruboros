@@ -294,12 +294,28 @@ class LogStorageDiagonalCell(nn.Module):
         return h, output
 
 
+class RMSNorm(nn.Module):
+    """RMSNorm for numerical stability (like Mamba2)."""
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        # RMS normalization: x / sqrt(mean(x^2)) * g
+        rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps)
+        return x / rms * self.g
+
+
 class LogStorageDiagonal(nn.Module):
     """
     Log-Storage Diagonal layer - Level 4 with projections.
 
     Same as Level 3 but with signed log storage for hidden state.
     Prevents numerical underflow at depth.
+
+    CRITICAL: Uses RMSNorm before output projection for bf16 stability
+    (like Mamba2 does).
     """
 
     def __init__(self, dim, expansion=1.0, n_groups=32, delta_init=-2.0, dropout=0.0, **kwargs):
@@ -321,6 +337,10 @@ class LogStorageDiagonal(nn.Module):
             n_groups=self.n_groups,
             delta_init=delta_init
         )
+
+        # RMSNorm before output projection - CRITICAL for bf16 stability!
+        # This is what Mamba2 does to prevent explosion.
+        self.pre_out_norm = RMSNorm(self.d_inner)
 
         # Output projection
         self.out_proj = nn.Linear(self.d_inner, dim, bias=False)
@@ -359,8 +379,11 @@ class LogStorageDiagonal(nn.Module):
         # Transpose back: [B, T, d_inner]
         selective_out = selective_out.permute(1, 0, 2).contiguous()
 
-        # Apply dropout and project
+        # Apply dropout, normalize, then project
+        # RMSNorm BEFORE output projection is critical for bf16 stability!
+        # This is what ElmanSilu, ElmanTripleRCompeteSilu, and Mamba2 all do.
         selective_out = self.dropout(selective_out)
+        selective_out = self.pre_out_norm(selective_out)
         output = self.out_proj(selective_out)
 
         # RESIDUAL CONNECTION: Critical for gradient flow at depth!

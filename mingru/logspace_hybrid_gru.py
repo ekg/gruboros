@@ -66,6 +66,62 @@ def logaddexp(a, b):
     return torch.logaddexp(a, b)  # PyTorch has built-in stable version
 
 
+def log_rmsnorm(log_x, g, eps=1e-6):
+    """RMSNorm in log-space: normalize log_x directly without exponentiating.
+
+    Normal RMSNorm: y = x / sqrt(mean(x²)) * g
+
+    In log-space where x = exp(log_x):
+        log(y) = log_x - 0.5 * log(mean(exp(2*log_x))) + log(g)
+               = log_x - 0.5 * (logsumexp(2*log_x) - log(n)) + log(g)
+
+    This is numerically stable because we never exponentiate large log values.
+    """
+    # log(mean(exp(2*log_x))) = logsumexp(2*log_x, dim=-1) - log(n)
+    n = log_x.shape[-1]
+    log_mean_x_sq = torch.logsumexp(2 * log_x, dim=-1, keepdim=True) - torch.log(torch.tensor(n, dtype=log_x.dtype, device=log_x.device))
+
+    # log(RMS) = 0.5 * log(mean(x²))
+    log_rms = 0.5 * log_mean_x_sq
+
+    # Normalized: log_x - log_rms (division in normal space = subtraction in log space)
+    log_normalized = log_x - log_rms
+
+    # Scale by g (in log space: add log(g))
+    # But g can be negative, so we handle it carefully
+    # For simplicity, apply g in normal space after exp
+    # Actually, g is typically positive (initialized to 1), so log(g) is safe
+    log_g = torch.log(g.abs().clamp(min=eps))
+    return log_normalized + log_g
+
+
+class LogRMSNorm(nn.Module):
+    """RMSNorm that operates in log-space for numerical stability.
+
+    Input: log_x (hidden state in log-space)
+    Output: log_y (normalized hidden state, still in log-space)
+
+    This prevents overflow/underflow when dealing with very large or small
+    hidden state magnitudes in deep networks.
+    """
+
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(dim))
+
+    def forward(self, log_x):
+        """Apply RMSNorm in log-space.
+
+        Args:
+            log_x: [B, H] hidden state in log-space
+
+        Returns:
+            log_y: [B, H] normalized hidden state in log-space
+        """
+        return log_rmsnorm(log_x, self.g, self.eps)
+
+
 # ============================================================================
 # PyTorch Fallback Implementation (CPU / Testing)
 # ============================================================================
@@ -264,6 +320,10 @@ class LogSpaceHybridGRU(nn.Module):
         self.input_projection = nn.Linear(dim, 3 * self.dim_inner)
         self.hidden_projection = nn.Linear(self.dim_inner, 3 * self.dim_inner)
 
+        # Log-space RMSNorm - normalize hidden state BEFORE exponentiating!
+        # This prevents numerical issues with very large/small log values.
+        self.log_rmsnorm = LogRMSNorm(self.dim_inner)
+
         # Only add output projection if expanding
         if expansion_factor != 1.0:
             self.to_out = nn.Linear(self.dim_inner, dim, bias=False)
@@ -354,8 +414,11 @@ class LogSpaceHybridGRU(nn.Module):
                 # CPU fallback
                 log_h_new = logspace_gru_cell_pytorch(input_gates, hidden_gates, log_h)
 
+            # Normalize in log-space BEFORE exponentiating (prevents overflow)
+            log_h_normed = self.log_rmsnorm(log_h_new)
+
             # Exponentiate for output projection (back to normal space)
-            h_new = torch.exp(log_h_new).to(dtype)
+            h_new = torch.exp(log_h_normed).to(dtype)
             out = self.to_out(h_new.unsqueeze(1))  # No internal residual - handled at outer level!
 
             if return_next_prev_hidden:
@@ -399,8 +462,11 @@ class LogSpaceHybridGRU(nn.Module):
                                        torch.full_like(log_h, -10.0),
                                        log_h)
 
+            # Normalize in log-space BEFORE exponentiating (prevents overflow)
+            log_h_normed = self.log_rmsnorm(log_h)
+
             # Exponentiate for output
-            h_exp = torch.exp(log_h).to(dtype)
+            h_exp = torch.exp(log_h_normed).to(dtype)
             outputs.append(h_exp)
 
         # Stack and project

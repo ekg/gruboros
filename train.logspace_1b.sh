@@ -60,16 +60,16 @@ echo "======================================================================="
   `# USE LOG-SPACE GRU` \
   --use_logspace_gru \
   \
-  `# SEQUENCES - adjusted batch for memory` \
+  `# SEQUENCES - grad_accum=4 for smoother updates` \
   --chunk_size 512 \
   --batch_size 64 \
-  --grad_accum 16 \
+  --grad_accum 4 \
   \
-  `# TRAINING` \
+  `# TRAINING - Conservative LR=0.01 + grad accumulation for stability` \
   --train_steps 1000000 \
-  --lr 0.001 \
-  --sf_beta 0.9 \
-  --sf_beta2 0.995 \
+  --lr 0.01 \
+  --sgd \
+  --momentum 0.0 \
   --weight_decay 0.033 \
   --grad_clip 0.0 \
   \
