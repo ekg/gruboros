@@ -2,6 +2,7 @@
 Language Model wrapper for Elman Ablation Ladder.
 
 Uses any of the 7 ladder levels as the recurrent layer.
+Supports both normal and log-space variants.
 """
 
 import torch
@@ -9,18 +10,27 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Import level classes directly to avoid circular import
-from .stock_elman import StockElman
-from .gated_elman import GatedElman
-from .selective_elman import SelectiveElman
-from .diagonal_selective import DiagonalSelective
+from .stock_elman import StockElman, StockElmanCell
+from .gated_elman import GatedElman, GatedElmanCell
+from .selective_elman import SelectiveElman, SelectiveElmanCell
+from .diagonal_selective import DiagonalSelective, DiagonalSelectiveCell
 from .log_storage_diagonal import LogStorageDiagonal
 from .log_compute_full import LogComputeFull
 from .logspace_triple_r import LogSpaceTripleR
+from .log_space_wrapper import LogSpaceLayer
 
 
 def get_ladder_level(level):
-    """Get the module class for a specific ladder level."""
-    levels = {
+    """Get the module class for a specific ladder level.
+
+    Args:
+        level: Integer (0-6) or string ('0-log', '1-log', '2-log', '3-log')
+
+    Returns:
+        Layer class or factory function
+    """
+    # Normal space levels
+    normal_levels = {
         0: ("Stock Elman", StockElman),
         1: ("Gated Elman", GatedElman),
         2: ("Selective Elman", SelectiveElman),
@@ -29,10 +39,26 @@ def get_ladder_level(level):
         5: ("Log-Compute Full", LogComputeFull),
         6: ("Log-Space Triple R", LogSpaceTripleR),
     }
-    if level not in levels:
-        raise ValueError(f"Invalid level {level}. Must be 0-6.")
-    name, cls = levels[level]
-    return cls
+
+    # Log-space wrapper variants (for levels 0-3)
+    log_space_cells = {
+        "0-log": ("Stock Elman + Log-Space", StockElmanCell),
+        "1-log": ("Gated Elman + Log-Space", GatedElmanCell),
+        "2-log": ("Selective Elman + Log-Space", SelectiveElmanCell),
+        "3-log": ("Diagonal Selective + Log-Space", DiagonalSelectiveCell),
+    }
+
+    if level in normal_levels:
+        name, cls = normal_levels[level]
+        return cls
+    elif level in log_space_cells:
+        name, cell_cls = log_space_cells[level]
+        # Return a factory function that creates LogSpaceLayer with the right cell
+        def make_log_layer(dim, expansion=1.0, n_groups=32, delta_init=-2.0, dropout=0.0, **kwargs):
+            return LogSpaceLayer(cell_cls, dim, expansion=expansion, dropout=dropout)
+        return make_log_layer
+    else:
+        raise ValueError(f"Invalid level {level}. Must be 0-6 or '0-log', '1-log', '2-log', '3-log'.")
 
 
 class LadderLM(nn.Module):

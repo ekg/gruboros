@@ -1035,6 +1035,39 @@ def get_model(model_config):
         print(f"Using Mamba2LM: dim={mamba2_config['dim']}, depth={mamba2_config['depth']}, d_state={mamba2_config['d_state']}, expand={mamba2_config['expand']}")
         return Mamba2LM(**mamba2_config)
 
+    # Use Elman Ablation Ladder if level specified (0-6 or 0-log, 1-log, etc.)
+    if model_config.get('elman_ladder_level') is not None:
+        from mingru.elman_ladder import LadderLM, get_available_levels
+        level_str = str(model_config['elman_ladder_level'])
+
+        # Parse level - can be integer or string like "0-log"
+        if level_str.isdigit():
+            level = int(level_str)
+        else:
+            level = level_str  # Keep as string for log-space variants
+
+        # Get level name from available levels
+        available = get_available_levels()
+        if level in available:
+            level_name = available[level][0]
+        else:
+            level_name = f"Level {level}"
+
+        ladder_config = {
+            'vocab_size': model_config['num_tokens'],
+            'dim': model_config['dim'],
+            'depth': model_config['depth'],
+            'level': level,
+            'expansion': model_config.get('expansion', 1.0),
+            'n_groups': model_config.get('compete_n_groups', 32),
+            'delta_init': model_config.get('delta_init', -2.0),
+            'dropout': model_config['dropout'],
+        }
+        model = LadderLM(**ladder_config)
+        params = model.get_num_params()
+        print(f"Using LadderLM Level {level} ({level_name}): dim={ladder_config['dim']}, depth={ladder_config['depth']}, params={params:,}")
+        return model
+
     # Use Hybrid Mamba2 + cuDNN GRU with parallel paths and learned mixing
     if model_config.get('use_hybrid_mamba2_gru', False):
         from mingru.hybrid_mamba2_gru import HybridMamba2GRULM
@@ -1591,6 +1624,8 @@ def get_args():
                         help='Use minGRU + SiLU output gate (parallel scan + selectivity, like fast Mamba+GRU)')
     parser.add_argument('--use_cudnn_lstm_mult', action='store_true',
                         help='Use cuDNN LSTM + SiLU output gate (more stepwise nonlinearity than GRU)')
+    parser.add_argument('--elman_ladder_level', type=str, default=None,
+                        help='Use Elman Ablation Ladder model at specified level. Integer levels: 0=Stock, 1=Gated, 2=Selective, 3=Diagonal, 4=LogStorage, 5=LogCompute, 6=TripleR. Log-space variants: 0-log, 1-log, 2-log, 3-log')
     parser.add_argument('--use_elman_selective', action='store_true',
                         help='Use Elman MLP + SiLU selectivity (simplest recurrence: MLP state mixing + output gating)')
     parser.add_argument('--use_cudnn_bilinear_gru', action='store_true',
@@ -2029,6 +2064,7 @@ def main():
             "use_logspace_gru": args.use_logspace_gru,
             "use_mamba": args.use_mamba,
             "use_mamba2": args.use_mamba2,
+            "elman_ladder_level": args.elman_ladder_level,
             "use_llama": args.use_llama,
             "transformer_n_heads": args.transformer_n_heads,
             "use_hybrid_mamba2_gru": args.use_hybrid_mamba2_gru,
