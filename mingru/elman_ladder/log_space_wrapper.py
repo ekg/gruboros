@@ -77,6 +77,9 @@ class LogSpaceCellWrapper(nn.Module):
     1. Converts log_h to h before calling cell
     2. Converts h to log_h after cell returns
     3. Uses LogRMSNorm for numerical stability
+
+    MEMORY-EFFICIENT: Does NOT store all T+1 hidden states.
+    Only returns output sequence and final hidden state.
     """
 
     def __init__(self, cell, use_log_rmsnorm=True):
@@ -98,48 +101,50 @@ class LogSpaceCellWrapper(nn.Module):
             sign_h0: [B, dim] initial sign of hidden state
 
         Returns:
-            log_h: [T+1, B, dim] log-magnitude of all hidden states
-            sign_h: [T+1, B, dim] sign of all hidden states
+            h_out: [T, B, dim] output hidden states (in LINEAR space, not log)
+            (log_h_final, sign_h_final): final hidden state in log-space
         """
         T, B, D = x.shape
         device = x.device
         dtype = x.dtype
 
-        # Initialize log-space hidden state
+        # Initialize log-space hidden state (use input dtype, not float32!)
         if log_h0 is None:
-            log_h0 = torch.zeros(B, self.dim, device=device, dtype=torch.float32)
-            sign_h0 = torch.ones(B, self.dim, device=device, dtype=torch.float32)
+            log_h0 = torch.zeros(B, self.dim, device=device, dtype=dtype)
+            sign_h0 = torch.ones(B, self.dim, device=device, dtype=dtype)
 
-        log_h_list = [log_h0]
-        sign_h_list = [sign_h0]
+        # Current hidden state in log-space
+        log_h = log_h0
+        sign_h = sign_h0
+
+        # Collect outputs (in linear space) - NOT all hidden states
+        h_out_list = []
 
         for t in range(T):
-            # Convert from log-space to normal
-            log_h_prev = log_h_list[-1]
-            sign_h_prev = sign_h_list[-1]
-
             # Apply LogRMSNorm before exponentiating (prevents overflow)
             if self.log_norm is not None:
-                log_h_normed = self.log_norm(log_h_prev)
+                log_h_normed = self.log_norm(log_h)
             else:
-                log_h_normed = log_h_prev
+                log_h_normed = log_h
 
-            h_prev = from_log_space(log_h_normed, sign_h_prev).to(dtype)
+            # Convert from log-space to linear for cell
+            h_prev = from_log_space(log_h_normed, sign_h)
 
             # Run single step of wrapped cell
             x_t = x[t:t+1]  # [1, B, dim]
             h_all = self.cell(x_t, h_prev)  # [2, B, dim] = [h_prev, h_new]
             h_new = h_all[-1]  # [B, dim]
 
-            # Convert back to log-space
-            log_h_new, sign_h_new = to_log_space(h_new)
-            log_h_list.append(log_h_new.to(torch.float32))
-            sign_h_list.append(sign_h_new.to(torch.float32))
+            # Store output (linear space)
+            h_out_list.append(h_new)
 
-        log_h = torch.stack(log_h_list, dim=0)
-        sign_h = torch.stack(sign_h_list, dim=0)
+            # Convert back to log-space for next iteration
+            log_h, sign_h = to_log_space(h_new)
 
-        return log_h, sign_h
+        # Stack outputs: [T, B, dim]
+        h_out = torch.stack(h_out_list, dim=0)
+
+        return h_out, (log_h, sign_h)
 
 
 class LogSpaceLayer(nn.Module):
@@ -183,12 +188,11 @@ class LogSpaceLayer(nn.Module):
         nn.init.xavier_uniform_(self.in_proj.weight)
         nn.init.xavier_uniform_(self.out_proj.weight)
 
-    def forward(self, x, log_h0=None, sign_h0=None, **kwargs):
+    def forward(self, x, prev_hidden=None, **kwargs):
         """
         Args:
             x: [B, T, dim] input sequence
-            log_h0: [B, d_inner] initial log-magnitude (optional)
-            sign_h0: [B, d_inner] initial sign (optional)
+            prev_hidden: Either None, or tuple (log_h0, sign_h0) from previous call
 
         Returns:
             output: [B, T, dim] output sequence
@@ -196,27 +200,26 @@ class LogSpaceLayer(nn.Module):
         """
         B, T, D = x.shape
 
+        # Unpack previous hidden state if provided
+        if prev_hidden is None:
+            log_h0, sign_h0 = None, None
+        elif isinstance(prev_hidden, tuple) and len(prev_hidden) == 2:
+            log_h0, sign_h0 = prev_hidden
+        else:
+            # Fallback: treat as log_h0, assume positive
+            log_h0 = prev_hidden
+            sign_h0 = None
+
         # Project input
         x_proj = self.in_proj(x)  # [B, T, d_inner]
 
         # Transpose for cell: [T, B, d_inner]
         x_rnn = x_proj.permute(1, 0, 2).contiguous()
 
-        # Run log-space cell
-        log_h_all, sign_h_all = self.log_cell(x_rnn, log_h0, sign_h0)
+        # Run log-space cell - now returns h_out directly (not log_h_all)
+        h_out, (log_h_final, sign_h_final) = self.log_cell(x_rnn, log_h0, sign_h0)
 
-        # Get output hidden states (skip h0)
-        log_h_out = log_h_all[1:]  # [T, B, d_inner]
-        sign_h_out = sign_h_all[1:]
-
-        # Final hidden state (in log-space)
-        log_h_final = log_h_all[-1]
-        sign_h_final = sign_h_all[-1]
-
-        # Convert to normal space for output
-        # Apply LogRMSNorm at the cell level, then exp
-        h_out = from_log_space(log_h_out, sign_h_out)  # [T, B, d_inner]
-
+        # h_out is already [T, B, d_inner] in linear space
         # Transpose back: [B, T, d_inner]
         h_out = h_out.permute(1, 0, 2).contiguous()
 
